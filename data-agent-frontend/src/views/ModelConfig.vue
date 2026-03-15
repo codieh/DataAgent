@@ -193,6 +193,7 @@
               <el-option label="DeepSeek" value="deepseek" />
               <el-option label="Qwen" value="qwen" />
               <el-option label="OpenAI" value="openai" />
+              <el-option label="Kimi Coding" value="kimi-coding" />
               <el-option label="Siliconflow" value="siliconflow" />
               <el-option label="Custom" value="custom" />
             </el-select>
@@ -224,7 +225,7 @@
           <el-form-item label="Base URL" prop="baseUrl">
             <el-input
               v-model="formData.baseUrl"
-              placeholder="请填写兼容 OpenAI 协议的 Base URL，通常不包含 /v1 后缀"
+              placeholder="OpenAI兼容：通常不包含 /v1 后缀；Kimi Coding(Anthropic Messages)：建议填 https://api.kimi.com/coding"
             />
           </el-form-item>
 
@@ -235,7 +236,11 @@
           >
             <el-input
               v-model="formData.completionsPath"
-              placeholder="附加到base-url的路径。留空则使用默认值/v1/chat/completions"
+              :placeholder="
+                formData.provider === 'kimi-coding'
+                  ? '附加到 base-url 的路径。留空则默认 /v1/messages'
+                  : '附加到 base-url 的路径。留空则默认 /v1/chat/completions'
+              "
             />
           </el-form-item>
 
@@ -381,6 +386,7 @@
         deepseek: 'https://api.deepseek.com',
         qwen: 'https://dashscope.aliyuncs.com/compatible-mode',
         openai: 'https://api.openai.com',
+        'kimi-coding': 'https://api.kimi.com/coding',
         siliconflow: 'https://api.siliconflow.cn',
         custom: '', // 自定义提供商不设置默认API地址
       };
@@ -389,6 +395,11 @@
       const updateBaseUrlByProvider = (provider: string) => {
         if (provider && provider !== 'custom') {
           formData.value.baseUrl = providerBaseUrlMap[provider] || '';
+        }
+        if (provider === 'kimi-coding' && formData.value.modelType === 'CHAT') {
+          if (!formData.value.completionsPath || formData.value.completionsPath.trim() === '') {
+            formData.value.completionsPath = '/v1/messages';
+          }
         }
       };
 
@@ -626,6 +637,7 @@
           deepseek: 'success',
           qwen: 'warning',
           openai: 'primary',
+          'kimi-coding': 'warning',
           siliconflow: 'danger',
           custom: 'info',
         };

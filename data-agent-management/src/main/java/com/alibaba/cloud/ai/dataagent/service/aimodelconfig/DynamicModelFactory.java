@@ -16,6 +16,8 @@
 package com.alibaba.cloud.ai.dataagent.service.aimodelconfig;
 
 import com.alibaba.cloud.ai.dataagent.dto.ModelConfigDTO;
+import com.alibaba.cloud.ai.dataagent.service.aimodelconfig.kimi.KimiMessagesChatModel;
+import com.alibaba.cloud.ai.dataagent.util.JsonUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.hc.client5.http.auth.AuthScope;
@@ -58,6 +60,10 @@ public class DynamicModelFactory {
 		// 1. 验证参数
 		checkBasic(config);
 
+		if (isAnthropicMessagesProvider(config.getProvider())) {
+			return createKimiMessagesChatModel(config);
+		}
+
 		// 2. 构建 OpenAiApi (核心通讯对象)
 		String apiKey = StringUtils.hasText(config.getApiKey()) ? config.getApiKey() : "";
 		OpenAiApi.Builder apiBuilder = OpenAiApi.builder()
@@ -90,6 +96,13 @@ public class DynamicModelFactory {
 				config.getModelName(), config.getBaseUrl());
 		checkBasic(config);
 
+		if (isAnthropicMessagesProvider(config.getProvider())) {
+			throw new IllegalArgumentException(
+					"Provider '" + config.getProvider()
+							+ "' uses Anthropic Messages API and is not supported for embeddings. "
+							+ "Please configure an OpenAI-compatible embedding model instead.");
+		}
+
 		String apiKey = StringUtils.hasText(config.getApiKey()) ? config.getApiKey() : "";
 		OpenAiApi.Builder apiBuilder = OpenAiApi.builder()
 			.apiKey(apiKey)
@@ -105,6 +118,40 @@ public class DynamicModelFactory {
 		return new OpenAiEmbeddingModel(openAiApi, MetadataMode.EMBED,
 				OpenAiEmbeddingOptions.builder().model(config.getModelName()).build(),
 				RetryUtils.DEFAULT_RETRY_TEMPLATE);
+	}
+
+	private ChatModel createKimiMessagesChatModel(ModelConfigDTO config) {
+		String apiKey = StringUtils.hasText(config.getApiKey()) ? config.getApiKey() : "";
+		String authorizationHeaderValue = apiKey.startsWith("Bearer ") ? apiKey : "Bearer " + apiKey;
+		String messagesPath = StringUtils.hasText(config.getCompletionsPath()) ? config.getCompletionsPath()
+				: "v1/messages";
+		while (messagesPath.startsWith("/")) {
+			messagesPath = messagesPath.substring(1);
+		}
+		String baseUrl = config.getBaseUrl();
+		if (StringUtils.hasText(baseUrl) && !baseUrl.endsWith("/")) {
+			baseUrl = baseUrl + "/";
+		}
+		String endpointUrl = messagesPath;
+		if (!messagesPath.startsWith("http://") && !messagesPath.startsWith("https://")) {
+			endpointUrl = baseUrl + messagesPath;
+		}
+
+		RestClient restClient = getProxiedRestClientBuilder(config)
+			.defaultHeader("Authorization", authorizationHeaderValue)
+			.defaultHeader("User-Agent", "claude-code/0.1.0")
+			.build();
+
+		return new KimiMessagesChatModel(restClient, JsonUtil.getObjectMapper(), endpointUrl, config.getModelName(),
+				config.getMaxTokens(), config.getTemperature());
+	}
+
+	private static boolean isAnthropicMessagesProvider(String provider) {
+		if (!StringUtils.hasText(provider)) {
+			return false;
+		}
+		String p = provider.trim().toLowerCase();
+		return "kimi".equals(p) || "kimi-coding".equals(p) || "anthropic".equals(p);
 	}
 
 	private static void checkBasic(ModelConfigDTO config) {

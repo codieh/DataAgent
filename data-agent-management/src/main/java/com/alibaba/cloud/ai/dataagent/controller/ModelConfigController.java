@@ -15,8 +15,8 @@
  */
 package com.alibaba.cloud.ai.dataagent.controller;
 
-import com.alibaba.cloud.ai.dataagent.enums.ModelType;
 import com.alibaba.cloud.ai.dataagent.dto.ModelConfigDTO;
+import com.alibaba.cloud.ai.dataagent.enums.ModelType;
 import com.alibaba.cloud.ai.dataagent.service.aimodelconfig.ModelConfigDataService;
 import com.alibaba.cloud.ai.dataagent.service.aimodelconfig.ModelConfigOpsService;
 import com.alibaba.cloud.ai.dataagent.vo.ApiResponse;
@@ -24,6 +24,8 @@ import com.alibaba.cloud.ai.dataagent.vo.ModelCheckVo;
 import jakarta.validation.Valid;
 import lombok.AllArgsConstructor;
 import org.springframework.web.bind.annotation.*;
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 import java.util.List;
 
@@ -36,100 +38,85 @@ public class ModelConfigController {
 
 	private final ModelConfigOpsService modelConfigOpsService;
 
-	// 1. 获取列表
 	@GetMapping("/list")
 	public ApiResponse<List<ModelConfigDTO>> list() {
 		try {
-			return ApiResponse.success("获取模型配置列表成功", modelConfigDataService.listConfigs());
+			return ApiResponse.success("OK", modelConfigDataService.listConfigs());
 		}
 		catch (Exception e) {
-			return ApiResponse.error("获取模型配置列表失败: " + e.getMessage());
+			return ApiResponse.error("Failed to list configs: " + e.getMessage());
 		}
 	}
 
-	// 2. 新增配置
 	@PostMapping("/add")
 	public ApiResponse<String> add(@Valid @RequestBody ModelConfigDTO config) {
 		try {
 			modelConfigDataService.addConfig(config);
-			return ApiResponse.success("配置已保存");
+			return ApiResponse.success("Saved");
 		}
 		catch (Exception e) {
-			return ApiResponse.error("保存失败: " + e.getMessage());
+			return ApiResponse.error("Save failed: " + e.getMessage());
 		}
 	}
 
-	// 3. 修改配置
 	@PutMapping("/update")
 	public ApiResponse<String> update(@Valid @RequestBody ModelConfigDTO config) {
 		try {
 			modelConfigOpsService.updateAndRefresh(config);
-			return ApiResponse.success("配置已更新");
+			return ApiResponse.success("Updated");
 		}
 		catch (Exception e) {
-			return ApiResponse.error("更新失败: " + e.getMessage());
+			return ApiResponse.error("Update failed: " + e.getMessage());
 		}
 	}
 
-	// 4. 删除配置
 	@DeleteMapping("/{id}")
 	public ApiResponse<String> delete(@PathVariable Integer id) {
 		try {
 			modelConfigDataService.deleteConfig(id);
-			return ApiResponse.success("配置已删除");
+			return ApiResponse.success("Deleted");
 		}
 		catch (Exception e) {
-			return ApiResponse.error("删除失败: " + e.getMessage());
+			return ApiResponse.error("Delete failed: " + e.getMessage());
 		}
 	}
 
-	// 5. 启用/切换配置
 	@PostMapping("/activate/{id}")
 	public ApiResponse<String> activate(@PathVariable Integer id) {
 		try {
 			modelConfigOpsService.activateConfig(id);
-			return ApiResponse.success("模型切换成功！");
+			return ApiResponse.success("Activated");
 		}
 		catch (Exception e) {
-			return ApiResponse.error("切换失败，请检查配置是否正确: " + e.getMessage());
+			return ApiResponse.error("Activate failed: " + e.getMessage());
 		}
 	}
 
-	/**
-	 * 6. 连通性测试 接收前端表单里的配置参数，尝试发起一次真实调用
-	 */
 	@PostMapping("/test")
-	public ApiResponse<String> testConnection(@Valid @RequestBody ModelConfigDTO config) {
-		try {
-			modelConfigOpsService.testConnection(config);
-			return ApiResponse.success("连接测试成功！模型可用。");
-		}
-		catch (Exception e) {
-			// 捕获具体的错误信息（如 401 Invalid Key, 404 Not Found 等）返回给前端
-			return ApiResponse.error("连接测试失败: " + e.getMessage());
-		}
+	public Mono<ApiResponse<String>> testConnection(@Valid @RequestBody ModelConfigDTO config) {
+		return Mono.<ApiResponse<String>>fromCallable(() -> {
+				modelConfigOpsService.testConnection(config);
+				return ApiResponse.success("Connection test succeeded.");
+			})
+			.subscribeOn(Schedulers.boundedElastic())
+			.onErrorResume(e -> Mono.just(ApiResponse.<String>error("Connection test failed: " + e.getMessage())));
 	}
 
-	/**
-	 * 7. 检查模型配置是否就绪（聊天模型和嵌入模型都需要配置）
-	 */
 	@GetMapping("/check-ready")
 	public ApiResponse<ModelCheckVo> checkReady() {
-		// 检查聊天模型是否已配置且启用
 		ModelConfigDTO chatModel = modelConfigDataService.getActiveConfigByType(ModelType.CHAT);
-		// 检查嵌入模型是否已配置且启用
 		ModelConfigDTO embeddingModel = modelConfigDataService.getActiveConfigByType(ModelType.EMBEDDING);
 
 		boolean chatModelReady = chatModel != null;
 		boolean embeddingModelReady = embeddingModel != null;
 		boolean ready = chatModelReady && embeddingModelReady;
 
-		return ApiResponse.success("模型配置检查完成",
-				ModelCheckVo.builder()
-					.chatModelReady(chatModelReady)
-					.embeddingModelReady(embeddingModelReady)
-					.ready(ready)
-					.build());
+		return ApiResponse.success("OK", ModelCheckVo.builder()
+			.chatModelReady(chatModelReady)
+			.embeddingModelReady(embeddingModelReady)
+			.ready(ready)
+			.build());
 	}
 
 }
+
