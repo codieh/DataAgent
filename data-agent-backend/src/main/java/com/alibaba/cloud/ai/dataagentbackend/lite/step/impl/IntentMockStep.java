@@ -11,12 +11,14 @@ import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStepResult;
 import java.time.Duration;
 import java.util.Map;
 import org.springframework.core.annotation.Order;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 @Component
 @Order(10)
+@ConditionalOnProperty(name = "search.lite.intent.provider", havingValue = "mock", matchIfMissing = true)
 public class IntentMockStep implements SearchLiteStep {
 
 	@Override
@@ -39,4 +41,3 @@ public class IntentMockStep implements SearchLiteStep {
 	}
 
 }
-

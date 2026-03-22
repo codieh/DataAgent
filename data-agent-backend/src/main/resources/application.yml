@@ -1,3 +1,18 @@
 spring:
   application:
     name: data-agent-backend
+
+search:
+  lite:
+    intent:
+      # mock|minimax
+      provider: minimax
+
+llm:
+  anthropic:
+    base-url: https://api.minimaxi.com/anthropic
+    api-key: ""
+    model: MiniMax-M2.7
+    temperature: 0.5
+    max-tokens: 8192
+    anthropic-version: ""
