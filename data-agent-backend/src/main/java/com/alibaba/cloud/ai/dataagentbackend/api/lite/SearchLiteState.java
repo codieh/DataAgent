@@ -1,0 +1,146 @@
+package com.alibaba.cloud.ai.dataagentbackend.api.lite;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * A mutable per-request state object for the lite pipeline.
+ */
+public class SearchLiteState {
+
+	private String agentId;
+
+	private String threadId;
+
+	private String query;
+
+	// intent
+	private String intentClassification;
+
+	// evidence
+	private List<EvidenceItem> evidences = new ArrayList<>();
+
+	private String evidenceText;
+
+	// enhance
+	private String canonicalQuery;
+
+	private List<String> expandedQueries = new ArrayList<>();
+
+	// sql
+	private String sql;
+
+	// execution result
+	private List<Map<String, Object>> rows = new ArrayList<>();
+
+	private String resultSummary;
+
+	private String error;
+
+	public static SearchLiteState fromRequest(SearchLiteRequest request) {
+		SearchLiteState state = new SearchLiteState();
+		state.agentId = request.agentId();
+		state.threadId = request.threadId();
+		state.query = request.query();
+		return state;
+	}
+
+	public String getAgentId() {
+		return agentId;
+	}
+
+	public void setAgentId(String agentId) {
+		this.agentId = agentId;
+	}
+
+	public String getThreadId() {
+		return threadId;
+	}
+
+	public void setThreadId(String threadId) {
+		this.threadId = threadId;
+	}
+
+	public String getQuery() {
+		return query;
+	}
+
+	public void setQuery(String query) {
+		this.query = query;
+	}
+
+	public String getIntentClassification() {
+		return intentClassification;
+	}
+
+	public void setIntentClassification(String intentClassification) {
+		this.intentClassification = intentClassification;
+	}
+
+	public List<EvidenceItem> getEvidences() {
+		return evidences;
+	}
+
+	public void setEvidences(List<EvidenceItem> evidences) {
+		this.evidences = evidences == null ? new ArrayList<>() : evidences;
+	}
+
+	public String getEvidenceText() {
+		return evidenceText;
+	}
+
+	public void setEvidenceText(String evidenceText) {
+		this.evidenceText = evidenceText;
+	}
+
+	public String getCanonicalQuery() {
+		return canonicalQuery;
+	}
+
+	public void setCanonicalQuery(String canonicalQuery) {
+		this.canonicalQuery = canonicalQuery;
+	}
+
+	public List<String> getExpandedQueries() {
+		return expandedQueries;
+	}
+
+	public void setExpandedQueries(List<String> expandedQueries) {
+		this.expandedQueries = expandedQueries == null ? new ArrayList<>() : expandedQueries;
+	}
+
+	public String getSql() {
+		return sql;
+	}
+
+	public void setSql(String sql) {
+		this.sql = sql;
+	}
+
+	public List<Map<String, Object>> getRows() {
+		return rows;
+	}
+
+	public void setRows(List<Map<String, Object>> rows) {
+		this.rows = rows == null ? new ArrayList<>() : rows;
+	}
+
+	public String getResultSummary() {
+		return resultSummary;
+	}
+
+	public void setResultSummary(String resultSummary) {
+		this.resultSummary = resultSummary;
+	}
+
+	public String getError() {
+		return error;
+	}
+
+	public void setError(String error) {
+		this.error = error;
+	}
+
+}
+
