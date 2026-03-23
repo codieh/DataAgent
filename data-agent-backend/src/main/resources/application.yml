@@ -7,11 +7,17 @@ search:
     intent:
       # mock|minimax
       provider: minimax
+    evidence:
+      # file|mock
+      provider: file
+      top-k: 5
 
 llm:
   anthropic:
     base-url: https://api.minimaxi.com/anthropic
-    api-key: ""
+    # 推荐用环境变量注入，不要把 key 写进仓库
+    # export LLM_ANTHROPIC_API_KEY=...
+    api-key: "${LLM_ANTHROPIC_API_KEY:}"
     model: MiniMax-M2.7
     temperature: 0.5
     max-tokens: 8192

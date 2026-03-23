@@ -1,0 +1,36 @@
+[
+  {
+    "id": "metric-gmv-1",
+    "title": "GMV 指标口径",
+    "snippet": "GMV（成交总额）默认口径为支付金额合计（未扣除退款），统计时需明确时间范围与币种。",
+    "source": "mock://kb/metrics/gmv",
+    "score": 0.9,
+    "metadata": {
+      "type": "DOC",
+      "tags": ["metric", "gmv"]
+    }
+  },
+  {
+    "id": "user-core-1",
+    "title": "核心用户定义",
+    "snippet": "核心用户：近 30 天内完成过支付且退款率 < 5% 的用户；若业务另有定义需以业务规则为准。",
+    "source": "mock://kb/users/core",
+    "score": 0.85,
+    "metadata": {
+      "type": "FAQ",
+      "tags": ["user", "core-user"]
+    }
+  },
+  {
+    "id": "time-range-1",
+    "title": "时间范围默认规则",
+    "snippet": "未明确时间范围时，默认使用最近 7 天；需要月/季度统计时必须在查询中显式指定。",
+    "source": "mock://kb/rules/time-range",
+    "score": 0.6,
+    "metadata": {
+      "type": "RULE",
+      "tags": ["time", "default"]
+    }
+  }
+]
+
