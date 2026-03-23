@@ -18,6 +18,15 @@ import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+/**
+ * 意图识别（Intent）阶段：使用 MiniMax 的 Anthropic 兼容接口进行分类，并把模型输出以“真流式”形式转发给前端。
+ * <p>
+ * 行为：
+ * <ul>
+ *   <li>模型输出增量（delta）到达时立即通过 SSE 发送给前端；</li>
+ *   <li>同时将所有 delta 拼接为完整文本，最终解析出 JSON 中的 {@code classification} 写入 {@link SearchLiteState}。</li>
+ * </ul>
+ */
 @Component
 @Order(10)
 @ConditionalOnProperty(name = "search.lite.intent.provider", havingValue = "minimax")
@@ -60,6 +69,9 @@ public class IntentMinimaxStep implements SearchLiteStep {
 			.just(SearchLiteMessages.message(context, stage(), SearchLiteMessageType.TEXT, "正在进行意图识别...", null))
 			.delayElements(Duration.ofMillis(50));
 
+		// 这条 delta 流会被消费两次：
+		// 1) streaming：实时转发给前端；2) updated：拼接并解析最终 JSON。
+		// cache() 用于避免“二次订阅导致二次 HTTP 请求”。
 		Flux<String> sharedDeltas = anthropicClient.streamMessage(system, user).cache();
 
 		Flux<SearchLiteMessage> streaming = sharedDeltas

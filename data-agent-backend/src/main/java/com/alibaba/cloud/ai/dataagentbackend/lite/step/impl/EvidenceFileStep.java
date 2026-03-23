@@ -26,6 +26,19 @@ import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+/**
+ * 证据召回（Evidence）阶段：v1 文件检索实现。
+ * <p>
+ * 数据来源：{@code classpath:evidence/evidence.json}
+ * <p>
+ * 召回策略（v1 简化版）：对 query 做非常粗糙的“分词 + 包含匹配打分”，取 topK。
+ * <p>
+ * 注意：
+ * <ul>
+ *   <li>这不是生产级检索（无 BM25/无向量相似度）。</li>
+ *   <li>当前 tokenize/score 对中文效果较弱；后续要升级检索时，可替换 {@link #tokenize(String)} 与 {@link #score(EvidenceItem, Set)}。</li>
+ * </ul>
+ */
 @Component
 @Order(20)
 @ConditionalOnProperty(name = "search.lite.evidence.provider", havingValue = "file", matchIfMissing = true)
@@ -85,6 +98,7 @@ public class EvidenceFileStep implements SearchLiteStep {
 		if (text == null || text.isBlank()) {
 			return Set.of();
 		}
+		// v1：按“非字母/数字”切分；对中文不友好，后续可替换为中文分词或向量召回。
 		return SPLIT.splitAsStream(text.toLowerCase(Locale.ROOT))
 			.filter(s -> s != null && !s.isBlank())
 			.filter(s -> s.length() >= 2)
@@ -102,7 +116,7 @@ public class EvidenceFileStep implements SearchLiteStep {
 				score += 1.0;
 			}
 		}
-		// small prior from existing score if provided
+		// 如果 evidence.json 中自带了 score，则作为一个很小的先验加权。
 		if (item.score() != null) {
 			score += Math.max(0, Math.min(1.0, item.score())) * 0.5;
 		}

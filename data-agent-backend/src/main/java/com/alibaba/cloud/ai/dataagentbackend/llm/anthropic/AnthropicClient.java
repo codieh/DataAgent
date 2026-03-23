@@ -14,7 +14,7 @@ import reactor.core.publisher.Mono;
 import reactor.core.publisher.Flux;
 
 /**
- * Minimal Anthropic-compatible Messages API client.
+ * Anthropic 协议兼容的 Messages API 最小客户端。
  */
 public class AnthropicClient {
 
@@ -32,7 +32,7 @@ public class AnthropicClient {
 		this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper");
 		WebClient.Builder b = builder.baseUrl(props.baseUrl());
 
-		// Anthropic standard uses x-api-key; some gateways accept Authorization: Bearer
+		// Anthropic 标准认证头是 x-api-key；部分网关也兼容 Authorization: Bearer
 		if (StringUtils.hasText(props.apiKey())) {
 			b.defaultHeader("x-api-key", props.apiKey());
 			b.defaultHeader("Authorization", "Bearer " + props.apiKey());
@@ -58,7 +58,10 @@ public class AnthropicClient {
 	}
 
 	/**
-	 * Stream message content deltas (text only) via SSE.
+	 * 以 SSE 方式流式返回模型输出增量（仅提取文本 delta）。
+	 * <p>
+	 * 说明：该实现假设 SSE 的 {@code data} 是 JSON，且包含字段 {@code delta.type=text_delta} 与 {@code delta.text}。
+	 * 如果 minimax 的实际返回结构不同，只需要调整 {@link #extractTextDelta(String)} 的解析即可。
 	 */
 	public Flux<String> streamMessage(String systemPrompt, String userPrompt) {
 		StreamMessageRequest req = new StreamMessageRequest(props.model(), props.maxTokens(), props.temperature(),
@@ -125,13 +128,13 @@ public class AnthropicClient {
 			return null;
 		}
 		catch (JsonProcessingException ignored) {
-			// ignore unknown/other SSE event payloads
+			// 忽略未知/非文本 delta 的事件体
 			return null;
 		}
 	}
 
 	/**
-	 * Matches Anthropic SSE payload for "content_block_delta".
+	 * 用于匹配 Anthropic SSE 中常见的 "content_block_delta" 事件体结构（只关心 delta）。
 	 */
 	private static class DeltaEnvelope {
 		public Delta delta;

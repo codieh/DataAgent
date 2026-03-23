@@ -12,6 +12,12 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import reactor.core.publisher.Flux;
 
+/**
+ * {@code search-lite} 流水线编排器。
+ * <p>
+ * 流水线定义方式：Spring 会把所有实现了 {@link SearchLiteStep} 的 Bean 收集为一个 {@code List}，并按 {@code @Order} 排序。
+ * 本类按顺序执行每个 Step，并把 Step 的消息流拼接为一个总的 SSE 输出流。
+ */
 @Service
 public class SearchLiteOrchestrator {
 
@@ -36,6 +42,11 @@ public class SearchLiteOrchestrator {
 						: error.getMessage())));
 	}
 
+	/**
+	 * 顺序执行 Step。
+	 * <p>
+	 * 注意：这是一个 {@link Flux}，只有当 WebFlux 为了写 HTTP 响应而订阅（subscribe）时，才会真正开始执行。
+	 */
 	private Flux<SearchLiteMessage> runSteps(SearchLiteContext ctx, SearchLiteState currentState, int index) {
 		if (index >= steps.size()) {
 			return Flux.empty();
