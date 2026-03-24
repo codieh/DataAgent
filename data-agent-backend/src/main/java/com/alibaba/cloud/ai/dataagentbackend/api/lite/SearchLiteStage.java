@@ -4,6 +4,7 @@ public enum SearchLiteStage {
 	INTENT,
 	EVIDENCE,
 	SCHEMA,
+	SCHEMA_RECALL,
 	ENHANCE,
 	SQL_EXECUTE,
 	RESULT

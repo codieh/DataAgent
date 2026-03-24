@@ -4,6 +4,9 @@ import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteMessage;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteMessageType;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteStage;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteState;
+import com.alibaba.cloud.ai.dataagentbackend.api.lite.SchemaColumn;
+import com.alibaba.cloud.ai.dataagentbackend.api.lite.SchemaForeignKey;
+import com.alibaba.cloud.ai.dataagentbackend.api.lite.SchemaTable;
 import com.alibaba.cloud.ai.dataagentbackend.lite.SearchLiteContext;
 import com.alibaba.cloud.ai.dataagentbackend.lite.SearchLiteMessages;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStep;
@@ -82,11 +85,12 @@ public class SchemaMysqlIntrospectStep implements SearchLiteStep {
 			.concatMap(t -> Flux.just(SearchLiteMessages.message(context, stage(), SearchLiteMessageType.TEXT,
 					"表 " + t.name + "：共 " + t.columns.size() + " 列", null)).delayElements(Duration.ofMillis(30))));
 
-		Mono<SearchLiteState> updated = snapshotMono.map(snapshot -> {
-			state.setSchemaTables(snapshot.tables.stream().map(t -> t.name).toList());
-			state.setSchemaText(snapshot.schemaText);
-			return state;
-		});
+	Mono<SearchLiteState> updated = snapshotMono.map(snapshot -> {
+		state.setSchemaTables(snapshot.tables.stream().map(t -> t.name).toList());
+		state.setSchemaText(snapshot.schemaText);
+		state.setSchemaTableDetails(snapshot.tables.stream().map(TableInfo::toSchemaTable).toList());
+		return state;
+	});
 
 		Flux<SearchLiteMessage> payload = snapshotMono.map(snapshot -> {
 			Map<String, Object> data = new LinkedHashMap<>();
@@ -245,13 +249,29 @@ public class SchemaMysqlIntrospectStep implements SearchLiteStep {
 			m.put("foreignKeys", foreignKeys);
 			return m;
 		}
+
+		SchemaTable toSchemaTable() {
+			List<SchemaColumn> cols = columns == null ? List.of()
+					: columns.stream().map(ColumnInfo::toSchemaColumn).toList();
+			List<SchemaForeignKey> fks = foreignKeys == null ? List.of()
+					: foreignKeys.stream().map(ForeignKeyInfo::toSchemaForeignKey).toList();
+			return new SchemaTable(name, comment, cols, fks);
+		}
 	}
 
 	private record ColumnInfo(String name, String dataType, String columnType, String isNullable, String columnKey,
 			String comment) {
+		SchemaColumn toSchemaColumn() {
+			boolean notNull = "NO".equalsIgnoreCase(isNullable);
+			boolean primaryKey = "PRI".equalsIgnoreCase(columnKey);
+			return new SchemaColumn(name, dataType, columnType, notNull, primaryKey, comment);
+		}
 	}
 
 	private record ForeignKeyInfo(String columnName, String refTableName, String refColumnName) {
+		SchemaForeignKey toSchemaForeignKey() {
+			return new SchemaForeignKey(columnName, refTableName, refColumnName);
+		}
 	}
 
 }

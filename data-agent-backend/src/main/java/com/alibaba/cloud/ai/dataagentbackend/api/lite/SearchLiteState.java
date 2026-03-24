@@ -28,6 +28,12 @@ public class SearchLiteState {
 
 	private String schemaText;
 
+	private List<SchemaTable> schemaTableDetails = new ArrayList<>();
+
+	private List<String> recalledTables = new ArrayList<>();
+
+	private String recalledSchemaText;
+
 	// enhance
 	private String canonicalQuery;
 
@@ -113,6 +119,30 @@ public class SearchLiteState {
 
 	public void setSchemaText(String schemaText) {
 		this.schemaText = schemaText;
+	}
+
+	public List<SchemaTable> getSchemaTableDetails() {
+		return schemaTableDetails;
+	}
+
+	public void setSchemaTableDetails(List<SchemaTable> schemaTableDetails) {
+		this.schemaTableDetails = schemaTableDetails == null ? new ArrayList<>() : schemaTableDetails;
+	}
+
+	public List<String> getRecalledTables() {
+		return recalledTables;
+	}
+
+	public void setRecalledTables(List<String> recalledTables) {
+		this.recalledTables = recalledTables == null ? new ArrayList<>() : recalledTables;
+	}
+
+	public String getRecalledSchemaText() {
+		return recalledSchemaText;
+	}
+
+	public void setRecalledSchemaText(String recalledSchemaText) {
+		this.recalledSchemaText = recalledSchemaText;
 	}
 
 	public String getCanonicalQuery() {
