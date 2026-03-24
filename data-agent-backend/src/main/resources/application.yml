@@ -28,3 +28,8 @@ llm:
     temperature: 0.5
     max-tokens: 8192
     anthropic-version: ""
+
+logging:
+  level:
+    # 默认用 INFO，想看更细的调试日志可以：设置 APP_LOG_LEVEL=DEBUG
+    com.alibaba.cloud.ai.dataagentbackend: "${APP_LOG_LEVEL:INFO}"

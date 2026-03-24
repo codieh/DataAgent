@@ -8,6 +8,9 @@ import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStep;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStepResult;
 import java.util.List;
 import java.util.UUID;
+import java.util.stream.Collectors;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import reactor.core.publisher.Flux;
@@ -20,6 +23,8 @@ import reactor.core.publisher.Flux;
  */
 @Service
 public class SearchLiteOrchestrator {
+
+	private static final Logger log = LoggerFactory.getLogger(SearchLiteOrchestrator.class);
 
 	private final List<SearchLiteStep> steps;
 
@@ -34,12 +39,25 @@ public class SearchLiteOrchestrator {
 			.fromRequest(new SearchLiteRequest(request.agentId(), threadId, request.query()));
 
 		if (steps == null || steps.isEmpty()) {
+			log.warn("search-lite 无可用 steps：agentId={}, threadId={}", request.agentId(), threadId);
 			return Flux.just(SearchLiteMessages.error(ctx, SearchLiteStage.RESULT, "no steps configured"));
 		}
 
-		return runSteps(ctx, state, 0).onErrorResume(error -> Flux.just(SearchLiteMessages.error(ctx,
-				SearchLiteStage.RESULT, (error == null || error.getMessage() == null) ? "unknown error"
-						: error.getMessage())));
+		String stepsDesc = steps.stream()
+			.map(s -> s.stage() + ":" + s.getClass().getSimpleName())
+			.collect(Collectors.joining(", "));
+		int queryLen = request.query() == null ? 0 : request.query().length();
+		log.info("search-lite 开始：agentId={}, threadId={}, queryLen={}, steps=[{}]", request.agentId(), threadId,
+				queryLen, stepsDesc);
+
+		return runSteps(ctx, state, 0)
+			.doFinally(signal -> log.info("search-lite 结束：agentId={}, threadId={}, signal={}", request.agentId(),
+					threadId, signal))
+			.onErrorResume(error -> {
+				String msg = (error == null || error.getMessage() == null) ? "unknown error" : error.getMessage();
+				log.warn("search-lite 异常：agentId={}, threadId={}, error={}", request.agentId(), threadId, msg, error);
+				return Flux.just(SearchLiteMessages.error(ctx, SearchLiteStage.RESULT, msg));
+			});
 	}
 
 	/**
@@ -53,11 +71,20 @@ public class SearchLiteOrchestrator {
 		}
 
 		SearchLiteStep step = steps.get(index);
+		long startedAt = System.nanoTime();
+		log.debug("step 开始：threadId={}, index={}, stage={}, impl={}", ctx.threadId(), index, step.stage(),
+				step.getClass().getSimpleName());
+
 		SearchLiteStepResult result = step.run(ctx, currentState);
-		return result.messages()
-			.concatWith(result.updatedState()
-				.defaultIfEmpty(currentState)
-				.flatMapMany(updatedState -> runSteps(ctx, updatedState, index + 1)));
+		return result.messages().concatWith(result.updatedState().doOnNext(updatedState -> {
+			long tookMs = (System.nanoTime() - startedAt) / 1_000_000;
+			log.debug("step 完成：threadId={}, index={}, stage={}, impl={}, tookMs={}", ctx.threadId(), index,
+					step.stage(), step.getClass().getSimpleName(), tookMs);
+		}).doOnError(e -> {
+			long tookMs = (System.nanoTime() - startedAt) / 1_000_000;
+			log.warn("step 失败：threadId={}, index={}, stage={}, impl={}, tookMs={}, error={}", ctx.threadId(), index,
+					step.stage(), step.getClass().getSimpleName(), tookMs, e == null ? null : e.getMessage(), e);
+		}).defaultIfEmpty(currentState).flatMapMany(updatedState -> runSteps(ctx, updatedState, index + 1)));
 	}
 
 }

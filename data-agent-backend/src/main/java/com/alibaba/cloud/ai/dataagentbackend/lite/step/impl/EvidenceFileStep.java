@@ -19,6 +19,8 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.core.annotation.Order;
@@ -44,6 +46,8 @@ import reactor.core.publisher.Mono;
 @ConditionalOnProperty(name = "search.lite.evidence.provider", havingValue = "file", matchIfMissing = true)
 public class EvidenceFileStep implements SearchLiteStep {
 
+	private static final Logger log = LoggerFactory.getLogger(EvidenceFileStep.class);
+
 	private static final Pattern SPLIT = Pattern.compile("[^\\p{IsAlphabetic}\\p{IsDigit}]+");
 
 	private final EvidenceRepository evidenceRepository;
@@ -66,8 +70,16 @@ public class EvidenceFileStep implements SearchLiteStep {
 		String query = state.getQuery();
 		Set<String> tokens = tokenize(query);
 
-		List<ScoredEvidence> scored = evidenceRepository.listAll()
-			.stream()
+		List<EvidenceItem> all = evidenceRepository.listAll();
+		if (all == null || all.isEmpty()) {
+			log.warn("evidence 为空：threadId={}, topK={}", context.threadId(), topK);
+		}
+		else {
+			log.debug("evidence 开始召回：threadId={}, queryLen={}, tokens={}, topK={}, total={}", context.threadId(),
+					query == null ? 0 : query.length(), tokens.size(), topK, all.size());
+		}
+
+		List<ScoredEvidence> scored = (all == null ? List.<EvidenceItem>of() : all).stream()
 			.map(item -> new ScoredEvidence(item, score(item, tokens)))
 			.filter(se -> se.score > 0)
 			.sorted(Comparator.<ScoredEvidence>comparingDouble(se -> se.score).reversed())
@@ -75,6 +87,10 @@ public class EvidenceFileStep implements SearchLiteStep {
 			.toList();
 
 		List<EvidenceItem> selected = scored.stream().map(se -> se.item).toList();
+		log.debug("evidence 召回完成：threadId={}, selected={}", context.threadId(), selected.stream()
+			.map(EvidenceItem::id)
+			.limit(10)
+			.toList());
 		state.setEvidences(selected);
 		state.setEvidenceText(formatForPrompt(selected));
 

@@ -4,6 +4,9 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicInteger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.core.ParameterizedTypeReference;
@@ -17,6 +20,8 @@ import reactor.core.publisher.Flux;
  * Anthropic 协议兼容的 Messages API 最小客户端。
  */
 public class AnthropicClient {
+
+	private static final Logger log = LoggerFactory.getLogger(AnthropicClient.class);
 
 	private final WebClient webClient;
 
@@ -67,6 +72,13 @@ public class AnthropicClient {
 		StreamMessageRequest req = new StreamMessageRequest(props.model(), props.maxTokens(), props.temperature(),
 				systemPrompt, List.of(new Message("user", List.of(new ContentBlock("text", userPrompt)))), true);
 
+		int systemLen = systemPrompt == null ? 0 : systemPrompt.length();
+		int userLen = userPrompt == null ? 0 : userPrompt.length();
+		long startedAt = System.nanoTime();
+		AtomicInteger deltaCount = new AtomicInteger(0);
+		log.info("LLM stream start: baseUrl={}, model={}, systemLen={}, userLen={}", props.baseUrl(), props.model(),
+				systemLen, userLen);
+
 		return webClient.post()
 			.uri("/v1/messages")
 			.accept(MediaType.TEXT_EVENT_STREAM)
@@ -85,6 +97,14 @@ public class AnthropicClient {
 				return extractTextDelta(data);
 			})
 			.filter(StringUtils::hasText)
+			.doOnNext(d -> deltaCount.incrementAndGet())
+			.doOnError(e -> log.warn("LLM stream error: baseUrl={}, model={}, error={}", props.baseUrl(),
+					props.model(), e == null ? null : e.getMessage(), e))
+			.doFinally(signal -> {
+				long tookMs = (System.nanoTime() - startedAt) / 1_000_000;
+				log.info("LLM stream end: baseUrl={}, model={}, deltas={}, tookMs={}, signal={}", props.baseUrl(),
+						props.model(), deltaCount.get(), tookMs, signal);
+			})
 			.onErrorMap(WebClientResponseException.class,
 					ex -> new RuntimeException("LLM request failed: " + ex.getStatusCode() + " " + ex.getResponseBodyAsString(), ex));
 	}

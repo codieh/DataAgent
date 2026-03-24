@@ -1,5 +1,7 @@
 package com.alibaba.cloud.ai.dataagentbackend.controller;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -24,6 +26,8 @@ import java.util.Map;
 @RequestMapping("/api/db")
 public class DbPingController {
 
+	private static final Logger log = LoggerFactory.getLogger(DbPingController.class);
+
 	private final JdbcTemplate jdbcTemplate;
 
 	public DbPingController(JdbcTemplate jdbcTemplate) {
@@ -34,9 +38,13 @@ public class DbPingController {
 	public Mono<Map<String, Object>> ping() {
 		return Mono.fromCallable(() -> {
 			Integer result = jdbcTemplate.queryForObject("SELECT 1", Integer.class);
+			log.info("db ping ok: result={}", result);
 			return Map.<String, Object>of("ok", true, "result", result);
 		}).subscribeOn(Schedulers.boundedElastic())
-			.onErrorResume(e -> Mono.just(Map.<String, Object>of("ok", false, "error", e.getMessage())));
+			.onErrorResume(e -> {
+				log.warn("db ping failed: {}", e == null ? null : e.getMessage(), e);
+				return Mono.just(Map.<String, Object>of("ok", false, "error", e == null ? null : e.getMessage()));
+			});
 	}
 
 }
