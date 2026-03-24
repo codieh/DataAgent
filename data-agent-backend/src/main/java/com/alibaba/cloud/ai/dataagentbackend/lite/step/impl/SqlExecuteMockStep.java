@@ -17,7 +17,7 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 @Component
-@Order(40)
+@Order(50)
 public class SqlExecuteMockStep implements SearchLiteStep {
 
 	@Override
@@ -27,8 +27,11 @@ public class SqlExecuteMockStep implements SearchLiteStep {
 
 	@Override
 	public SearchLiteStepResult run(SearchLiteContext context, SearchLiteState state) {
-		String sql = "SELECT 'hello' AS greeting, 1 AS value";
-		state.setSql(sql);
+		String sql = state.getSql();
+		if (sql == null || sql.isBlank()) {
+			sql = "SELECT 'hello' AS greeting, 1 AS value";
+			state.setSql(sql);
+		}
 
 		List<Map<String, Object>> rows = List.of(Map.of("greeting", "hello", "value", 1));
 		state.setRows(rows);
@@ -44,4 +47,3 @@ public class SqlExecuteMockStep implements SearchLiteStep {
 	}
 
 }
-

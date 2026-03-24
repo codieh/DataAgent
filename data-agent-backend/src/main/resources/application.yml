@@ -22,6 +22,11 @@ search:
       tables: users,products,orders,order_items,categories,product_categories
       recall:
         top-k: 3
+    sql:
+      generate:
+        # minimax|mock
+        provider: minimax
+        limit: 200
 
 llm:
   anthropic:

@@ -16,7 +16,7 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 @Component
-@Order(50)
+@Order(60)
 public class ResultMockStep implements SearchLiteStep {
 
 	@Override
@@ -39,4 +39,3 @@ public class ResultMockStep implements SearchLiteStep {
 	}
 
 }
-

@@ -6,6 +6,7 @@ public enum SearchLiteStage {
 	SCHEMA,
 	SCHEMA_RECALL,
 	ENHANCE,
+	SQL_GENERATE,
 	SQL_EXECUTE,
 	RESULT
 }
