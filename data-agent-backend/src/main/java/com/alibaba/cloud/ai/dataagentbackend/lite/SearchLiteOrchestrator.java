@@ -70,21 +70,30 @@ public class SearchLiteOrchestrator {
 			return Flux.empty();
 		}
 
-		SearchLiteStep step = steps.get(index);
-		long startedAt = System.nanoTime();
-		log.debug("step 开始：threadId={}, index={}, stage={}, impl={}", ctx.threadId(), index, step.stage(),
-				step.getClass().getSimpleName());
+		return Flux.defer(() -> {
+			SearchLiteStep step = steps.get(index);
+			long startedAt = System.nanoTime();
+			log.debug("step 开始：threadId={}, index={}, stage={}, impl={}", ctx.threadId(), index, step.stage(),
+					step.getClass().getSimpleName());
 
-		SearchLiteStepResult result = step.run(ctx, currentState);
-		return result.messages().concatWith(result.updatedState().doOnNext(updatedState -> {
-			long tookMs = (System.nanoTime() - startedAt) / 1_000_000;
-			log.debug("step 完成：threadId={}, index={}, stage={}, impl={}, tookMs={}", ctx.threadId(), index,
-					step.stage(), step.getClass().getSimpleName(), tookMs);
-		}).doOnError(e -> {
-			long tookMs = (System.nanoTime() - startedAt) / 1_000_000;
-			log.warn("step 失败：threadId={}, index={}, stage={}, impl={}, tookMs={}, error={}", ctx.threadId(), index,
-					step.stage(), step.getClass().getSimpleName(), tookMs, e == null ? null : e.getMessage(), e);
-		}).defaultIfEmpty(currentState).flatMapMany(updatedState -> runSteps(ctx, updatedState, index + 1)));
+			SearchLiteStepResult result;
+			try {
+				result = step.run(ctx, currentState);
+			}
+			catch (Exception e) {
+				return Flux.error(e);
+			}
+
+			return result.messages().concatWith(result.updatedState().doOnNext(updatedState -> {
+				long tookMs = (System.nanoTime() - startedAt) / 1_000_000;
+				log.debug("step 完成：threadId={}, index={}, stage={}, impl={}, tookMs={}", ctx.threadId(), index,
+						step.stage(), step.getClass().getSimpleName(), tookMs);
+			}).doOnError(e -> {
+				long tookMs = (System.nanoTime() - startedAt) / 1_000_000;
+				log.warn("step 失败：threadId={}, index={}, stage={}, impl={}, tookMs={}, error={}", ctx.threadId(), index,
+						step.stage(), step.getClass().getSimpleName(), tookMs, e == null ? null : e.getMessage(), e);
+			}).defaultIfEmpty(currentState).flatMapMany(updatedState -> runSteps(ctx, updatedState, index + 1)));
+		});
 	}
 
 }
