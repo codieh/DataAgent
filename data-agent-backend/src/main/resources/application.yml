@@ -1,6 +1,12 @@
 spring:
   application:
     name: data-agent-backend
+  datasource:
+    # product_db：作为 Step7 的真实 SQL 数据源（先单库从简，后续再做按 agentId 动态数据源）
+    url: "${PRODUCT_DB_URL:jdbc:mysql://127.0.0.1:3306/product_db?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true}"
+    username: "${PRODUCT_DB_USERNAME:root}"
+    password: "${PRODUCT_DB_PASSWORD:admin}"
+    driver-class-name: com.mysql.cj.jdbc.Driver
 
 search:
   lite:
