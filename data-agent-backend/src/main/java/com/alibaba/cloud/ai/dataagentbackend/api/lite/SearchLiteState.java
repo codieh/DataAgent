@@ -161,6 +161,13 @@ public class SearchLiteState {
 		this.expandedQueries = expandedQueries == null ? new ArrayList<>() : expandedQueries;
 	}
 
+	public String getEffectiveQuery() {
+		if (canonicalQuery != null && !canonicalQuery.isBlank()) {
+			return canonicalQuery.trim();
+		}
+		return query == null ? "" : query.trim();
+	}
+
 	public String getSql() {
 		return sql;
 	}

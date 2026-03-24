@@ -69,7 +69,7 @@ public class SqlGenerateMinimaxStep implements SearchLiteStep {
 			return new SearchLiteStepResult(msg, Mono.just(state));
 		}
 
-		String question = StringUtils.hasText(state.getCanonicalQuery()) ? state.getCanonicalQuery() : state.getQuery();
+		String question = state.getEffectiveQuery();
 		String schema = StringUtils.hasText(state.getRecalledSchemaText()) ? state.getRecalledSchemaText()
 				: state.getSchemaText();
 		String evidence = state.getEvidenceText();

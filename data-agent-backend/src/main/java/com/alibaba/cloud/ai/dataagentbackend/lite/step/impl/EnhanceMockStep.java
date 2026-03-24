@@ -11,6 +11,7 @@ import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStepResult;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
@@ -18,6 +19,7 @@ import reactor.core.publisher.Mono;
 
 @Component
 @Order(35)
+@ConditionalOnProperty(name = "search.lite.enhance.provider", havingValue = "mock", matchIfMissing = true)
 public class EnhanceMockStep implements SearchLiteStep {
 
 	@Override
