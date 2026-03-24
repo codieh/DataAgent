@@ -17,6 +17,9 @@ search:
       # file|mock
       provider: file
       top-k: 5
+    schema:
+      # 先固定 product_db 的 demo 表；后续会升级为按 agentId 的动态表选择/向量召回
+      tables: users,products,orders,order_items,categories,product_categories
 
 llm:
   anthropic:

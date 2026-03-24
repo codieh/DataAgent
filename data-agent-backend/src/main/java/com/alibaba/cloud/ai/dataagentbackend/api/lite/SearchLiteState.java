@@ -23,6 +23,11 @@ public class SearchLiteState {
 
 	private String evidenceText;
 
+	// schema
+	private List<String> schemaTables = new ArrayList<>();
+
+	private String schemaText;
+
 	// enhance
 	private String canonicalQuery;
 
@@ -94,6 +99,22 @@ public class SearchLiteState {
 		this.evidenceText = evidenceText;
 	}
 
+	public List<String> getSchemaTables() {
+		return schemaTables;
+	}
+
+	public void setSchemaTables(List<String> schemaTables) {
+		this.schemaTables = schemaTables == null ? new ArrayList<>() : schemaTables;
+	}
+
+	public String getSchemaText() {
+		return schemaText;
+	}
+
+	public void setSchemaText(String schemaText) {
+		this.schemaText = schemaText;
+	}
+
 	public String getCanonicalQuery() {
 		return canonicalQuery;
 	}
@@ -143,4 +164,3 @@ public class SearchLiteState {
 	}
 
 }
-
