@@ -13,11 +13,13 @@ import java.util.List;
 import java.util.Map;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 @Component
 @Order(50)
+@ConditionalOnProperty(name = "search.lite.sql.execute.provider", havingValue = "mock", matchIfMissing = true)
 public class SqlExecuteMockStep implements SearchLiteStep {
 
 	@Override

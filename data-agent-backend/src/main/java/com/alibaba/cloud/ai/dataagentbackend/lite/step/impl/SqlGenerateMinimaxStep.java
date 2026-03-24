@@ -99,6 +99,8 @@ public class SqlGenerateMinimaxStep implements SearchLiteStep {
 				- Output must be a single MySQL SELECT statement (no semicolons, no multiple statements).
 				- Prefer clear table aliases.
 				- Always add LIMIT %d unless the question explicitly asks for all rows.
+				- Do NOT add debug/system columns (e.g., CURRENT_USER(), USER(), VERSION(), @@variables).
+				- Avoid reserved keywords as aliases.
 				- If the question is ambiguous or cannot be answered with the schema, still output the best-effort SELECT.
 				""".formatted(safe(question), safe(schema), safe(evidence), defaultLimit).trim();
 
@@ -160,4 +162,3 @@ public class SqlGenerateMinimaxStep implements SearchLiteStep {
 	}
 
 }
-

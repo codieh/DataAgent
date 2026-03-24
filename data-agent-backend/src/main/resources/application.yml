@@ -27,6 +27,11 @@ search:
         # minimax|mock
         provider: minimax
         limit: 200
+      execute:
+        # mock|jdbc
+        provider: jdbc
+        limit: 200
+        timeout-seconds: 5
 
 llm:
   anthropic:
