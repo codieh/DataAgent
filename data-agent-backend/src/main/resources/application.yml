@@ -32,6 +32,10 @@ search:
         provider: jdbc
         limit: 200
         timeout-seconds: 5
+    result:
+      # mock|minimax
+      provider: minimax
+      max-rows-for-prompt: 20
 
 llm:
   anthropic:

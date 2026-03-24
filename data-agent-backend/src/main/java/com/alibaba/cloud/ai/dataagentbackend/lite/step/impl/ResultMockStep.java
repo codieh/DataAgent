@@ -12,11 +12,13 @@ import java.time.Duration;
 import java.util.Map;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 @Component
 @Order(60)
+@ConditionalOnProperty(name = "search.lite.result.provider", havingValue = "mock", matchIfMissing = true)
 public class ResultMockStep implements SearchLiteStep {
 
 	@Override
