@@ -9,6 +9,8 @@ import com.alibaba.cloud.ai.dataagentbackend.api.lite.SchemaForeignKey;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SchemaTable;
 import com.alibaba.cloud.ai.dataagentbackend.lite.SearchLiteContext;
 import com.alibaba.cloud.ai.dataagentbackend.lite.SearchLiteMessages;
+import com.alibaba.cloud.ai.dataagentbackend.lite.recall.RecallService;
+import com.alibaba.cloud.ai.dataagentbackend.lite.recall.store.PersistedSchemaIndex;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStep;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStepResult;
 import org.slf4j.Logger;
@@ -55,11 +57,14 @@ public class SchemaMysqlIntrospectStep implements SearchLiteStep {
 
 	private final JdbcTemplate jdbcTemplate;
 
+	private final RecallService recallService;
+
 	private final List<String> defaultTables;
 
-	public SchemaMysqlIntrospectStep(JdbcTemplate jdbcTemplate,
+	public SchemaMysqlIntrospectStep(JdbcTemplate jdbcTemplate, RecallService recallService,
 			@Value("${search.lite.schema.tables:users,products,orders,order_items,categories,product_categories}") String tables) {
 		this.jdbcTemplate = Objects.requireNonNull(jdbcTemplate, "jdbcTemplate");
+		this.recallService = Objects.requireNonNull(recallService, "recallService");
 		this.defaultTables = parseTables(tables);
 	}
 
@@ -106,9 +111,14 @@ public class SchemaMysqlIntrospectStep implements SearchLiteStep {
 	}
 
 	private SchemaSnapshot loadSchema(List<String> tables) {
+		PersistedSchemaIndex persisted = recallService.loadPersistedSchemaIndex().orElse(null);
+		if (persisted != null && !persisted.isEmpty()) {
+			return new SchemaSnapshot(toTableInfos(persisted.schemaTables()), persisted.schemaText(), true);
+		}
+
 		List<String> tableList = (tables == null || tables.isEmpty()) ? List.of() : tables;
 		if (tableList.isEmpty()) {
-			return new SchemaSnapshot(List.of(), "(schema tables not configured)");
+			return new SchemaSnapshot(List.of(), "(schema tables not configured)", false);
 		}
 
 		Map<String, String> tableComments = loadTableComments(tableList);
@@ -124,7 +134,25 @@ public class SchemaMysqlIntrospectStep implements SearchLiteStep {
 		}
 
 		String schemaText = formatForPrompt(infos);
-		return new SchemaSnapshot(infos, schemaText);
+		recallService.persistSchemaIndex(infos.stream().map(TableInfo::toSchemaTable).toList(), schemaText);
+		return new SchemaSnapshot(infos, schemaText, false);
+	}
+
+	private static List<TableInfo> toTableInfos(List<SchemaTable> tables) {
+		if (tables == null || tables.isEmpty()) {
+			return List.of();
+		}
+		return tables.stream().map(table -> new TableInfo(table.name(), table.comment(),
+				table.columns() == null ? List.of()
+						: table.columns().stream()
+							.map(column -> new ColumnInfo(column.name(), column.dataType(), column.columnType(),
+									column.notNull() ? "NO" : "YES", column.primaryKey() ? "PRI" : "", column.comment()))
+							.toList(),
+				table.foreignKeys() == null ? List.of()
+						: table.foreignKeys().stream()
+							.map(fk -> new ForeignKeyInfo(fk.columnName(), fk.refTableName(), fk.refColumnName()))
+							.toList()))
+			.toList();
 	}
 
 	private Map<String, String> loadTableComments(List<String> tables) {
@@ -239,7 +267,7 @@ public class SchemaMysqlIntrospectStep implements SearchLiteStep {
 		return List.of(tables.split(",")).stream().map(String::trim).filter(s -> !s.isBlank()).toList();
 	}
 
-	private record SchemaSnapshot(List<TableInfo> tables, String schemaText) {
+	private record SchemaSnapshot(List<TableInfo> tables, String schemaText, boolean fromCache) {
 	}
 
 	private record TableInfo(String name, String comment, List<ColumnInfo> columns, List<ForeignKeyInfo> foreignKeys) {

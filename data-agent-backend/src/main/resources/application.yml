@@ -10,6 +10,19 @@ spring:
 
 search:
   lite:
+    recall:
+      # keyword|vector|hybrid
+      provider: hybrid
+      store:
+        dir: ./data/recall
+      vector:
+        top-k: 5
+        weight: 0.7
+        embedding:
+          base-url: "${RECALL_EMBEDDING_BASE_URL:http://localhost:11434}"
+          api-key: "${RECALL_EMBEDDING_API_KEY:}"
+          model: "${RECALL_EMBEDDING_MODEL:bge-m3}"
+          path: "${RECALL_EMBEDDING_PATH:/v1/embeddings}"
     intent:
       # mock|minimax
       provider: minimax

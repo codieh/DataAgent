@@ -1,0 +1,223 @@
+{
+  "schemaTables" : [ {
+    "name" : "users",
+    "comment" : "用户表",
+    "columns" : [ {
+      "name" : "id",
+      "dataType" : "int",
+      "columnType" : "int",
+      "notNull" : true,
+      "primaryKey" : true,
+      "comment" : "用户ID"
+    }, {
+      "name" : "username",
+      "dataType" : "varchar",
+      "columnType" : "varchar(50)",
+      "notNull" : true,
+      "primaryKey" : false,
+      "comment" : "用户名"
+    }, {
+      "name" : "email",
+      "dataType" : "varchar",
+      "columnType" : "varchar(100)",
+      "notNull" : true,
+      "primaryKey" : false,
+      "comment" : "邮箱"
+    }, {
+      "name" : "created_at",
+      "dataType" : "datetime",
+      "columnType" : "datetime",
+      "notNull" : false,
+      "primaryKey" : false,
+      "comment" : "注册时间"
+    } ],
+    "foreignKeys" : [ ]
+  }, {
+    "name" : "orders",
+    "comment" : "订单表",
+    "columns" : [ {
+      "name" : "id",
+      "dataType" : "int",
+      "columnType" : "int",
+      "notNull" : true,
+      "primaryKey" : true,
+      "comment" : "订单ID"
+    }, {
+      "name" : "user_id",
+      "dataType" : "int",
+      "columnType" : "int",
+      "notNull" : true,
+      "primaryKey" : false,
+      "comment" : "下单用户ID"
+    }, {
+      "name" : "order_date",
+      "dataType" : "datetime",
+      "columnType" : "datetime",
+      "notNull" : false,
+      "primaryKey" : false,
+      "comment" : "下单时间"
+    }, {
+      "name" : "total_amount",
+      "dataType" : "decimal",
+      "columnType" : "decimal(10,2)",
+      "notNull" : true,
+      "primaryKey" : false,
+      "comment" : "订单总金额"
+    }, {
+      "name" : "status",
+      "dataType" : "varchar",
+      "columnType" : "varchar(20)",
+      "notNull" : false,
+      "primaryKey" : false,
+      "comment" : "状态"
+    } ],
+    "foreignKeys" : [ {
+      "columnName" : "user_id",
+      "refTableName" : "users",
+      "refColumnName" : "id"
+    } ]
+  } ],
+  "schemaText" : "数据库 Schema（本次相关表）\n\nTABLE users -- 用户表\n  - id int PK NOT_NULL -- 用户ID\n  - username varchar(50) NOT_NULL -- 用户名\n  - email varchar(100) NOT_NULL -- 邮箱\n  - created_at datetime -- 注册时间\n\nTABLE orders -- 订单表\n  - id int PK NOT_NULL -- 订单ID\n  - user_id int NOT_NULL -- 下单用户ID\n  - order_date datetime -- 下单时间\n  - total_amount decimal(10,2) NOT_NULL -- 订单总金额\n  - status varchar(20) -- 状态\n  FK:\n    - user_id -> users.id",
+  "tableDocuments" : [ {
+    "id" : "schema-table:users",
+    "type" : "SCHEMA_TABLE",
+    "title" : "users",
+    "content" : "表名: users，说明: 用户表，字段: id(用户ID)、username(用户名)、email(邮箱)、created_at(注册时间)",
+    "metadata" : {
+      "comment" : "用户表",
+      "foreignKeyCount" : 0,
+      "columnCount" : 4,
+      "tableName" : "users"
+    }
+  }, {
+    "id" : "schema-table:orders",
+    "type" : "SCHEMA_TABLE",
+    "title" : "orders",
+    "content" : "表名: orders，说明: 订单表，字段: id(订单ID)、user_id(下单用户ID)、order_date(下单时间)、total_amount(订单总金额)、status(状态)，外键关系: user_id->users.id",
+    "metadata" : {
+      "comment" : "订单表",
+      "foreignKeyCount" : 1,
+      "columnCount" : 5,
+      "tableName" : "orders"
+    }
+  } ],
+  "columnDocuments" : [ {
+    "id" : "schema-column:users.id",
+    "type" : "SCHEMA_COLUMN",
+    "title" : "users.id",
+    "content" : "字段: users.id，说明: 用户ID，数据类型: int，主键，非空",
+    "metadata" : {
+      "primaryKey" : true,
+      "tableName" : "users",
+      "dataType" : "int",
+      "columnType" : "int",
+      "notNull" : true,
+      "columnName" : "id"
+    }
+  }, {
+    "id" : "schema-column:users.username",
+    "type" : "SCHEMA_COLUMN",
+    "title" : "users.username",
+    "content" : "字段: users.username，说明: 用户名，数据类型: varchar，非空",
+    "metadata" : {
+      "primaryKey" : false,
+      "tableName" : "users",
+      "dataType" : "varchar",
+      "columnType" : "varchar(50)",
+      "notNull" : true,
+      "columnName" : "username"
+    }
+  }, {
+    "id" : "schema-column:users.email",
+    "type" : "SCHEMA_COLUMN",
+    "title" : "users.email",
+    "content" : "字段: users.email，说明: 邮箱，数据类型: varchar，非空",
+    "metadata" : {
+      "primaryKey" : false,
+      "tableName" : "users",
+      "dataType" : "varchar",
+      "columnType" : "varchar(100)",
+      "notNull" : true,
+      "columnName" : "email"
+    }
+  }, {
+    "id" : "schema-column:users.created_at",
+    "type" : "SCHEMA_COLUMN",
+    "title" : "users.created_at",
+    "content" : "字段: users.created_at，说明: 注册时间，数据类型: datetime",
+    "metadata" : {
+      "primaryKey" : false,
+      "tableName" : "users",
+      "dataType" : "datetime",
+      "columnType" : "datetime",
+      "notNull" : false,
+      "columnName" : "created_at"
+    }
+  }, {
+    "id" : "schema-column:orders.id",
+    "type" : "SCHEMA_COLUMN",
+    "title" : "orders.id",
+    "content" : "字段: orders.id，说明: 订单ID，数据类型: int，主键，非空",
+    "metadata" : {
+      "primaryKey" : true,
+      "tableName" : "orders",
+      "dataType" : "int",
+      "columnType" : "int",
+      "notNull" : true,
+      "columnName" : "id"
+    }
+  }, {
+    "id" : "schema-column:orders.user_id",
+    "type" : "SCHEMA_COLUMN",
+    "title" : "orders.user_id",
+    "content" : "字段: orders.user_id，说明: 下单用户ID，数据类型: int，非空",
+    "metadata" : {
+      "primaryKey" : false,
+      "tableName" : "orders",
+      "dataType" : "int",
+      "columnType" : "int",
+      "notNull" : true,
+      "columnName" : "user_id"
+    }
+  }, {
+    "id" : "schema-column:orders.order_date",
+    "type" : "SCHEMA_COLUMN",
+    "title" : "orders.order_date",
+    "content" : "字段: orders.order_date，说明: 下单时间，数据类型: datetime",
+    "metadata" : {
+      "primaryKey" : false,
+      "tableName" : "orders",
+      "dataType" : "datetime",
+      "columnType" : "datetime",
+      "notNull" : false,
+      "columnName" : "order_date"
+    }
+  }, {
+    "id" : "schema-column:orders.total_amount",
+    "type" : "SCHEMA_COLUMN",
+    "title" : "orders.total_amount",
+    "content" : "字段: orders.total_amount，说明: 订单总金额，数据类型: decimal，非空",
+    "metadata" : {
+      "primaryKey" : false,
+      "tableName" : "orders",
+      "dataType" : "decimal",
+      "columnType" : "decimal(10,2)",
+      "notNull" : true,
+      "columnName" : "total_amount"
+    }
+  }, {
+    "id" : "schema-column:orders.status",
+    "type" : "SCHEMA_COLUMN",
+    "title" : "orders.status",
+    "content" : "字段: orders.status，说明: 状态，数据类型: varchar",
+    "metadata" : {
+      "primaryKey" : false,
+      "tableName" : "orders",
+      "dataType" : "varchar",
+      "columnType" : "varchar(20)",
+      "notNull" : false,
+      "columnName" : "status"
+    }
+  } ],
+  "empty" : false
+}
