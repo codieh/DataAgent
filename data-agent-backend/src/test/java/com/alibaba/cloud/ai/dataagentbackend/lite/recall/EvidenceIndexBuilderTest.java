@@ -26,6 +26,8 @@ class EvidenceIndexBuilderTest {
 		assertEquals("GMV 指标口径", documents.get(0).title());
 		assertTrue(documents.get(0).content().contains("支付金额"));
 		assertEquals("DOC", documents.get(0).metadata().get("type"));
+		assertEquals("sales", documents.get(0).metadata().get("topic"));
+		assertEquals(List.of("metric", "gmv", "sales"), documents.get(0).metadata().get("tags"));
 	}
 
 }

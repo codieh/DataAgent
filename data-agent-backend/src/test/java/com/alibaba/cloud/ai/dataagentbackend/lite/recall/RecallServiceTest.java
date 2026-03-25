@@ -26,15 +26,19 @@ class RecallServiceTest {
 				new SchemaIndexBuilder(),
 				new FileRecallDocumentStore(new ObjectMapper(), Files.createTempDirectory("recall-service-evidence").toString()),
 				new RecallEmbeddingService(noopEmbeddingClient(), new EmbeddingProperties("http://localhost", "", "bge-m3", "/v1/embeddings"),
-						"keyword"));
+						"keyword"),
+				new EvidenceRecallMetadataResolver());
 
 		List<EvidenceItem> items = List.of(
 				new EvidenceItem("e1", "销售额口径", "销售额默认按订单明细汇总", "mock://sales", 0.9,
-						Map.of("type", "RULE")));
+						Map.of("type", "RULE", "tags", List.of("metric", "sales"))),
+				new EvidenceItem("e2", "核心用户定义", "近 30 天完成过支付且退款率 < 5% 的用户", "mock://user", 0.8,
+						Map.of("type", "FAQ", "tags", List.of("user", "core-user"))));
 
 		EvidenceRecallResult result = recallService.recallEvidence("查询销售额", items, 5);
 
 		assertEquals(1, result.items().size());
+		assertEquals("e1", result.items().get(0).id());
 		assertTrue(result.promptText().contains("销售额"));
 	}
 
@@ -44,7 +48,8 @@ class RecallServiceTest {
 				new SchemaIndexBuilder(),
 				new FileRecallDocumentStore(new ObjectMapper(), Files.createTempDirectory("recall-service-schema").toString()),
 				new RecallEmbeddingService(noopEmbeddingClient(), new EmbeddingProperties("http://localhost", "", "bge-m3", "/v1/embeddings"),
-						"keyword"));
+						"keyword"),
+				new EvidenceRecallMetadataResolver());
 
 		List<SchemaTable> tables = List.of(
 				new SchemaTable("orders", "订单表",

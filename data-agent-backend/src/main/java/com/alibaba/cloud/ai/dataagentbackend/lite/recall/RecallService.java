@@ -42,14 +42,18 @@ public class RecallService {
 
 	private final RecallEmbeddingService recallEmbeddingService;
 
+	private final EvidenceRecallMetadataResolver evidenceRecallMetadataResolver;
+
 	public RecallService(RecallEngine recallEngine, EvidenceIndexBuilder evidenceIndexBuilder,
 			SchemaIndexBuilder schemaIndexBuilder, RecallDocumentStore recallDocumentStore,
-			RecallEmbeddingService recallEmbeddingService) {
+			RecallEmbeddingService recallEmbeddingService,
+			EvidenceRecallMetadataResolver evidenceRecallMetadataResolver) {
 		this.recallEngine = recallEngine;
 		this.evidenceIndexBuilder = evidenceIndexBuilder;
 		this.schemaIndexBuilder = schemaIndexBuilder;
 		this.recallDocumentStore = recallDocumentStore;
 		this.recallEmbeddingService = recallEmbeddingService;
+		this.evidenceRecallMetadataResolver = evidenceRecallMetadataResolver;
 	}
 
 	public EvidenceRecallResult recallEvidence(String query, List<EvidenceItem> evidenceItems, int topK) {
@@ -62,11 +66,22 @@ public class RecallService {
 		if (query == null || query.isBlank()) {
 			return new EvidenceRecallResult(List.of(), formatEvidencePrompt(List.of()), List.of());
 		}
-		List<RecallHit> hits = recallEngine.search(query, documents,
-				new RecallOptions(topK, Set.of(RecallDocumentType.EVIDENCE), Map.of()));
+		EvidenceRecallMetadataResolver.EvidenceRecallFilter filter = evidenceRecallMetadataResolver.resolve(query);
+		List<RecallHit> hits = filter.isEmpty() ? List.of()
+				: recallEngine.search(query, documents,
+						new RecallOptions(topK, Set.of(RecallDocumentType.EVIDENCE), filter.toRequiredMetadata()));
+		String filterMode = "none";
+		if (!filter.isEmpty()) {
+			filterMode = "metadata";
+		}
+		if (hits.isEmpty()) {
+			hits = recallEngine.search(query, documents, new RecallOptions(topK, Set.of(RecallDocumentType.EVIDENCE), Map.of()));
+			filterMode = filter.isEmpty() ? "none" : "fallback-all";
+		}
 
 		List<EvidenceItem> selected = hits.stream().map(this::toEvidenceItem).toList();
-		logRecallHits("evidence", query, loadedFromStore ? "store" : "rebuild", hits);
+		logRecallHits("evidence", query,
+				"%s,%s,%s".formatted(loadedFromStore ? "store" : "rebuild", filterMode, filter.summary()), hits);
 		return new EvidenceRecallResult(selected, formatEvidencePrompt(selected), hits);
 	}
 

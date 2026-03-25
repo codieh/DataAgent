@@ -43,4 +43,19 @@ class KeywordRecallEngineTest {
 		assertEquals("c1", hits.get(0).document().id());
 	}
 
+	@Test
+	void should_filter_documents_by_collection_metadata_overlap() {
+		List<RecallDocument> docs = List.of(
+				new RecallDocument("e1", RecallDocumentType.EVIDENCE, "销售额口径", "订单明细汇总",
+						Map.of("topic", "sales", "tags", List.of("sales", "metric"))),
+				new RecallDocument("e2", RecallDocumentType.EVIDENCE, "核心用户定义", "近30天支付用户",
+						Map.of("topic", "user", "tags", List.of("user", "core-user"))));
+
+		List<RecallHit> hits = engine.search("查询销售额", docs,
+				new RecallOptions(5, Set.of(RecallDocumentType.EVIDENCE), Map.of("topic", List.of("sales", "order"))));
+
+		assertEquals(1, hits.size());
+		assertEquals("e1", hits.get(0).document().id());
+	}
+
 }

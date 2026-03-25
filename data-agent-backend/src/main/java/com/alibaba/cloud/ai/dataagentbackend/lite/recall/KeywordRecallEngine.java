@@ -47,17 +47,7 @@ public class KeywordRecallEngine implements RecallEngine {
 	}
 
 	private static boolean matchesMetadata(RecallDocument document, Map<String, Object> requiredMetadata) {
-		if (requiredMetadata == null || requiredMetadata.isEmpty()) {
-			return true;
-		}
-		Map<String, Object> metadata = document.metadata();
-		for (Map.Entry<String, Object> entry : requiredMetadata.entrySet()) {
-			Object actual = metadata.get(entry.getKey());
-			if (actual == null || !actual.equals(entry.getValue())) {
-				return false;
-			}
-		}
-		return true;
+		return RecallMetadataMatcher.matches(document, requiredMetadata);
 	}
 
 	private static RecallHit scoreDocument(RecallDocument document, Set<String> tokens) {
