@@ -8,6 +8,7 @@ import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteState;
 import com.alibaba.cloud.ai.dataagentbackend.lite.SearchLiteContext;
 import com.alibaba.cloud.ai.dataagentbackend.lite.SearchLiteMessages;
 import com.alibaba.cloud.ai.dataagentbackend.lite.evidence.EvidenceRepository;
+import com.alibaba.cloud.ai.dataagentbackend.lite.recall.EvidenceQueryRewriteService;
 import com.alibaba.cloud.ai.dataagentbackend.lite.recall.EvidenceRecallResult;
 import com.alibaba.cloud.ai.dataagentbackend.lite.recall.RecallService;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStep;
@@ -24,6 +25,7 @@ import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 /**
  * 证据召回（Evidence）阶段：v1 文件检索实现。
@@ -49,12 +51,16 @@ public class EvidenceFileStep implements SearchLiteStep {
 
 	private final RecallService recallService;
 
+	private final EvidenceQueryRewriteService evidenceQueryRewriteService;
+
 	private final int topK;
 
 	public EvidenceFileStep(EvidenceRepository evidenceRepository, RecallService recallService,
+			EvidenceQueryRewriteService evidenceQueryRewriteService,
 			@Value("${search.lite.evidence.top-k:5}") int topK) {
 		this.evidenceRepository = Objects.requireNonNull(evidenceRepository, "evidenceRepository");
 		this.recallService = Objects.requireNonNull(recallService, "recallService");
+		this.evidenceQueryRewriteService = Objects.requireNonNull(evidenceQueryRewriteService, "evidenceQueryRewriteService");
 		this.topK = Math.max(1, topK);
 	}
 
@@ -65,17 +71,50 @@ public class EvidenceFileStep implements SearchLiteStep {
 
 	@Override
 	public SearchLiteStepResult run(SearchLiteContext context, SearchLiteState state) {
-		String query = state.getQuery();
+		Mono<EvidenceRun> runMono = Mono.fromCallable(() -> buildEvidenceRun(context, state)).subscribeOn(Schedulers.boundedElastic())
+			.cache();
+
+		Flux<SearchLiteMessage> messages = runMono.flatMapMany(run -> {
+			Flux<SearchLiteMessage> intro = Flux
+				.just(SearchLiteMessages.message(context, stage(), SearchLiteMessageType.TEXT, "正在召回证据...", null),
+						SearchLiteMessages.message(context, stage(), SearchLiteMessageType.JSON, null,
+								Map.of("originalQuery", safe(run.originalQuery()), "rewrittenQuery", safe(run.rewrittenQuery()))),
+						SearchLiteMessages.message(context, stage(), SearchLiteMessageType.TEXT,
+								"已找到 " + run.selected().size() + " 条相关证据。", null))
+				.delayElements(Duration.ofMillis(80));
+
+			Flux<SearchLiteMessage> snippets = Flux.fromIterable(run.selected())
+				.concatMap(item -> Flux.just(SearchLiteMessages.message(context, stage(), SearchLiteMessageType.TEXT,
+						"[" + safe(item.title()) + "] " + safe(item.snippet()), null)).delayElements(Duration.ofMillis(50)));
+
+			Flux<SearchLiteMessage> payload = Flux.just(SearchLiteMessages.message(context, stage(),
+					SearchLiteMessageType.JSON, null,
+					Map.of("evidences", run.selected(), "rewrittenQuery", safe(run.rewrittenQuery()))));
+			return intro.concatWith(snippets).concatWith(payload);
+		});
+
+		Mono<SearchLiteState> updated = runMono.map(EvidenceRun::state);
+		return new SearchLiteStepResult(messages, updated);
+	}
+
+	private static String safe(String s) {
+		return s == null ? "" : s.trim();
+	}
+
+	private EvidenceRun buildEvidenceRun(SearchLiteContext context, SearchLiteState state) {
+		String originalQuery = state.getQuery();
+		String rewrittenQuery = evidenceQueryRewriteService.rewrite(originalQuery);
+		state.setEvidenceRewriteQuery(rewrittenQuery);
 		List<EvidenceItem> all = evidenceRepository.listAll();
 		if (all == null || all.isEmpty()) {
 			log.warn("evidence 为空：threadId={}, topK={}", context.threadId(), topK);
 		}
 		else {
-			log.debug("evidence 开始召回：threadId={}, queryLen={}, topK={}, total={}", context.threadId(),
-					query == null ? 0 : query.length(), topK, all.size());
+			log.info("evidence 召回准备：threadId={}, originalQueryLen={}, rewriteQueryLen={}, topK={}, total={}", context.threadId(),
+					originalQuery == null ? 0 : originalQuery.length(), rewrittenQuery == null ? 0 : rewrittenQuery.length(), topK, all.size());
 		}
 
-		EvidenceRecallResult recallResult = recallService.recallEvidence(query, all, topK);
+		EvidenceRecallResult recallResult = recallService.recallEvidence(rewrittenQuery, all, topK);
 		List<EvidenceItem> selected = recallResult.items();
 		log.debug("evidence 召回完成：threadId={}, selected={}", context.threadId(), selected.stream()
 			.map(EvidenceItem::id)
@@ -83,25 +122,11 @@ public class EvidenceFileStep implements SearchLiteStep {
 			.toList());
 		state.setEvidences(selected);
 		state.setEvidenceText(recallResult.promptText());
-
-		Flux<SearchLiteMessage> intro = Flux
-			.just(SearchLiteMessages.message(context, stage(), SearchLiteMessageType.TEXT, "正在召回证据...", null),
-					SearchLiteMessages.message(context, stage(), SearchLiteMessageType.TEXT,
-							"已找到 " + selected.size() + " 条相关证据。", null))
-			.delayElements(Duration.ofMillis(80));
-
-		Flux<SearchLiteMessage> snippets = Flux.fromIterable(selected)
-			.concatMap(item -> Flux.just(SearchLiteMessages.message(context, stage(), SearchLiteMessageType.TEXT,
-					"[" + safe(item.title()) + "] " + safe(item.snippet()), null)).delayElements(Duration.ofMillis(50)));
-
-		Flux<SearchLiteMessage> payload = Flux.just(SearchLiteMessages.message(context, stage(),
-				SearchLiteMessageType.JSON, null, Map.of("evidences", selected)));
-
-		return new SearchLiteStepResult(intro.concatWith(snippets).concatWith(payload), Mono.just(state));
+		return new EvidenceRun(originalQuery, rewrittenQuery, selected, state);
 	}
 
-	private static String safe(String s) {
-		return s == null ? "" : s.trim();
+	private record EvidenceRun(String originalQuery, String rewrittenQuery, List<EvidenceItem> selected,
+			SearchLiteState state) {
 	}
 
 }

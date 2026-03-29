@@ -23,6 +23,8 @@ public class SearchLiteState {
 
 	private String evidenceText;
 
+	private String evidenceRewriteQuery;
+
 	// schema
 	private List<String> schemaTables = new ArrayList<>();
 
@@ -103,6 +105,14 @@ public class SearchLiteState {
 
 	public void setEvidenceText(String evidenceText) {
 		this.evidenceText = evidenceText;
+	}
+
+	public String getEvidenceRewriteQuery() {
+		return evidenceRewriteQuery;
+	}
+
+	public void setEvidenceRewriteQuery(String evidenceRewriteQuery) {
+		this.evidenceRewriteQuery = evidenceRewriteQuery;
 	}
 
 	public List<String> getSchemaTables() {
