@@ -47,11 +47,14 @@ public class RecallService {
 
 	private final EvidenceRecallMetadataResolver evidenceRecallMetadataResolver;
 
+	private final DocumentRecallMetadataResolver documentRecallMetadataResolver;
+
 	public RecallService(RecallEngine recallEngine, EvidenceIndexBuilder evidenceIndexBuilder,
 			DocumentIndexBuilder documentIndexBuilder,
 			SchemaIndexBuilder schemaIndexBuilder, RecallDocumentStore recallDocumentStore,
 			RecallEmbeddingService recallEmbeddingService,
-			EvidenceRecallMetadataResolver evidenceRecallMetadataResolver) {
+			EvidenceRecallMetadataResolver evidenceRecallMetadataResolver,
+			DocumentRecallMetadataResolver documentRecallMetadataResolver) {
 		this.recallEngine = recallEngine;
 		this.evidenceIndexBuilder = evidenceIndexBuilder;
 		this.documentIndexBuilder = documentIndexBuilder;
@@ -59,6 +62,7 @@ public class RecallService {
 		this.recallDocumentStore = recallDocumentStore;
 		this.recallEmbeddingService = recallEmbeddingService;
 		this.evidenceRecallMetadataResolver = evidenceRecallMetadataResolver;
+		this.documentRecallMetadataResolver = documentRecallMetadataResolver;
 	}
 
 	public EvidenceRecallResult recallEvidence(String query, List<EvidenceItem> evidenceItems, int topK) {
@@ -99,10 +103,22 @@ public class RecallService {
 		if (query == null || query.isBlank()) {
 			return new DocumentRecallResult(List.of(), "(无文档补充)", List.of());
 		}
-		List<RecallHit> hits = recallEngine.search(query, documents,
-				new RecallOptions(topK, Set.of(RecallDocumentType.DOCUMENT), Map.of()));
+		DocumentRecallMetadataResolver.DocumentRecallFilter filter = documentRecallMetadataResolver.resolve(query);
+		List<RecallHit> hits = filter.isEmpty() ? List.of()
+				: recallEngine.search(query, documents,
+						new RecallOptions(topK, Set.of(RecallDocumentType.DOCUMENT), filter.toRequiredMetadata()));
+		String filterMode = "none";
+		if (!filter.isEmpty()) {
+			filterMode = "metadata";
+		}
+		if (hits.isEmpty()) {
+			hits = recallEngine.search(query, documents,
+					new RecallOptions(topK, Set.of(RecallDocumentType.DOCUMENT), Map.of()));
+			filterMode = filter.isEmpty() ? "none" : "fallback-all";
+		}
 		List<RecallDocument> selected = hits.stream().map(RecallHit::document).toList();
-		logRecallHits("document", query, loadedFromStore ? "store" : "rebuild", hits);
+		logRecallHits("document", query,
+				"%s,%s,%s".formatted(loadedFromStore ? "store" : "rebuild", filterMode, filter.summary()), hits);
 		return new DocumentRecallResult(selected, formatDocumentPrompt(selected), hits);
 	}
 

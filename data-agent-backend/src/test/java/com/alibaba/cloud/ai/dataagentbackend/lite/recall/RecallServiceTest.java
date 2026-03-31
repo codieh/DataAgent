@@ -28,7 +28,8 @@ class RecallServiceTest {
 				new FileRecallDocumentStore(new ObjectMapper(), Files.createTempDirectory("recall-service-evidence").toString()),
 				new RecallEmbeddingService(noopEmbeddingClient(), new EmbeddingProperties("http://localhost", "", "bge-m3", "/v1/embeddings"),
 						"keyword"),
-				new EvidenceRecallMetadataResolver());
+				new EvidenceRecallMetadataResolver(),
+				new DocumentRecallMetadataResolver());
 
 		List<EvidenceItem> items = List.of(
 				new EvidenceItem("e1", "销售额口径", "销售额默认按订单明细汇总", "mock://sales", 0.9,
@@ -51,7 +52,8 @@ class RecallServiceTest {
 				new FileRecallDocumentStore(new ObjectMapper(), Files.createTempDirectory("recall-service-schema").toString()),
 				new RecallEmbeddingService(noopEmbeddingClient(), new EmbeddingProperties("http://localhost", "", "bge-m3", "/v1/embeddings"),
 						"keyword"),
-				new EvidenceRecallMetadataResolver());
+				new EvidenceRecallMetadataResolver(),
+				new DocumentRecallMetadataResolver());
 
 		List<SchemaTable> tables = List.of(
 				new SchemaTable("orders", "订单表",
@@ -79,19 +81,22 @@ class RecallServiceTest {
 				new FileRecallDocumentStore(new ObjectMapper(), Files.createTempDirectory("recall-service-document").toString()),
 				new RecallEmbeddingService(noopEmbeddingClient(), new EmbeddingProperties("http://localhost", "", "bge-m3", "/v1/embeddings"),
 						"keyword"),
-				new EvidenceRecallMetadataResolver());
+				new EvidenceRecallMetadataResolver(),
+				new DocumentRecallMetadataResolver());
 
 		List<DocumentIndexBuilder.SourceDocument> sourceDocuments = List.of(
 				new DocumentIndexBuilder.SourceDocument("document:metrics/gmv.md#0", "gmv", "GMV 定义", 0,
 						java.nio.file.Path.of("metrics", "gmv.md"), "md", "GMV 默认按订单明细汇总，取消订单不计入销售额"),
 				new DocumentIndexBuilder.SourceDocument("document:faq/user.txt#0", "user", "用户说明", 0,
-						java.nio.file.Path.of("faq", "user.txt"), "txt", "核心用户定义依赖近 30 天支付行为"));
+						java.nio.file.Path.of("faq", "user.txt"), "txt", "高消费用户通常指消费金额排名靠前的用户"),
+				new DocumentIndexBuilder.SourceDocument("document:rules/inventory.txt#0", "inventory", "库存规则", 0,
+						java.nio.file.Path.of("rules", "inventory.txt"), "txt", "低库存商品通常指 stock 小于 20"));
 
-		DocumentRecallResult result = recallService.recallDocuments("查询销售额口径", sourceDocuments, 3);
+		DocumentRecallResult result = recallService.recallDocuments("查询高消费用户", sourceDocuments, 3);
 
 		assertEquals(1, result.documents().size());
 		assertEquals(RecallDocumentType.DOCUMENT, result.documents().get(0).type());
-		assertTrue(result.promptText().contains("GMV"));
+		assertTrue(result.promptText().contains("高消费用户"));
 	}
 
 	private static EmbeddingClient noopEmbeddingClient() {
