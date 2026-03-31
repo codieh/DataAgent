@@ -25,8 +25,12 @@ public class DocumentRepository {
 
 	private final Path documentsDir;
 
-	public DocumentRepository(@Value("${search.lite.document.dir:./data/documents}") String documentsDir) {
+	private final DocumentChunker documentChunker;
+
+	public DocumentRepository(@Value("${search.lite.document.dir:./data/documents}") String documentsDir,
+			DocumentChunker documentChunker) {
 		this.documentsDir = Path.of(documentsDir).toAbsolutePath().normalize();
+		this.documentChunker = documentChunker;
 	}
 
 	public List<DocumentIndexBuilder.SourceDocument> listAll() {
@@ -37,7 +41,7 @@ public class DocumentRepository {
 			return stream.filter(Files::isRegularFile)
 				.filter(this::isSupported)
 				.sorted(Comparator.comparing(path -> path.toString().toLowerCase(Locale.ROOT)))
-				.map(this::toSourceDocument)
+				.flatMap(path -> toSourceDocuments(path).stream())
 				.toList();
 		}
 		catch (IOException e) {
@@ -49,21 +53,14 @@ public class DocumentRepository {
 		return documentsDir;
 	}
 
-	private DocumentIndexBuilder.SourceDocument toSourceDocument(Path path) {
+	private List<DocumentIndexBuilder.SourceDocument> toSourceDocuments(Path path) {
 		try {
 			String content = Files.readString(path, StandardCharsets.UTF_8);
 			Path relativePath = documentsDir.relativize(path);
 			String fileName = path.getFileName().toString();
 			String fileType = extensionOf(fileName);
 			String baseName = stripExtension(fileName);
-			return new DocumentIndexBuilder.SourceDocument(
-					"document:" + relativePath.toString().replace('\\', '/'),
-					baseName,
-					"",
-					0,
-					relativePath,
-					fileType,
-					content);
+			return documentChunker.chunk(baseName, relativePath, fileType, content);
 		}
 		catch (IOException e) {
 			throw new IllegalStateException("读取文档失败: " + path, e);
