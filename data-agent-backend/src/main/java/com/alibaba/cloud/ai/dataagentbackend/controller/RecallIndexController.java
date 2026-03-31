@@ -1,7 +1,6 @@
 package com.alibaba.cloud.ai.dataagentbackend.controller;
 
 import com.alibaba.cloud.ai.dataagentbackend.lite.recall.RecallIndexInitializer;
-import com.alibaba.cloud.ai.dataagentbackend.lite.recall.RecallService;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -20,16 +19,13 @@ public class RecallIndexController {
 
 	private final RecallIndexInitializer recallIndexInitializer;
 
-	private final RecallService recallService;
-
-	public RecallIndexController(RecallIndexInitializer recallIndexInitializer, RecallService recallService) {
+	public RecallIndexController(RecallIndexInitializer recallIndexInitializer) {
 		this.recallIndexInitializer = recallIndexInitializer;
-		this.recallService = recallService;
 	}
 
 	@GetMapping("/status")
 	public Mono<Object> status() {
-		return Mono.fromCallable(recallService::indexStatus).subscribeOn(Schedulers.boundedElastic()).cast(Object.class);
+		return Mono.fromCallable(recallIndexInitializer::status).subscribeOn(Schedulers.boundedElastic()).cast(Object.class);
 	}
 
 	@PostMapping("/init/evidence")

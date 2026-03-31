@@ -79,9 +79,11 @@ public class RecallIndexInitializer {
 		long start = System.currentTimeMillis();
 		List<DocumentIndexBuilder.SourceDocument> sourceDocuments = documentRepository.listAll();
 		List<RecallDocument> documents = recallService.persistDocumentDocuments(sourceDocuments);
-		log.info("索引重建完成：type=document, source=filesystem, count={}, dir={}, tookMs={}", documents.size(),
-				documentRepository.documentsDir(), System.currentTimeMillis() - start);
-		return Map.of("count", documents.size(), "dir", documentRepository.documentsDir().toString(), "ok", true);
+		int fileCount = (int) sourceDocuments.stream().map(doc -> doc.relativePath().toString()).distinct().count();
+		log.info("索引重建完成：type=document, source=filesystem, files={}, chunks={}, dir={}, tookMs={}", fileCount,
+				documents.size(), documentRepository.documentsDir(), System.currentTimeMillis() - start);
+		return Map.of("fileCount", fileCount, "chunkCount", documents.size(), "dir", documentRepository.documentsDir().toString(),
+				"ok", true);
 	}
 
 	public Map<String, Object> rebuildAll() {
@@ -89,6 +91,10 @@ public class RecallIndexInitializer {
 		Map<String, Object> document = rebuildDocumentIndex();
 		Map<String, Object> schema = rebuildSchemaIndex();
 		return Map.of("evidence", evidence, "document", document, "schema", schema, "ok", true);
+	}
+
+	public RecallRuntimeStatus status() {
+		return new RecallRuntimeStatus(recallService.indexStatus(), documentRepository.status());
 	}
 
 	private List<SchemaTable> loadSchemaTables(List<String> tables) {

@@ -10,6 +10,7 @@ import java.nio.file.Path;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.stream.Stream;
 
 /**
@@ -51,6 +52,15 @@ public class DocumentRepository {
 
 	public Path documentsDir() {
 		return documentsDir;
+	}
+
+	public DocumentSourceStatus status() {
+		if (!Files.exists(documentsDir)) {
+			return new DocumentSourceStatus(documentsDir.toString(), false, 0, 0);
+		}
+		List<DocumentIndexBuilder.SourceDocument> chunks = listAll();
+		Set<String> files = chunks.stream().map(doc -> doc.relativePath().toString()).collect(java.util.stream.Collectors.toSet());
+		return new DocumentSourceStatus(documentsDir.toString(), true, files.size(), chunks.size());
 	}
 
 	private List<DocumentIndexBuilder.SourceDocument> toSourceDocuments(Path path) {
