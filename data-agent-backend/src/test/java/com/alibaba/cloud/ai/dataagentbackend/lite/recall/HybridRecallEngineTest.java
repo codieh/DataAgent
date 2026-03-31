@@ -15,7 +15,7 @@ class HybridRecallEngineTest {
 	@Test
 	void should_boost_schema_table_with_exact_match_and_type_weight() {
 		EmbeddingClient embeddingClient = text -> List.of(0.5, 0.5);
-		HybridRecallEngine engine = new HybridRecallEngine(embeddingClient, "hybrid", 0.5, 1.2, 1.0, 0.8, 0.2);
+		HybridRecallEngine engine = new HybridRecallEngine(embeddingClient, "hybrid", 0.5, 1.2, 1.0, 0.8, 0.9, 0.2);
 
 		RecallDocument table = RecallEmbeddings.withEmbedding(
 				new RecallDocument("schema-table:orders", RecallDocumentType.SCHEMA_TABLE, "orders", "订单表",
@@ -38,7 +38,7 @@ class HybridRecallEngineTest {
 	@Test
 	void should_normalize_keyword_score_before_fusion() {
 		EmbeddingClient embeddingClient = text -> List.of(1.0, 0.0);
-		HybridRecallEngine engine = new HybridRecallEngine(embeddingClient, "hybrid", 0.5, 1.0, 1.0, 1.0, 0.0);
+		HybridRecallEngine engine = new HybridRecallEngine(embeddingClient, "hybrid", 0.5, 1.0, 1.0, 1.0, 0.9, 0.0);
 
 		RecallDocument strongKeyword = RecallEmbeddings.withEmbedding(
 				new RecallDocument("d1", RecallDocumentType.EVIDENCE, "订单金额", "订单金额 订单金额 订单金额", Map.of()),

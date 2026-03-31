@@ -17,6 +17,7 @@ search:
         schema-table: 1.15
         schema-column: 1.05
         evidence: 0.95
+        document: 0.9
         exact-match-bonus: 0.15
       store:
         dir: ./data/recall
@@ -38,6 +39,8 @@ search:
       rewrite:
         # none|minimax
         provider: none
+    document:
+      dir: ./data/documents
     schema:
       # 先固定 product_db 的 demo 表；后续会升级为按 agentId 的动态表选择/向量召回
       tables: users,products,orders,order_items,categories,product_categories

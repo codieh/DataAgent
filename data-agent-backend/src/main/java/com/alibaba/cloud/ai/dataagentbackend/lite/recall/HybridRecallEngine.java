@@ -38,6 +38,8 @@ public class HybridRecallEngine implements RecallEngine {
 
 	private final double evidenceWeight;
 
+	private final double documentWeight;
+
 	private final double exactMatchBonus;
 
 	public HybridRecallEngine(EmbeddingClient embeddingClient,
@@ -46,6 +48,7 @@ public class HybridRecallEngine implements RecallEngine {
 			@Value("${search.lite.recall.weight.schema-table:1.15}") double schemaTableWeight,
 			@Value("${search.lite.recall.weight.schema-column:1.05}") double schemaColumnWeight,
 			@Value("${search.lite.recall.weight.evidence:0.95}") double evidenceWeight,
+			@Value("${search.lite.recall.weight.document:0.9}") double documentWeight,
 			@Value("${search.lite.recall.weight.exact-match-bonus:0.15}") double exactMatchBonus) {
 		this.vectorRecallEngine = new VectorRecallEngine(embeddingClient);
 		this.provider = provider == null ? "hybrid" : provider.trim().toLowerCase();
@@ -53,6 +56,7 @@ public class HybridRecallEngine implements RecallEngine {
 		this.schemaTableWeight = Math.max(0.1, schemaTableWeight);
 		this.schemaColumnWeight = Math.max(0.1, schemaColumnWeight);
 		this.evidenceWeight = Math.max(0.1, evidenceWeight);
+		this.documentWeight = Math.max(0.1, documentWeight);
 		this.exactMatchBonus = Math.max(0, exactMatchBonus);
 	}
 
@@ -112,9 +116,9 @@ public class HybridRecallEngine implements RecallEngine {
 					})
 					.toList()
 					.toString();
-		log.info("hybrid recall：provider={}, queryLen={}, vectorWeight={}, typeWeights=[table:{},column:{},evidence:{}], hits={}",
+		log.info("hybrid recall：provider={}, queryLen={}, vectorWeight={}, typeWeights=[table:{},column:{},evidence:{},document:{}], hits={}",
 				provider, query == null ? 0 : query.length(), vectorWeight, schemaTableWeight, schemaColumnWeight,
-				evidenceWeight, summary);
+				evidenceWeight, documentWeight, summary);
 	}
 
 	private final class FusedHit {
@@ -166,6 +170,7 @@ public class HybridRecallEngine implements RecallEngine {
 			case SCHEMA_TABLE -> schemaTableWeight;
 			case SCHEMA_COLUMN -> schemaColumnWeight;
 			case EVIDENCE -> evidenceWeight;
+			case DOCUMENT -> documentWeight;
 		};
 	}
 

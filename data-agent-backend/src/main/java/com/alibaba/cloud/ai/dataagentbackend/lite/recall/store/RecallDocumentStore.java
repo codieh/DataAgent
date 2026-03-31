@@ -18,6 +18,10 @@ public interface RecallDocumentStore {
 
 	List<RecallDocument> loadEvidenceDocuments();
 
+	void saveDocumentDocuments(List<RecallDocument> documents);
+
+	List<RecallDocument> loadDocumentDocuments();
+
 	void saveSchemaIndex(PersistedSchemaIndex schemaIndex);
 
 	Optional<PersistedSchemaIndex> loadSchemaIndex();

@@ -31,6 +31,8 @@ public class FileRecallDocumentStore implements RecallDocumentStore {
 
 	private final Path evidencePath;
 
+	private final Path documentPath;
+
 	private final Path schemaPath;
 
 	private final Path baseDir;
@@ -41,6 +43,7 @@ public class FileRecallDocumentStore implements RecallDocumentStore {
 		Path baseDir = Path.of(storeDir).toAbsolutePath().normalize();
 		this.baseDir = baseDir;
 		this.evidencePath = baseDir.resolve("evidence-index.json");
+		this.documentPath = baseDir.resolve("document-index.json");
 		this.schemaPath = baseDir.resolve("schema-index.json");
 		ensureParent(baseDir);
 	}
@@ -61,6 +64,26 @@ public class FileRecallDocumentStore implements RecallDocumentStore {
 		}
 		catch (Exception e) {
 			log.warn("加载 evidence 索引失败：path={}, error={}", evidencePath, e.getMessage());
+			return List.of();
+		}
+	}
+
+	@Override
+	public void saveDocumentDocuments(List<RecallDocument> documents) {
+		writeJson(documentPath, documents == null ? List.of() : documents);
+	}
+
+	@Override
+	public List<RecallDocument> loadDocumentDocuments() {
+		if (!Files.exists(documentPath)) {
+			return List.of();
+		}
+		try {
+			return objectMapper.readValue(documentPath.toFile(), new TypeReference<List<RecallDocument>>() {
+			});
+		}
+		catch (Exception e) {
+			log.warn("加载 document 索引失败：path={}, error={}", documentPath, e.getMessage());
 			return List.of();
 		}
 	}
@@ -88,8 +111,10 @@ public class FileRecallDocumentStore implements RecallDocumentStore {
 	@Override
 	public RecallIndexStatus status() {
 		List<RecallDocument> evidenceDocuments = loadEvidenceDocuments();
+		List<RecallDocument> documentDocuments = loadDocumentDocuments();
 		Optional<PersistedSchemaIndex> schemaIndex = loadSchemaIndex();
 		return new RecallIndexStatus(baseDir.toString(), fileStatus(evidencePath, evidenceDocuments.size()),
+				fileStatus(documentPath, documentDocuments.size()),
 				fileStatus(schemaPath, schemaIndex.map(index -> index.schemaTables().size()).orElse(0)));
 	}
 

@@ -7,6 +7,8 @@ public enum RecallDocumentType {
 
 	EVIDENCE,
 
+	DOCUMENT,
+
 	SCHEMA_TABLE,
 
 	SCHEMA_COLUMN

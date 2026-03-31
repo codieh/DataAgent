@@ -32,6 +32,8 @@ public class RecallIndexInitializer {
 
 	private final EvidenceRepository evidenceRepository;
 
+	private final DocumentRepository documentRepository;
+
 	private final RecallService recallService;
 
 	private final EvidenceIndexBuilder evidenceIndexBuilder;
@@ -40,11 +42,13 @@ public class RecallIndexInitializer {
 
 	private final List<String> defaultTables;
 
-	public RecallIndexInitializer(EvidenceRepository evidenceRepository, RecallService recallService,
+	public RecallIndexInitializer(EvidenceRepository evidenceRepository, DocumentRepository documentRepository,
+			RecallService recallService,
 			EvidenceIndexBuilder evidenceIndexBuilder,
 			JdbcTemplate jdbcTemplate,
 			@Value("${search.lite.schema.tables:users,products,orders,order_items,categories,product_categories}") String tables) {
 		this.evidenceRepository = Objects.requireNonNull(evidenceRepository, "evidenceRepository");
+		this.documentRepository = Objects.requireNonNull(documentRepository, "documentRepository");
 		this.recallService = Objects.requireNonNull(recallService, "recallService");
 		this.evidenceIndexBuilder = Objects.requireNonNull(evidenceIndexBuilder, "evidenceIndexBuilder");
 		this.jdbcTemplate = Objects.requireNonNull(jdbcTemplate, "jdbcTemplate");
@@ -71,10 +75,20 @@ public class RecallIndexInitializer {
 				"ok", true);
 	}
 
+	public Map<String, Object> rebuildDocumentIndex() {
+		long start = System.currentTimeMillis();
+		List<DocumentIndexBuilder.SourceDocument> sourceDocuments = documentRepository.listAll();
+		List<RecallDocument> documents = recallService.persistDocumentDocuments(sourceDocuments);
+		log.info("索引重建完成：type=document, source=filesystem, count={}, dir={}, tookMs={}", documents.size(),
+				documentRepository.documentsDir(), System.currentTimeMillis() - start);
+		return Map.of("count", documents.size(), "dir", documentRepository.documentsDir().toString(), "ok", true);
+	}
+
 	public Map<String, Object> rebuildAll() {
 		Map<String, Object> evidence = rebuildEvidenceIndex();
+		Map<String, Object> document = rebuildDocumentIndex();
 		Map<String, Object> schema = rebuildSchemaIndex();
-		return Map.of("evidence", evidence, "schema", schema, "ok", true);
+		return Map.of("evidence", evidence, "document", document, "schema", schema, "ok", true);
 	}
 
 	private List<SchemaTable> loadSchemaTables(List<String> tables) {

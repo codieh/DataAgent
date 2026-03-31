@@ -63,7 +63,24 @@ class FileRecallDocumentStoreTest {
 		RecallIndexStatus status = store.status();
 		assertTrue(status.evidence().exists());
 		assertEquals(1, status.evidence().count());
+		assertFalse(status.document().exists());
 		assertFalse(status.schema().exists());
+	}
+
+	@Test
+	void should_save_and_load_document_documents() throws Exception {
+		FileRecallDocumentStore store = new FileRecallDocumentStore(new ObjectMapper(),
+				Files.createTempDirectory("file-recall-store-document").toString());
+
+		List<RecallDocument> docs = List.of(
+				new RecallDocument("document:metrics/gmv.md", RecallDocumentType.DOCUMENT, "gmv", "GMV 默认按订单明细汇总",
+						Map.of("docName", "gmv", "sourceType", "document")));
+
+		store.saveDocumentDocuments(docs);
+
+		List<RecallDocument> loaded = store.loadDocumentDocuments();
+		assertEquals(1, loaded.size());
+		assertEquals(RecallDocumentType.DOCUMENT, loaded.get(0).type());
 	}
 
 }

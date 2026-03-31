@@ -42,6 +42,11 @@ public class RecallIndexController {
 		return Mono.fromCallable(recallIndexInitializer::rebuildSchemaIndex).subscribeOn(Schedulers.boundedElastic());
 	}
 
+	@PostMapping("/init/documents")
+	public Mono<Map<String, Object>> initDocuments() {
+		return Mono.fromCallable(recallIndexInitializer::rebuildDocumentIndex).subscribeOn(Schedulers.boundedElastic());
+	}
+
 	@PostMapping("/init/all")
 	public Mono<Map<String, Object>> initAll() {
 		return Mono.fromCallable(recallIndexInitializer::rebuildAll).subscribeOn(Schedulers.boundedElastic());

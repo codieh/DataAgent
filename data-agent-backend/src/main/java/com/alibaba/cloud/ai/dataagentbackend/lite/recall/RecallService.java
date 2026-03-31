@@ -37,6 +37,8 @@ public class RecallService {
 
 	private final EvidenceIndexBuilder evidenceIndexBuilder;
 
+	private final DocumentIndexBuilder documentIndexBuilder;
+
 	private final SchemaIndexBuilder schemaIndexBuilder;
 
 	private final RecallDocumentStore recallDocumentStore;
@@ -46,11 +48,13 @@ public class RecallService {
 	private final EvidenceRecallMetadataResolver evidenceRecallMetadataResolver;
 
 	public RecallService(RecallEngine recallEngine, EvidenceIndexBuilder evidenceIndexBuilder,
+			DocumentIndexBuilder documentIndexBuilder,
 			SchemaIndexBuilder schemaIndexBuilder, RecallDocumentStore recallDocumentStore,
 			RecallEmbeddingService recallEmbeddingService,
 			EvidenceRecallMetadataResolver evidenceRecallMetadataResolver) {
 		this.recallEngine = recallEngine;
 		this.evidenceIndexBuilder = evidenceIndexBuilder;
+		this.documentIndexBuilder = documentIndexBuilder;
 		this.schemaIndexBuilder = schemaIndexBuilder;
 		this.recallDocumentStore = recallDocumentStore;
 		this.recallEmbeddingService = recallEmbeddingService;
@@ -129,6 +133,17 @@ public class RecallService {
 		List<RecallDocument> enriched = recallEmbeddingService.ensureEmbeddings(documents);
 		recallDocumentStore.saveEvidenceDocuments(enriched);
 		return enriched;
+	}
+
+	public List<RecallDocument> persistDocumentDocuments(List<DocumentIndexBuilder.SourceDocument> sourceDocuments) {
+		List<RecallDocument> documents = documentIndexBuilder.build(sourceDocuments);
+		List<RecallDocument> enriched = recallEmbeddingService.ensureEmbeddings(documents);
+		recallDocumentStore.saveDocumentDocuments(enriched);
+		return enriched;
+	}
+
+	public List<RecallDocument> loadDocumentDocuments() {
+		return recallDocumentStore.loadDocumentDocuments();
 	}
 
 	public Optional<PersistedSchemaIndex> loadPersistedSchemaIndex() {
