@@ -13,6 +13,11 @@ search:
     recall:
       # keyword|vector|hybrid
       provider: hybrid
+      weight:
+        schema-table: 1.15
+        schema-column: 1.05
+        evidence: 0.95
+        exact-match-bonus: 0.15
       store:
         dir: ./data/recall
       vector:
