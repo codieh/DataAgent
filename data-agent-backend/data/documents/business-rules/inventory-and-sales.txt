@@ -1,0 +1,9 @@
+库存分析默认关注 products.stock 字段。
+
+低库存商品通常指 stock 小于 20 的商品。
+
+销量分析默认按 order_items.quantity 求和，而不是按订单数计数。
+
+如果用户询问“最畅销商品”“销量最高商品”，优先按销量 descending 排序。
+
+如果用户询问“销售额最高商品”，优先按 quantity * unit_price 汇总金额后排序。
