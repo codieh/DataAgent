@@ -70,9 +70,8 @@ public class SqlGenerateMinimaxStep implements SearchLiteStep {
 		}
 
 		String question = state.getEffectiveQuery();
-		String schema = StringUtils.hasText(state.getRecalledSchemaText()) ? state.getRecalledSchemaText()
-				: state.getSchemaText();
-		String evidence = state.getEvidenceText();
+		String schema = resolveSchemaContext(state);
+		String evidence = resolveEvidenceContext(state);
 
 		int schemaLen = schema == null ? 0 : schema.length();
 		int evidenceLen = evidence == null ? 0 : evidence.length();
@@ -85,24 +84,7 @@ public class SqlGenerateMinimaxStep implements SearchLiteStep {
 				Do NOT return markdown, code fences, explanations, or JSON.
 				""".trim();
 
-		String user = """
-				User question:
-				%s
-
-				Available database schema (use ONLY these tables/columns):
-				%s
-
-				Additional evidence / business hints:
-				%s
-
-				Constraints:
-				- Output must be a single MySQL SELECT statement (no semicolons, no multiple statements).
-				- Prefer clear table aliases.
-				- Always add LIMIT %d unless the question explicitly asks for all rows.
-				- Do NOT add debug/system columns (e.g., CURRENT_USER(), USER(), VERSION(), @@variables).
-				- Avoid reserved keywords as aliases.
-				- If the question is ambiguous or cannot be answered with the schema, still output the best-effort SELECT.
-				""".formatted(safe(question), safe(schema), safe(evidence), defaultLimit).trim();
+		String user = buildSqlGenerationPrompt(question, schema, evidence, defaultLimit);
 
 		Flux<SearchLiteMessage> start = Flux.just(SearchLiteMessages.message(context, stage(), SearchLiteMessageType.TEXT,
 				"正在生成 SQL...", null)).delayElements(Duration.ofMillis(50));
@@ -155,6 +137,51 @@ public class SqlGenerateMinimaxStep implements SearchLiteStep {
 			withoutFences = withoutFences.substring(0, semi).trim();
 		}
 		return withoutFences;
+	}
+
+	static String buildSqlGenerationPrompt(String question, String schema, String evidence, int defaultLimit) {
+		return """
+				User question:
+				%s
+
+				Authoritative database schema (STRUCTURE SOURCE, must be obeyed):
+				%s
+
+				Supporting business evidence (SOFT HINTS only):
+				%s
+
+				How to use context:
+				- Treat schema as the hard constraint for tables, columns, joins, and SQL structure.
+				- Use ONLY tables/columns that exist in the schema section.
+				- Treat evidence only as business terminology / metric hints.
+				- If evidence conflicts with schema, always trust schema.
+				- If evidence is irrelevant, ignore it.
+
+				Constraints:
+				- Output must be a single MySQL SELECT statement (no semicolons, no multiple statements).
+				- Prefer clear table aliases.
+				- Always add LIMIT %d unless the question explicitly asks for all rows.
+				- Do NOT add debug/system columns (e.g., CURRENT_USER(), USER(), VERSION(), @@variables).
+				- Avoid reserved keywords as aliases.
+				- If the question is ambiguous or cannot be answered with the schema, still output the best-effort SELECT.
+				""".formatted(safe(question), safe(schema), safe(evidence), Math.max(1, defaultLimit)).trim();
+	}
+
+	private static String resolveSchemaContext(SearchLiteState state) {
+		String recalled = state == null ? "" : state.getRecalledSchemaText();
+		String full = state == null ? "" : state.getSchemaText();
+		return StringUtils.hasText(recalled) ? recalled : safe(full);
+	}
+
+	private static String resolveEvidenceContext(SearchLiteState state) {
+		if (state == null) {
+			return "(无 evidence)";
+		}
+		String evidence = safe(state.getEvidenceText());
+		if (!StringUtils.hasText(evidence)) {
+			return "(无 evidence)";
+		}
+		return evidence;
 	}
 
 	private static String safe(String s) {
