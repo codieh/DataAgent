@@ -74,10 +74,12 @@ public class SchemaRecallStep implements SearchLiteStep {
 
 		SchemaRecallResult recallResult = recallService.recallSchema(state.getQuery(), state.getEvidenceText(), tables, topK);
 		List<SchemaTable> recalled = recallResult.tables();
+		List<SchemaTable> focused = recallResult.focusedTables();
 		List<String> recalledNames = recallResult.tableNames();
 		String recalledSchemaText = recallResult.promptText();
 
-		log.info("schema recall：threadId={}, recalledTables={}", context.threadId(), recalledNames);
+		log.info("schema recall：threadId={}, recalledTables={}, focusedColumns={}", context.threadId(), recalledNames,
+				focused.stream().map(table -> table.name() + ":" + (table.columns() == null ? 0 : table.columns().size())).toList());
 		state.setRecalledTables(recalledNames);
 		state.setRecalledSchemaText(recalledSchemaText);
 
@@ -87,7 +89,7 @@ public class SchemaRecallStep implements SearchLiteStep {
 		Flux<SearchLiteMessage> payload = Flux.just(SearchLiteMessages.message(context, stage(),
 				SearchLiteMessageType.JSON, null, Map.of("recalledTables", recalledNames, "recalledSchemaTextLen",
 						recalledSchemaText.length(), "tableHitCount", recallResult.tableHits().size(), "columnHitCount",
-						recallResult.columnHits().size())));
+						recallResult.columnHits().size(), "focusedTables", focused)));
 
 		return new SearchLiteStepResult(start.concatWith(tableMsg).concatWith(payload), Mono.just(state));
 	}

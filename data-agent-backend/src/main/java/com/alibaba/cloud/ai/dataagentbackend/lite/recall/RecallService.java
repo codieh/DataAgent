@@ -16,6 +16,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.LinkedHashSet;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -106,13 +107,13 @@ public class RecallService {
 		List<RecallHit> columnHits = tableNames.isEmpty() ? List.of()
 				: recallEngine.search(mergedQuery, schemaIndex.columnDocuments(),
 						new RecallOptions(Math.max(topK * 5, 10), Set.of(RecallDocumentType.SCHEMA_COLUMN), Map.of()));
-
-		String promptText = formatSchemaPrompt(recalledTables);
+		List<RecallHit> filteredColumnHits = filterColumnHitsByTables(columnHits, recalledTables);
+		List<SchemaTable> focusedTables = focusTablesByColumnHits(recalledTables, filteredColumnHits);
+		String promptText = formatSchemaPrompt(focusedTables);
 		logRecallHits("schema-table", mergedQuery, loaded.isPresent() ? "store" : "rebuild", tableHits);
-		logRecallHits("schema-column", mergedQuery, loaded.isPresent() ? "store" : "rebuild",
-				filterColumnHitsByTables(columnHits, recalledTables));
-		return new SchemaRecallResult(recalledTables, recalledTables.stream().map(SchemaTable::name).toList(), promptText,
-				tableHits, filterColumnHitsByTables(columnHits, recalledTables));
+		logRecallHits("schema-column", mergedQuery, loaded.isPresent() ? "store" : "rebuild", filteredColumnHits);
+		return new SchemaRecallResult(recalledTables, focusedTables, recalledTables.stream().map(SchemaTable::name).toList(),
+				promptText, tableHits, filteredColumnHits);
 	}
 
 	public PersistedSchemaIndex persistSchemaIndex(List<SchemaTable> schemaTables, String schemaText) {
@@ -173,6 +174,61 @@ public class RecallService {
 			Object tableName = hit.document().metadata().get("tableName");
 			return tableName != null && tableNames.contains(String.valueOf(tableName));
 		}).toList();
+	}
+
+	private static List<SchemaTable> focusTablesByColumnHits(List<SchemaTable> recalledTables, List<RecallHit> columnHits) {
+		if (recalledTables == null || recalledTables.isEmpty()) {
+			return List.of();
+		}
+		Map<String, List<String>> matchedColumnsByTable = columnHits == null ? Map.of()
+				: columnHits.stream()
+					.collect(Collectors.groupingBy(hit -> String.valueOf(hit.document().metadata().get("tableName")),
+							LinkedHashMap::new,
+							Collectors.mapping(hit -> String.valueOf(hit.document().metadata().get("columnName")),
+									Collectors.toList())));
+		List<SchemaTable> focusedTables = new ArrayList<>();
+		for (SchemaTable table : recalledTables) {
+			if (table == null) {
+				continue;
+			}
+			List<String> matchedColumns = matchedColumnsByTable.getOrDefault(table.name(), List.of());
+			List<SchemaColumn> focusedColumns = focusColumns(table.columns(), matchedColumns);
+			List<SchemaForeignKey> focusedForeignKeys = focusForeignKeys(table.foreignKeys(), focusedColumns);
+			focusedTables.add(new SchemaTable(table.name(), table.comment(), focusedColumns, focusedForeignKeys));
+		}
+		return List.copyOf(focusedTables);
+	}
+
+	private static List<SchemaColumn> focusColumns(List<SchemaColumn> columns, List<String> matchedColumns) {
+		if (columns == null || columns.isEmpty()) {
+			return List.of();
+		}
+		if (matchedColumns == null || matchedColumns.isEmpty()) {
+			return pickFallbackColumns(columns);
+		}
+		Set<String> selectedNames = new LinkedHashSet<>(matchedColumns);
+		for (SchemaColumn column : columns) {
+			if (column.primaryKey()) {
+				selectedNames.add(column.name());
+			}
+		}
+		List<SchemaColumn> focused = columns.stream().filter(column -> selectedNames.contains(column.name())).toList();
+		return focused.isEmpty() ? pickFallbackColumns(columns) : focused;
+	}
+
+	private static List<SchemaColumn> pickFallbackColumns(List<SchemaColumn> columns) {
+		List<SchemaColumn> primaryKeys = columns.stream().filter(SchemaColumn::primaryKey).toList();
+		LinkedHashSet<SchemaColumn> selected = new LinkedHashSet<>(primaryKeys);
+		columns.stream().limit(4).forEach(selected::add);
+		return List.copyOf(selected);
+	}
+
+	private static List<SchemaForeignKey> focusForeignKeys(List<SchemaForeignKey> foreignKeys, List<SchemaColumn> focusedColumns) {
+		if (foreignKeys == null || foreignKeys.isEmpty() || focusedColumns == null || focusedColumns.isEmpty()) {
+			return List.of();
+		}
+		Set<String> columnNames = focusedColumns.stream().map(SchemaColumn::name).collect(Collectors.toSet());
+		return foreignKeys.stream().filter(fk -> columnNames.contains(fk.columnName())).toList();
 	}
 
 	private static String formatEvidencePrompt(List<EvidenceItem> items) {

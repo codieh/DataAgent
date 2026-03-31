@@ -64,6 +64,10 @@ class RecallServiceTest {
 		assertFalse(result.tables().isEmpty());
 		assertEquals("orders", result.tables().get(0).name());
 		assertTrue(result.promptText().contains("TABLE orders"));
+		assertTrue(result.promptText().contains("total_amount"));
+		assertFalse(result.promptText().contains("created_at"));
+		assertFalse(result.focusedTables().isEmpty());
+		assertEquals("orders", result.focusedTables().get(0).name());
 	}
 
 	private static EmbeddingClient noopEmbeddingClient() {

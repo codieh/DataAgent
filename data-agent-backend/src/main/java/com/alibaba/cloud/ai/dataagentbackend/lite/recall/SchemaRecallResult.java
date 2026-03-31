@@ -7,11 +7,13 @@ import java.util.List;
 /**
  * Schema 召回结果。
  */
-public record SchemaRecallResult(List<SchemaTable> tables, List<String> tableNames, String promptText, List<RecallHit> tableHits,
+public record SchemaRecallResult(List<SchemaTable> tables, List<SchemaTable> focusedTables, List<String> tableNames,
+		String promptText, List<RecallHit> tableHits,
 		List<RecallHit> columnHits) {
 
 	public SchemaRecallResult {
 		tables = tables == null ? List.of() : List.copyOf(tables);
+		focusedTables = focusedTables == null ? List.of() : List.copyOf(focusedTables);
 		tableNames = tableNames == null ? List.of() : List.copyOf(tableNames);
 		promptText = promptText == null ? "" : promptText;
 		tableHits = tableHits == null ? List.of() : List.copyOf(tableHits);
