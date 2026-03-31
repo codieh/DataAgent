@@ -20,7 +20,7 @@ search:
         document: 0.9
         exact-match-bonus: 0.15
       store:
-        dir: ./data/recall
+        dir: D:\GitHub\DataAgent\data-agent-backend\data\recall
       vector:
         top-k: 5
         weight: 0.7
@@ -40,7 +40,8 @@ search:
         # none|minimax
         provider: none
     document:
-      dir: ./data/documents
+      dir: D:\GitHub\DataAgent\data-agent-backend\data\documents
+      top-k: 3
       chunk:
         max-chars: 400
     schema:

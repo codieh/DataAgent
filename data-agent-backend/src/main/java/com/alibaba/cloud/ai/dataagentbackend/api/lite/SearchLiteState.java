@@ -25,6 +25,8 @@ public class SearchLiteState {
 
 	private String evidenceRewriteQuery;
 
+	private String documentText;
+
 	// schema
 	private List<String> schemaTables = new ArrayList<>();
 
@@ -113,6 +115,14 @@ public class SearchLiteState {
 
 	public void setEvidenceRewriteQuery(String evidenceRewriteQuery) {
 		this.evidenceRewriteQuery = evidenceRewriteQuery;
+	}
+
+	public String getDocumentText() {
+		return documentText;
+	}
+
+	public void setDocumentText(String documentText) {
+		this.documentText = documentText;
 	}
 
 	public List<String> getSchemaTables() {

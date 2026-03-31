@@ -90,6 +90,22 @@ public class RecallService {
 		return new EvidenceRecallResult(selected, formatEvidencePrompt(selected), hits);
 	}
 
+	public DocumentRecallResult recallDocuments(String query, List<DocumentIndexBuilder.SourceDocument> sourceDocuments, int topK) {
+		List<RecallDocument> documents = recallDocumentStore.loadDocumentDocuments();
+		boolean loadedFromStore = !documents.isEmpty();
+		if (documents.isEmpty()) {
+			documents = persistDocumentDocuments(sourceDocuments);
+		}
+		if (query == null || query.isBlank()) {
+			return new DocumentRecallResult(List.of(), "(无文档补充)", List.of());
+		}
+		List<RecallHit> hits = recallEngine.search(query, documents,
+				new RecallOptions(topK, Set.of(RecallDocumentType.DOCUMENT), Map.of()));
+		List<RecallDocument> selected = hits.stream().map(RecallHit::document).toList();
+		logRecallHits("document", query, loadedFromStore ? "store" : "rebuild", hits);
+		return new DocumentRecallResult(selected, formatDocumentPrompt(selected), hits);
+	}
+
 	public SchemaRecallResult recallSchema(String query, String evidenceText, List<SchemaTable> schemaTables, int topK) {
 		Optional<PersistedSchemaIndex> loaded = recallDocumentStore.loadSchemaIndex();
 		PersistedSchemaIndex persisted = loaded
@@ -298,6 +314,24 @@ public class RecallService {
 						.append(".").append(safe(fk.refColumnName())).append("\n");
 				}
 			}
+		}
+		return sb.toString().trim();
+	}
+
+	private static String formatDocumentPrompt(List<RecallDocument> documents) {
+		if (documents == null || documents.isEmpty()) {
+			return "(无文档补充)";
+		}
+		StringBuilder sb = new StringBuilder();
+		for (int i = 0; i < documents.size(); i++) {
+			RecallDocument document = documents.get(i);
+			String sectionTitle = String.valueOf(document.metadata().getOrDefault("sectionTitle", ""));
+			String docName = String.valueOf(document.metadata().getOrDefault("docName", document.title()));
+			sb.append("[文档").append(i + 1).append("] ").append(docName);
+			if (StringUtils.hasText(sectionTitle)) {
+				sb.append(" / ").append(sectionTitle.trim());
+			}
+			sb.append(": ").append(safe(document.content())).append("\n");
 		}
 		return sb.toString().trim();
 	}

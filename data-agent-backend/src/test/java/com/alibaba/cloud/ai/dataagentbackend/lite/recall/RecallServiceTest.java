@@ -72,6 +72,28 @@ class RecallServiceTest {
 		assertEquals("orders", result.focusedTables().get(0).name());
 	}
 
+	@Test
+	void should_recall_document_chunks() throws Exception {
+		RecallService recallService = new RecallService(new KeywordRecallEngine(), new EvidenceIndexBuilder(),
+				new DocumentIndexBuilder(), new SchemaIndexBuilder(),
+				new FileRecallDocumentStore(new ObjectMapper(), Files.createTempDirectory("recall-service-document").toString()),
+				new RecallEmbeddingService(noopEmbeddingClient(), new EmbeddingProperties("http://localhost", "", "bge-m3", "/v1/embeddings"),
+						"keyword"),
+				new EvidenceRecallMetadataResolver());
+
+		List<DocumentIndexBuilder.SourceDocument> sourceDocuments = List.of(
+				new DocumentIndexBuilder.SourceDocument("document:metrics/gmv.md#0", "gmv", "GMV 定义", 0,
+						java.nio.file.Path.of("metrics", "gmv.md"), "md", "GMV 默认按订单明细汇总，取消订单不计入销售额"),
+				new DocumentIndexBuilder.SourceDocument("document:faq/user.txt#0", "user", "用户说明", 0,
+						java.nio.file.Path.of("faq", "user.txt"), "txt", "核心用户定义依赖近 30 天支付行为"));
+
+		DocumentRecallResult result = recallService.recallDocuments("查询销售额口径", sourceDocuments, 3);
+
+		assertEquals(1, result.documents().size());
+		assertEquals(RecallDocumentType.DOCUMENT, result.documents().get(0).type());
+		assertTrue(result.promptText().contains("GMV"));
+	}
+
 	private static EmbeddingClient noopEmbeddingClient() {
 		return text -> List.of();
 	}

@@ -8,8 +8,11 @@ import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteState;
 import com.alibaba.cloud.ai.dataagentbackend.lite.SearchLiteContext;
 import com.alibaba.cloud.ai.dataagentbackend.lite.SearchLiteMessages;
 import com.alibaba.cloud.ai.dataagentbackend.lite.evidence.EvidenceRepository;
+import com.alibaba.cloud.ai.dataagentbackend.lite.recall.DocumentRecallResult;
+import com.alibaba.cloud.ai.dataagentbackend.lite.recall.DocumentRepository;
 import com.alibaba.cloud.ai.dataagentbackend.lite.recall.EvidenceQueryRewriteService;
 import com.alibaba.cloud.ai.dataagentbackend.lite.recall.EvidenceRecallResult;
+import com.alibaba.cloud.ai.dataagentbackend.lite.recall.RecallDocument;
 import com.alibaba.cloud.ai.dataagentbackend.lite.recall.RecallService;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStep;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStepResult;
@@ -49,19 +52,26 @@ public class EvidenceFileStep implements SearchLiteStep {
 
 	private final EvidenceRepository evidenceRepository;
 
+	private final DocumentRepository documentRepository;
+
 	private final RecallService recallService;
 
 	private final EvidenceQueryRewriteService evidenceQueryRewriteService;
 
 	private final int topK;
 
-	public EvidenceFileStep(EvidenceRepository evidenceRepository, RecallService recallService,
+	private final int documentTopK;
+
+	public EvidenceFileStep(EvidenceRepository evidenceRepository, DocumentRepository documentRepository, RecallService recallService,
 			EvidenceQueryRewriteService evidenceQueryRewriteService,
-			@Value("${search.lite.evidence.top-k:5}") int topK) {
+			@Value("${search.lite.evidence.top-k:5}") int topK,
+			@Value("${search.lite.document.top-k:3}") int documentTopK) {
 		this.evidenceRepository = Objects.requireNonNull(evidenceRepository, "evidenceRepository");
+		this.documentRepository = Objects.requireNonNull(documentRepository, "documentRepository");
 		this.recallService = Objects.requireNonNull(recallService, "recallService");
 		this.evidenceQueryRewriteService = Objects.requireNonNull(evidenceQueryRewriteService, "evidenceQueryRewriteService");
 		this.topK = Math.max(1, topK);
+		this.documentTopK = Math.max(1, documentTopK);
 	}
 
 	@Override
@@ -80,7 +90,7 @@ public class EvidenceFileStep implements SearchLiteStep {
 						SearchLiteMessages.message(context, stage(), SearchLiteMessageType.JSON, null,
 								Map.of("originalQuery", safe(run.originalQuery()), "rewrittenQuery", safe(run.rewrittenQuery()))),
 						SearchLiteMessages.message(context, stage(), SearchLiteMessageType.TEXT,
-								"已找到 " + run.selected().size() + " 条相关证据。", null))
+								"已找到 " + run.selected().size() + " 条相关证据，并补充 " + run.documentCount() + " 条文档片段。", null))
 				.delayElements(Duration.ofMillis(80));
 
 			Flux<SearchLiteMessage> snippets = Flux.fromIterable(run.selected())
@@ -89,7 +99,8 @@ public class EvidenceFileStep implements SearchLiteStep {
 
 			Flux<SearchLiteMessage> payload = Flux.just(SearchLiteMessages.message(context, stage(),
 					SearchLiteMessageType.JSON, null,
-					Map.of("evidences", run.selected(), "rewrittenQuery", safe(run.rewrittenQuery()))));
+					Map.of("evidences", run.selected(), "documents", run.documentSummaries(),
+							"rewrittenQuery", safe(run.rewrittenQuery()))));
 			return intro.concatWith(snippets).concatWith(payload);
 		});
 
@@ -115,18 +126,44 @@ public class EvidenceFileStep implements SearchLiteStep {
 		}
 
 		EvidenceRecallResult recallResult = recallService.recallEvidence(rewrittenQuery, all, topK);
+		DocumentRecallResult documentRecallResult = recallService.recallDocuments(rewrittenQuery, documentRepository.listAll(),
+				documentTopK);
 		List<EvidenceItem> selected = recallResult.items();
 		log.debug("evidence 召回完成：threadId={}, selected={}", context.threadId(), selected.stream()
 			.map(EvidenceItem::id)
 			.limit(10)
 			.toList());
 		state.setEvidences(selected);
-		state.setEvidenceText(recallResult.promptText());
-		return new EvidenceRun(originalQuery, rewrittenQuery, selected, state);
+		state.setDocumentText(documentRecallResult.promptText());
+		state.setEvidenceText(mergeEvidenceAndDocuments(recallResult.promptText(), documentRecallResult.promptText()));
+		return new EvidenceRun(originalQuery, rewrittenQuery, selected, summarizeDocuments(documentRecallResult.documents()), state);
+	}
+
+	private static String mergeEvidenceAndDocuments(String evidenceText, String documentText) {
+		String evidence = safe(evidenceText);
+		String documents = safe(documentText);
+		if (evidence.isBlank()) {
+			return documents;
+		}
+		if (documents.isBlank() || "(无文档补充)".equals(documents)) {
+			return evidence;
+		}
+		return (evidence + "\n\n" + documents).trim();
+	}
+
+	private static List<Map<String, Object>> summarizeDocuments(List<RecallDocument> documents) {
+		if (documents == null || documents.isEmpty()) {
+			return List.of();
+		}
+		return documents.stream().map(document -> Map.<String, Object>of("id", document.id(), "title", document.title(),
+				"sectionTitle", String.valueOf(document.metadata().getOrDefault("sectionTitle", "")))).toList();
 	}
 
 	private record EvidenceRun(String originalQuery, String rewrittenQuery, List<EvidenceItem> selected,
-			SearchLiteState state) {
+			List<Map<String, Object>> documentSummaries, SearchLiteState state) {
+		private int documentCount() {
+			return documentSummaries == null ? 0 : documentSummaries.size();
+		}
 	}
 
 }
