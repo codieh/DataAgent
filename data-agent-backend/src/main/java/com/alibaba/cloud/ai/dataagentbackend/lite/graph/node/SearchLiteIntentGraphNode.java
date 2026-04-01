@@ -1,5 +1,6 @@
 package com.alibaba.cloud.ai.dataagentbackend.lite.graph.node;
 
+import com.alibaba.cloud.ai.dataagentbackend.lite.step.impl.IntentMinimaxStep;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.action.NodeAction;
 import org.slf4j.Logger;
@@ -9,14 +10,20 @@ import org.springframework.stereotype.Component;
 import java.util.Map;
 
 @Component
-public class SearchLiteIntentGraphNode implements NodeAction {
+public class SearchLiteIntentGraphNode extends SearchLiteStepGraphNodeSupport implements NodeAction {
 
 	private static final Logger log = LoggerFactory.getLogger(SearchLiteIntentGraphNode.class);
+
+	private final IntentMinimaxStep intentStep;
+
+	public SearchLiteIntentGraphNode(IntentMinimaxStep intentStep) {
+		this.intentStep = intentStep;
+	}
 
 	@Override
 	public Map<String, Object> apply(OverAllState state) {
 		log.debug("search-lite graph intent node invoked");
-		return Map.of();
+		return executeStep(state, intentStep);
 	}
 
 }

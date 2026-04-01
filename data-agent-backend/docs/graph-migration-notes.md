@@ -274,3 +274,129 @@ START -> INTENT_NODE -> RESULT_NODE -> END
 - 从 `SearchLiteState` 到 graph state 的映射工具
 
 这意味着后续 `G3` 就可以开始把现有 step 逐步包装成真正可执行的 graph node。
+
+---
+
+## 11. Step G3 完成内容（记录时间：2026-04-01）
+
+本步骤目标：
+
+- 不重写现有业务逻辑
+- 先把当前已经可用的 `IntentMinimaxStep` / `ResultMinimaxStep` 包装进 graph node
+- 建立一套“step 世界”和“graph 世界”之间的桥接模式
+
+本步骤已完成：
+
+- `SearchLiteIntentGraphNode`
+  - 不再是占位节点
+  - 已经开始真正复用 `IntentMinimaxStep`
+- `SearchLiteResultGraphNode`
+  - 不再是占位节点
+  - 已经开始真正复用 `ResultMinimaxStep`
+- 新增桥接基类：
+  - `D:\GitHub\DataAgent\data-agent-backend\src\main\java\com\alibaba\cloud\ai\dataagentbackend\lite\graph\node\SearchLiteStepGraphNodeSupport.java`
+- `SearchLiteGraphStateMapper`
+  - 新增 `toSearchLiteState(OverAllState)`，支持从 graph state 反向还原 `SearchLiteState`
+
+### 11.1 G3 采用的核心桥接模式
+
+这一步最重要的不是“把两个节点接进去了”，而是形成了后续节点迁移都能复用的桥接模式：
+
+1. Graph node 从 `OverAllState` 读取 state
+2. 通过 `SearchLiteGraphStateMapper.toSearchLiteState(...)` 还原为 `SearchLiteState`
+3. 创建 `SearchLiteContext`
+4. 直接调用现有 step：
+   - `step.run(context, state)`
+5. 取 `updatedState().block()`
+6. 再通过 `SearchLiteGraphStateMapper.fromSearchLiteState(...)` 回写成 graph state map
+
+一句话理解：
+
+> G3 的关键成果，是证明了我们可以**先复用现有 step 逻辑，再逐步完成 graph 化**，而不是必须推倒重写。
+
+### 11.2 为什么现在先忽略 messages，而只取 updatedState
+
+当前 graph node 里，真正被消费的是：
+
+- `SearchLiteStepResult.updatedState()`
+
+而不是：
+
+- `SearchLiteStepResult.messages()`
+
+这是一个刻意的阶段性选择。
+
+原因是：
+
+- 现在 G3 的目标是先完成“业务执行逻辑迁移”
+- SSE / Graph streaming 的衔接放到后续 `G6`
+
+也就是说：
+
+- **G3 先迁执行**
+- **G6 再迁流式输出**
+
+这样更稳，也更容易定位问题。
+
+### 11.3 新增的桥接基类有什么意义
+
+新增的 `SearchLiteStepGraphNodeSupport` 有两个作用：
+
+- 统一 graph -> step -> graph 的执行模板
+- 避免每个 graph node 都重复写：
+  - state 还原
+  - context 创建
+  - `updatedState().block()`
+  - state 回写
+
+这一步对后续非常重要，因为后面迁：
+
+- `Evidence`
+- `Schema`
+- `SchemaRecall`
+- `Enhance`
+- `SqlGenerate`
+- `SqlExecute`
+
+时，都可以沿用这套模板。
+
+### 11.4 G3 完成后的当前状态
+
+到 G3 为止，当前 Graph 迁移已经具备：
+
+- Graph 依赖接入
+- 最小 Graph 骨架
+- 统一 state key
+- state 双向映射
+- `Intent` / `Result` graph node 开始复用现有 step 逻辑
+
+这说明 Graph 迁移已经从“骨架搭建阶段”正式进入“业务逻辑迁移阶段”。
+
+### 11.5 当前仍未完成的部分
+
+G3 之后，仍然有几个关键缺口：
+
+- 还没有 `Dispatcher`
+  - 所以 `INTENT != DATA_ANALYSIS` 仍然不能提前结束
+- 还没有接入当前 controller / orchestrator 主执行入口
+- 还没有把 Graph 执行过程输出为当前 SSE 流
+
+因此，G3 的定位应该理解为：
+
+> Graph 节点已经开始承接真实业务逻辑，但 Graph 还没有正式成为主编排入口。
+
+### 11.6 当前验证情况
+
+本步骤已补充 graph node 单测：
+
+- `SearchLiteIntentGraphNodeTest`
+- `SearchLiteResultGraphNodeTest`
+
+但 Maven 侧验证当前仍受到本地依赖写入权限影响：
+
+- `D:\GitHub\DataAgent\.m2repo`
+
+因此，这一阶段的测试结论应理解为：
+
+- 代码结构已完成
+- 验证仍受本地 Maven 环境限制
