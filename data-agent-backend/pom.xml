@@ -28,6 +28,7 @@
     </scm>
     <properties>
         <java.version>17</java.version>
+        <spring-ai-alibaba.version>1.1.0.0</spring-ai-alibaba.version>
     </properties>
     <dependencies>
         <dependency>
@@ -62,7 +63,21 @@
             <artifactId>h2</artifactId>
             <scope>test</scope>
         </dependency>
+
+        <dependency>
+            <groupId>com.alibaba.cloud.ai</groupId>
+            <artifactId>spring-ai-alibaba-graph-core</artifactId>
+            <version>${spring-ai-alibaba.version}</version>
+        </dependency>
     </dependencies>
+
+    <repositories>
+        <repository>
+            <id>aliyun-releases</id>
+            <name>Aliyun Releases</name>
+            <url>https://maven.aliyun.com/nexus/content/repositories/releases</url>
+        </repository>
+    </repositories>
 
     <build>
         <plugins>
