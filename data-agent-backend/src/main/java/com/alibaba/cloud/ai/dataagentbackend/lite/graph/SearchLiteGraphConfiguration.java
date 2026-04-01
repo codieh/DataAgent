@@ -1,5 +1,6 @@
 package com.alibaba.cloud.ai.dataagentbackend.lite.graph;
 
+import com.alibaba.cloud.ai.dataagentbackend.lite.graph.dispatcher.SearchLiteIntentDispatcher;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLiteIntentGraphNode;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLiteResultGraphNode;
 import com.alibaba.cloud.ai.graph.KeyStrategy;
@@ -10,7 +11,9 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 import java.util.HashMap;
+import java.util.Map;
 
+import static com.alibaba.cloud.ai.graph.action.AsyncEdgeAction.edge_async;
 import static com.alibaba.cloud.ai.graph.action.AsyncNodeAction.node_async;
 import static com.alibaba.cloud.ai.graph.StateGraph.END;
 import static com.alibaba.cloud.ai.graph.StateGraph.START;
@@ -55,7 +58,10 @@ public class SearchLiteGraphConfiguration {
 			.addNode(INTENT_NODE, node_async(intentNode))
 			.addNode(RESULT_NODE, node_async(resultNode));
 
-		graph.addEdge(START, INTENT_NODE).addEdge(INTENT_NODE, RESULT_NODE).addEdge(RESULT_NODE, END);
+		graph.addEdge(START, INTENT_NODE)
+			.addConditionalEdges(INTENT_NODE, edge_async(new SearchLiteIntentDispatcher()),
+					Map.of(RESULT_NODE, RESULT_NODE, END, END))
+			.addEdge(RESULT_NODE, END);
 		return graph;
 	}
 

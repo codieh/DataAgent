@@ -400,3 +400,122 @@ G3 之后，仍然有几个关键缺口：
 
 - 代码结构已完成
 - 验证仍受本地 Maven 环境限制
+
+---
+
+## 12. Step G4 完成内容（记录时间：2026-04-01）
+
+本步骤目标：
+
+- 为 graph 加入第一个真正的条件路由
+- 让 `INTENT` 节点不再固定流向下一个节点
+- 开始对齐 `management` 中的 `Dispatcher + ConditionalEdges` 设计
+
+本步骤已完成：
+
+- 新增 `SearchLiteIntentDispatcher`
+  - `D:\GitHub\DataAgent\data-agent-backend\src\main\java\com\alibaba\cloud\ai\dataagentbackend\lite\graph\dispatcher\SearchLiteIntentDispatcher.java`
+- 更新 `SearchLiteGraphConfiguration`
+  - 从固定边：
+    - `INTENT -> RESULT`
+  - 改为条件边：
+    - `INTENT --(DATA_ANALYSIS)--> RESULT`
+    - `INTENT --(CHITCHAT/empty)--> END`
+- 新增 dispatcher 单测：
+  - `D:\GitHub\DataAgent\data-agent-backend\src\test\java\com\alibaba\cloud\ai\dataagentbackend\lite\graph\dispatcher\SearchLiteIntentDispatcherTest.java`
+
+### 12.1 G4 为什么很关键
+
+G1-G3 主要解决的是：
+
+- graph 依赖接入
+- state 管理
+- step 复用
+
+而 G4 开始真正解决当前项目的**控制流问题**：
+
+- 不再默认每个节点都只能走到“下一个固定节点”
+- 节点执行完成后，可以根据 state 决定下一步
+
+这一步正是从：
+
+- 线性 pipeline 思维
+
+向：
+
+- state-driven graph workflow 思维
+
+迈出的第一步。
+
+### 12.2 当前条件路由的具体行为
+
+当前 `SearchLiteIntentDispatcher` 的规则非常简单，但已经足够体现 graph 的价值：
+
+- 当 `intentClassification = DATA_ANALYSIS`
+  - 路由到 `RESULT_NODE`
+- 当 `intentClassification = CHITCHAT`
+  - 直接路由到 `END`
+- 当分类缺失或为空
+  - 也直接路由到 `END`
+
+这和当前最小 graph 骨架是配套的。
+
+因为目前 graph 中只真正迁入了两个业务节点：
+
+- `INTENT`
+- `RESULT`
+
+所以这里先让：
+
+- `DATA_ANALYSIS -> RESULT`
+- `CHITCHAT -> END`
+
+是一个合理的阶段性选择。
+
+### 12.3 和 management 的对应关系
+
+这一步是直接借鉴 `management` 的写法：
+
+- `StateGraph.addConditionalEdges(...)`
+- `EdgeAction`
+- `edge_async(dispatcher)`
+
+也就是说，现在 backend 的 graph 编排已经不只是“长得像图”，而是已经开始采用与 `management` 一致的核心控制流机制。
+
+### 12.4 当前图结构（G4 后）
+
+当前最小 graph 现在可以理解为：
+
+```text
+START -> INTENT
+INTENT -> RESULT (when DATA_ANALYSIS)
+INTENT -> END    (when CHITCHAT / empty)
+RESULT -> END
+```
+
+### 12.5 这一步仍然是阶段性实现
+
+需要特别注意：
+
+- 这一步还没有把 `EVIDENCE / SCHEMA / SQL` 节点迁入 graph
+- 所以 `DATA_ANALYSIS` 目前仍然先去 `RESULT`
+- 这只是为了先证明条件路由机制已经成立
+
+真正的下一阶段目标会是：
+
+- 把 `EVIDENCE`
+- `SCHEMA`
+- `SCHEMA_RECALL`
+- `ENHANCE`
+- `SQL_GENERATE`
+- `SQL_EXECUTE`
+
+逐步迁入 graph，再把 `DATA_ANALYSIS` 的路由改到真正的后续分析链路。
+
+### 12.6 G4 对学习这套框架最有帮助的点
+
+如果从“理解 graph 框架”角度看，G4 最值得记住的是这句话：
+
+> Node 负责“产出状态”，Dispatcher 负责“决定下一步”。
+
+这就是 `management` 里最核心的编排思想之一。
