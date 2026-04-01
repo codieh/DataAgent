@@ -24,23 +24,30 @@ public class SearchLiteGraphConfiguration {
 
 	public static final String RESULT_NODE = "resultNode";
 
-	public static final String QUERY_KEY = "query";
-
-	public static final String THREAD_ID_KEY = "threadId";
-
-	public static final String INTENT_CLASSIFICATION_KEY = "intentClassification";
-
-	public static final String RESULT_SUMMARY_KEY = "resultSummary";
-
 	@Bean
 	public StateGraph searchLiteGraph(SearchLiteIntentGraphNode intentNode, SearchLiteResultGraphNode resultNode)
 			throws GraphStateException {
 		KeyStrategyFactory keyStrategyFactory = () -> {
 			HashMap<String, KeyStrategy> strategies = new HashMap<>();
-			strategies.put(QUERY_KEY, KeyStrategy.REPLACE);
-			strategies.put(THREAD_ID_KEY, KeyStrategy.REPLACE);
-			strategies.put(INTENT_CLASSIFICATION_KEY, KeyStrategy.REPLACE);
-			strategies.put(RESULT_SUMMARY_KEY, KeyStrategy.REPLACE);
+			strategies.put(SearchLiteGraphStateKeys.AGENT_ID, KeyStrategy.REPLACE);
+			strategies.put(SearchLiteGraphStateKeys.THREAD_ID, KeyStrategy.REPLACE);
+			strategies.put(SearchLiteGraphStateKeys.QUERY, KeyStrategy.REPLACE);
+			strategies.put(SearchLiteGraphStateKeys.INTENT_CLASSIFICATION, KeyStrategy.REPLACE);
+			strategies.put(SearchLiteGraphStateKeys.EVIDENCES, KeyStrategy.REPLACE);
+			strategies.put(SearchLiteGraphStateKeys.EVIDENCE_TEXT, KeyStrategy.REPLACE);
+			strategies.put(SearchLiteGraphStateKeys.EVIDENCE_REWRITE_QUERY, KeyStrategy.REPLACE);
+			strategies.put(SearchLiteGraphStateKeys.DOCUMENT_TEXT, KeyStrategy.REPLACE);
+			strategies.put(SearchLiteGraphStateKeys.SCHEMA_TABLES, KeyStrategy.REPLACE);
+			strategies.put(SearchLiteGraphStateKeys.SCHEMA_TEXT, KeyStrategy.REPLACE);
+			strategies.put(SearchLiteGraphStateKeys.SCHEMA_TABLE_DETAILS, KeyStrategy.REPLACE);
+			strategies.put(SearchLiteGraphStateKeys.RECALLED_TABLES, KeyStrategy.REPLACE);
+			strategies.put(SearchLiteGraphStateKeys.RECALLED_SCHEMA_TEXT, KeyStrategy.REPLACE);
+			strategies.put(SearchLiteGraphStateKeys.CANONICAL_QUERY, KeyStrategy.REPLACE);
+			strategies.put(SearchLiteGraphStateKeys.EXPANDED_QUERIES, KeyStrategy.REPLACE);
+			strategies.put(SearchLiteGraphStateKeys.SQL, KeyStrategy.REPLACE);
+			strategies.put(SearchLiteGraphStateKeys.ROWS, KeyStrategy.REPLACE);
+			strategies.put(SearchLiteGraphStateKeys.RESULT_SUMMARY, KeyStrategy.REPLACE);
+			strategies.put(SearchLiteGraphStateKeys.ERROR, KeyStrategy.REPLACE);
 			return strategies;
 		};
 
