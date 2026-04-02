@@ -2,7 +2,7 @@ package com.alibaba.cloud.ai.dataagentbackend.lite.graph.node;
 
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteStage;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteState;
-import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphMessageEmitter;
+import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphStepOutputAdapter;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStep;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStepResult;
 import com.alibaba.cloud.ai.graph.OverAllState;
@@ -26,7 +26,7 @@ class SearchLiteSqlGenerateGraphNodeTest {
 	@Test
 	void should_bridge_graph_state_into_sql_generate_step_and_return_updated_state() {
 		SearchLiteStep sqlGenerateStep = mock(SearchLiteStep.class);
-		SearchLiteGraphMessageEmitter messageEmitter = mock(SearchLiteGraphMessageEmitter.class);
+		SearchLiteGraphStepOutputAdapter outputAdapter = mock(SearchLiteGraphStepOutputAdapter.class);
 		OverAllState graphState = mock(OverAllState.class);
 
 		when(sqlGenerateStep.stage()).thenReturn(SearchLiteStage.SQL_GENERATE);
@@ -41,7 +41,10 @@ class SearchLiteSqlGenerateGraphNodeTest {
 
 		when(sqlGenerateStep.run(any(), any())).thenReturn(new SearchLiteStepResult(Flux.empty(), Mono.just(updated)));
 
-		SearchLiteSqlGenerateGraphNode node = new SearchLiteSqlGenerateGraphNode(java.util.List.of(sqlGenerateStep), messageEmitter);
+		when(outputAdapter.adapt(any(), any())).thenReturn(Map.of(THREAD_ID, "thread-7", QUERY, "列出高消费用户",
+				SQL, "SELECT u.id, SUM(o.total_amount) AS total_spending FROM users u JOIN orders o ON u.id = o.user_id GROUP BY u.id"));
+
+		SearchLiteSqlGenerateGraphNode node = new SearchLiteSqlGenerateGraphNode(java.util.List.of(sqlGenerateStep), outputAdapter);
 
 		Map<String, Object> result = node.apply(graphState);
 

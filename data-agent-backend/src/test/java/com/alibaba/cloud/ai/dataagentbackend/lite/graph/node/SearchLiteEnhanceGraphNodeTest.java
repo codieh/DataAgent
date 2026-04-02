@@ -2,7 +2,7 @@ package com.alibaba.cloud.ai.dataagentbackend.lite.graph.node;
 
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteStage;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteState;
-import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphMessageEmitter;
+import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphStepOutputAdapter;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStep;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStepResult;
 import com.alibaba.cloud.ai.graph.OverAllState;
@@ -28,7 +28,7 @@ class SearchLiteEnhanceGraphNodeTest {
 	@Test
 	void should_bridge_graph_state_into_enhance_step_and_return_updated_state() {
 		SearchLiteStep enhanceStep = mock(SearchLiteStep.class);
-		SearchLiteGraphMessageEmitter messageEmitter = mock(SearchLiteGraphMessageEmitter.class);
+		SearchLiteGraphStepOutputAdapter outputAdapter = mock(SearchLiteGraphStepOutputAdapter.class);
 		OverAllState graphState = mock(OverAllState.class);
 
 		when(enhanceStep.stage()).thenReturn(SearchLiteStage.ENHANCE);
@@ -44,7 +44,11 @@ class SearchLiteEnhanceGraphNodeTest {
 
 		when(enhanceStep.run(any(), any())).thenReturn(new SearchLiteStepResult(Flux.empty(), Mono.just(updated)));
 
-		SearchLiteEnhanceGraphNode node = new SearchLiteEnhanceGraphNode(List.of(enhanceStep), messageEmitter);
+		when(outputAdapter.adapt(any(), any())).thenReturn(Map.of(THREAD_ID, "thread-6", QUERY, "列出高消费用户",
+				CANONICAL_QUERY, "列出高消费用户，包括用户ID、总消费金额和订单数量",
+				EXPANDED_QUERIES, List.of("列出高消费用户，包括用户ID、总消费金额和订单数量", "哪些用户的消费金额最高？")));
+
+		SearchLiteEnhanceGraphNode node = new SearchLiteEnhanceGraphNode(List.of(enhanceStep), outputAdapter);
 
 		Map<String, Object> result = node.apply(graphState);
 

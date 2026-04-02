@@ -1,7 +1,7 @@
 package com.alibaba.cloud.ai.dataagentbackend.lite.graph.node;
 
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteStage;
-import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphMessageEmitter;
+import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphStepOutputAdapter;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStep;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.action.NodeAction;
@@ -19,20 +19,20 @@ public class SearchLiteSqlGenerateGraphNode extends SearchLiteStepGraphNodeSuppo
 
 	private final SearchLiteStep sqlGenerateStep;
 
-	private final SearchLiteGraphMessageEmitter messageEmitter;
+	private final SearchLiteGraphStepOutputAdapter outputAdapter;
 
-	public SearchLiteSqlGenerateGraphNode(List<SearchLiteStep> steps, SearchLiteGraphMessageEmitter messageEmitter) {
+	public SearchLiteSqlGenerateGraphNode(List<SearchLiteStep> steps, SearchLiteGraphStepOutputAdapter outputAdapter) {
 		this.sqlGenerateStep = steps.stream()
 			.filter(step -> step.stage() == SearchLiteStage.SQL_GENERATE)
 			.findFirst()
 			.orElseThrow(() -> new IllegalStateException("No SQL_GENERATE step configured for graph node"));
-		this.messageEmitter = messageEmitter;
+		this.outputAdapter = outputAdapter;
 	}
 
 	@Override
 	public Map<String, Object> apply(OverAllState state) {
 		log.debug("search-lite graph sql-generate node invoked");
-		return executeStep(state, sqlGenerateStep, messageEmitter);
+		return executeStep(state, sqlGenerateStep, outputAdapter);
 	}
 
 }

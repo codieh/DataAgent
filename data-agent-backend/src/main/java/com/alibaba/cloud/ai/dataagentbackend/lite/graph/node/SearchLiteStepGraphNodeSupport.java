@@ -3,7 +3,7 @@ package com.alibaba.cloud.ai.dataagentbackend.lite.graph.node;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteMessage;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteState;
 import com.alibaba.cloud.ai.dataagentbackend.lite.SearchLiteContext;
-import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphMessageEmitter;
+import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphStepOutputAdapter;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphStateKeys;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphStateMapper;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStep;
@@ -19,25 +19,14 @@ import java.util.UUID;
 abstract class SearchLiteStepGraphNodeSupport {
 
 	protected Map<String, Object> executeStep(OverAllState graphState, SearchLiteStep step,
-			SearchLiteGraphMessageEmitter messageEmitter) {
+			SearchLiteGraphStepOutputAdapter outputAdapter) {
 		SearchLiteState liteState = SearchLiteGraphStateMapper.toSearchLiteState(graphState);
 		String threadId = resolveThreadId(liteState);
 		SearchLiteContext context = new SearchLiteContext(threadId);
 		SearchLiteStepResult stepResult = step.run(context, liteState);
 		List<SearchLiteMessage> existingMessages = readMessages(graphState);
-		List<SearchLiteMessage> stepMessages = stepResult.messages().collectList().block();
-		SearchLiteState updatedState = stepResult.updatedState().defaultIfEmpty(liteState).block();
-		Map<String, Object> mappedState = SearchLiteGraphStateMapper
-			.fromSearchLiteState(updatedState == null ? liteState : updatedState);
-		boolean emittedDirectly = messageEmitter != null && messageEmitter.emit(threadId, stepMessages);
-		if (!emittedDirectly) {
-			ArrayList<SearchLiteMessage> mergedMessages = new ArrayList<>(existingMessages);
-			if (stepMessages != null && !stepMessages.isEmpty()) {
-				mergedMessages.addAll(stepMessages);
-			}
-			mappedState.put(SearchLiteGraphStateKeys.GRAPH_MESSAGES, mergedMessages);
-		}
-		return mappedState;
+		return outputAdapter.adapt(new SearchLiteGraphStepOutputAdapter.OverAllStateSnapshot(threadId, liteState, existingMessages),
+				stepResult);
 	}
 
 	private String resolveThreadId(SearchLiteState state) {

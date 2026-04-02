@@ -1,7 +1,7 @@
 package com.alibaba.cloud.ai.dataagentbackend.lite.graph.node;
 
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteStage;
-import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphMessageEmitter;
+import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphStepOutputAdapter;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStep;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.action.NodeAction;
@@ -19,20 +19,20 @@ public class SearchLiteSchemaRecallGraphNode extends SearchLiteStepGraphNodeSupp
 
 	private final SearchLiteStep schemaRecallStep;
 
-	private final SearchLiteGraphMessageEmitter messageEmitter;
+	private final SearchLiteGraphStepOutputAdapter outputAdapter;
 
-	public SearchLiteSchemaRecallGraphNode(List<SearchLiteStep> steps, SearchLiteGraphMessageEmitter messageEmitter) {
+	public SearchLiteSchemaRecallGraphNode(List<SearchLiteStep> steps, SearchLiteGraphStepOutputAdapter outputAdapter) {
 		this.schemaRecallStep = steps.stream()
 			.filter(step -> step.stage() == SearchLiteStage.SCHEMA_RECALL)
 			.findFirst()
 			.orElseThrow(() -> new IllegalStateException("No SCHEMA_RECALL step configured for graph node"));
-		this.messageEmitter = messageEmitter;
+		this.outputAdapter = outputAdapter;
 	}
 
 	@Override
 	public Map<String, Object> apply(OverAllState state) {
 		log.debug("search-lite graph schema recall node invoked");
-		return executeStep(state, schemaRecallStep, messageEmitter);
+		return executeStep(state, schemaRecallStep, outputAdapter);
 	}
 
 }

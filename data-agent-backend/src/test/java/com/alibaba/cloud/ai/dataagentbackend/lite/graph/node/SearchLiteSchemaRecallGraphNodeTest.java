@@ -2,7 +2,7 @@ package com.alibaba.cloud.ai.dataagentbackend.lite.graph.node;
 
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteStage;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteState;
-import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphMessageEmitter;
+import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphStepOutputAdapter;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStep;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStepResult;
 import com.alibaba.cloud.ai.graph.OverAllState;
@@ -28,7 +28,7 @@ class SearchLiteSchemaRecallGraphNodeTest {
 	@Test
 	void should_bridge_graph_state_into_schema_recall_step_and_return_updated_state() {
 		SearchLiteStep schemaRecallStep = mock(SearchLiteStep.class);
-		SearchLiteGraphMessageEmitter messageEmitter = mock(SearchLiteGraphMessageEmitter.class);
+		SearchLiteGraphStepOutputAdapter outputAdapter = mock(SearchLiteGraphStepOutputAdapter.class);
 		OverAllState graphState = mock(OverAllState.class);
 
 		when(schemaRecallStep.stage()).thenReturn(SearchLiteStage.SCHEMA_RECALL);
@@ -44,7 +44,10 @@ class SearchLiteSchemaRecallGraphNodeTest {
 
 		when(schemaRecallStep.run(any(), any())).thenReturn(new SearchLiteStepResult(Flux.empty(), Mono.just(updated)));
 
-		SearchLiteSchemaRecallGraphNode node = new SearchLiteSchemaRecallGraphNode(List.of(schemaRecallStep), messageEmitter);
+		when(outputAdapter.adapt(any(), any())).thenReturn(Map.of(THREAD_ID, "thread-5", QUERY, "查询高消费用户",
+				RECALLED_TABLES, List.of("users", "orders"), RECALLED_SCHEMA_TEXT, "TABLE users\nTABLE orders"));
+
+		SearchLiteSchemaRecallGraphNode node = new SearchLiteSchemaRecallGraphNode(List.of(schemaRecallStep), outputAdapter);
 
 		Map<String, Object> result = node.apply(graphState);
 

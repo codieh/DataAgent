@@ -2,7 +2,7 @@ package com.alibaba.cloud.ai.dataagentbackend.lite.graph.node;
 
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteStage;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteState;
-import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphMessageEmitter;
+import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphStepOutputAdapter;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStep;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStepResult;
 import com.alibaba.cloud.ai.graph.OverAllState;
@@ -27,7 +27,7 @@ class SearchLiteSqlExecuteGraphNodeTest {
 	@Test
 	void should_bridge_graph_state_into_sql_execute_step_and_return_updated_state() {
 		SearchLiteStep sqlExecuteStep = mock(SearchLiteStep.class);
-		SearchLiteGraphMessageEmitter messageEmitter = mock(SearchLiteGraphMessageEmitter.class);
+		SearchLiteGraphStepOutputAdapter outputAdapter = mock(SearchLiteGraphStepOutputAdapter.class);
 		OverAllState graphState = mock(OverAllState.class);
 
 		when(sqlExecuteStep.stage()).thenReturn(SearchLiteStage.SQL_EXECUTE);
@@ -42,7 +42,10 @@ class SearchLiteSqlExecuteGraphNodeTest {
 
 		when(sqlExecuteStep.run(any(), any())).thenReturn(new SearchLiteStepResult(Flux.empty(), Mono.just(updated)));
 
-		SearchLiteSqlExecuteGraphNode node = new SearchLiteSqlExecuteGraphNode(List.of(sqlExecuteStep), messageEmitter);
+		when(outputAdapter.adapt(any(), any())).thenReturn(Map.of(THREAD_ID, "thread-8", QUERY, "列出高消费用户",
+				ROWS, List.of(Map.of("user_id", 1, "total_spending", 1000))));
+
+		SearchLiteSqlExecuteGraphNode node = new SearchLiteSqlExecuteGraphNode(List.of(sqlExecuteStep), outputAdapter);
 
 		Map<String, Object> result = node.apply(graphState);
 
