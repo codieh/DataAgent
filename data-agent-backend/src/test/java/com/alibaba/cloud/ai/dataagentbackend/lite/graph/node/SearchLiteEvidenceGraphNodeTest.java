@@ -2,6 +2,7 @@ package com.alibaba.cloud.ai.dataagentbackend.lite.graph.node;
 
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.EvidenceItem;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteState;
+import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphMessageEmitter;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStepResult;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.impl.EvidenceFileStep;
 import com.alibaba.cloud.ai.graph.OverAllState;
@@ -29,6 +30,7 @@ class SearchLiteEvidenceGraphNodeTest {
 	@Test
 	void should_bridge_graph_state_into_evidence_step_and_return_updated_state() {
 		EvidenceFileStep evidenceStep = mock(EvidenceFileStep.class);
+		SearchLiteGraphMessageEmitter messageEmitter = mock(SearchLiteGraphMessageEmitter.class);
 		OverAllState graphState = mock(OverAllState.class);
 
 		when(graphState.value(any())).thenReturn(Optional.empty());
@@ -46,7 +48,7 @@ class SearchLiteEvidenceGraphNodeTest {
 		when(evidenceStep.run(any(), any()))
 			.thenReturn(new SearchLiteStepResult(Flux.empty(), Mono.just(updated)));
 
-		SearchLiteEvidenceGraphNode node = new SearchLiteEvidenceGraphNode(evidenceStep);
+		SearchLiteEvidenceGraphNode node = new SearchLiteEvidenceGraphNode(evidenceStep, messageEmitter);
 
 		Map<String, Object> result = node.apply(graphState);
 

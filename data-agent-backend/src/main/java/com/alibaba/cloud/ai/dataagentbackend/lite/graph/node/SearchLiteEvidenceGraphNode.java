@@ -1,5 +1,6 @@
 package com.alibaba.cloud.ai.dataagentbackend.lite.graph.node;
 
+import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphMessageEmitter;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.impl.EvidenceFileStep;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.action.NodeAction;
@@ -16,14 +17,17 @@ public class SearchLiteEvidenceGraphNode extends SearchLiteStepGraphNodeSupport 
 
 	private final EvidenceFileStep evidenceStep;
 
-	public SearchLiteEvidenceGraphNode(EvidenceFileStep evidenceStep) {
+	private final SearchLiteGraphMessageEmitter messageEmitter;
+
+	public SearchLiteEvidenceGraphNode(EvidenceFileStep evidenceStep, SearchLiteGraphMessageEmitter messageEmitter) {
 		this.evidenceStep = evidenceStep;
+		this.messageEmitter = messageEmitter;
 	}
 
 	@Override
 	public Map<String, Object> apply(OverAllState state) {
 		log.debug("search-lite graph evidence node invoked");
-		return executeStep(state, evidenceStep);
+		return executeStep(state, evidenceStep, messageEmitter);
 	}
 
 }

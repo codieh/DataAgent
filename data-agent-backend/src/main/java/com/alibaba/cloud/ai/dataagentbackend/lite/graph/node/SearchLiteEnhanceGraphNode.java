@@ -1,6 +1,7 @@
 package com.alibaba.cloud.ai.dataagentbackend.lite.graph.node;
 
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteStage;
+import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphMessageEmitter;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStep;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.action.NodeAction;
@@ -18,17 +19,20 @@ public class SearchLiteEnhanceGraphNode extends SearchLiteStepGraphNodeSupport i
 
 	private final SearchLiteStep enhanceStep;
 
-	public SearchLiteEnhanceGraphNode(List<SearchLiteStep> steps) {
+	private final SearchLiteGraphMessageEmitter messageEmitter;
+
+	public SearchLiteEnhanceGraphNode(List<SearchLiteStep> steps, SearchLiteGraphMessageEmitter messageEmitter) {
 		this.enhanceStep = steps.stream()
 			.filter(step -> step.stage() == SearchLiteStage.ENHANCE)
 			.findFirst()
 			.orElseThrow(() -> new IllegalStateException("No ENHANCE step configured for graph node"));
+		this.messageEmitter = messageEmitter;
 	}
 
 	@Override
 	public Map<String, Object> apply(OverAllState state) {
 		log.debug("search-lite graph enhance node invoked");
-		return executeStep(state, enhanceStep);
+		return executeStep(state, enhanceStep, messageEmitter);
 	}
 
 }

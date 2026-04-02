@@ -1,6 +1,7 @@
 package com.alibaba.cloud.ai.dataagentbackend.lite.graph.node;
 
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteState;
+import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphMessageEmitter;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStepResult;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.impl.ResultMinimaxStep;
 import com.alibaba.cloud.ai.graph.OverAllState;
@@ -27,6 +28,7 @@ class SearchLiteResultGraphNodeTest {
 	@Test
 	void should_bridge_graph_state_into_result_step_and_return_summary() {
 		ResultMinimaxStep resultStep = mock(ResultMinimaxStep.class);
+		SearchLiteGraphMessageEmitter messageEmitter = mock(SearchLiteGraphMessageEmitter.class);
 		OverAllState graphState = mock(OverAllState.class);
 
 		when(graphState.value(any())).thenReturn(Optional.empty());
@@ -45,7 +47,7 @@ class SearchLiteResultGraphNodeTest {
 		when(resultStep.run(any(), any()))
 			.thenReturn(new SearchLiteStepResult(Flux.empty(), Mono.just(updated)));
 
-		SearchLiteResultGraphNode node = new SearchLiteResultGraphNode(resultStep);
+		SearchLiteResultGraphNode node = new SearchLiteResultGraphNode(resultStep, messageEmitter);
 
 		Map<String, Object> result = node.apply(graphState);
 

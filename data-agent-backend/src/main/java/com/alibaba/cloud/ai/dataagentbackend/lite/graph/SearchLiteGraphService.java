@@ -12,7 +12,6 @@ import com.alibaba.cloud.ai.graph.RunnableConfig;
 import com.alibaba.cloud.ai.graph.StateGraph;
 import com.alibaba.cloud.ai.graph.exception.GraphRunnerException;
 import com.alibaba.cloud.ai.graph.exception.GraphStateException;
-import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Sinks;
@@ -34,12 +33,15 @@ public class SearchLiteGraphService {
 
 	private final ObjectMapper objectMapper;
 
+	private final SearchLiteGraphMessageEmitter messageEmitter;
+
 	public SearchLiteGraphService(StateGraph searchLiteGraph, ExecutorService searchLiteGraphExecutor,
-			ObjectMapper objectMapper)
+			ObjectMapper objectMapper, SearchLiteGraphMessageEmitter messageEmitter)
 			throws GraphStateException {
 		this.compiledGraph = searchLiteGraph.compile();
 		this.executor = searchLiteGraphExecutor;
 		this.objectMapper = objectMapper;
+		this.messageEmitter = messageEmitter;
 	}
 
 	public SearchLiteGraphExecutionResult runInitialGraph(SearchLiteState state) throws GraphRunnerException {
@@ -60,13 +62,14 @@ public class SearchLiteGraphService {
 	}
 
 	public void graphStreamProcess(Sinks.Many<SearchLiteMessage> sink, SearchLiteContext context, SearchLiteState state) {
+		messageEmitter.register(context.threadId(), sink);
 		CompletableFuture.runAsync(() -> {
 			try {
 				SearchLiteGraphExecutionResult graphResult = runInitialGraph(state);
 				emitMessages(sink, graphResult.messages());
 				SearchLiteState updatedState = graphResult.state() == null ? state : graphResult.state();
 
-				if (graphResult.messages() == null || graphResult.messages().isEmpty()) {
+				if (!"DATA_ANALYSIS".equalsIgnoreCase(updatedState.getIntentClassification())) {
 					sink.tryEmitNext(SearchLiteMessages.done(context, SearchLiteStage.RESULT, SearchLiteMessageType.JSON, null,
 							Map.of("ok", true, "classification", updatedState.getIntentClassification(),
 									"message", "当前问题不进入数据分析主链路")));
@@ -75,6 +78,9 @@ public class SearchLiteGraphService {
 			}
 			catch (Exception e) {
 				emitError(sink, context, e);
+			}
+			finally {
+				messageEmitter.unregister(context.threadId());
 			}
 		}, executor);
 	}

@@ -1,5 +1,6 @@
 package com.alibaba.cloud.ai.dataagentbackend.lite.graph.node;
 
+import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphMessageEmitter;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.impl.ResultMinimaxStep;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.action.NodeAction;
@@ -16,14 +17,17 @@ public class SearchLiteResultGraphNode extends SearchLiteStepGraphNodeSupport im
 
 	private final ResultMinimaxStep resultStep;
 
-	public SearchLiteResultGraphNode(ResultMinimaxStep resultStep) {
+	private final SearchLiteGraphMessageEmitter messageEmitter;
+
+	public SearchLiteResultGraphNode(ResultMinimaxStep resultStep, SearchLiteGraphMessageEmitter messageEmitter) {
 		this.resultStep = resultStep;
+		this.messageEmitter = messageEmitter;
 	}
 
 	@Override
 	public Map<String, Object> apply(OverAllState state) {
 		log.debug("search-lite graph result node invoked");
-		return executeStep(state, resultStep);
+		return executeStep(state, resultStep, messageEmitter);
 	}
 
 }

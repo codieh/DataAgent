@@ -2,6 +2,7 @@ package com.alibaba.cloud.ai.dataagentbackend.lite.graph.node;
 
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteStage;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteState;
+import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphMessageEmitter;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStep;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStepResult;
 import com.alibaba.cloud.ai.graph.OverAllState;
@@ -25,6 +26,7 @@ class SearchLiteSqlGenerateGraphNodeTest {
 	@Test
 	void should_bridge_graph_state_into_sql_generate_step_and_return_updated_state() {
 		SearchLiteStep sqlGenerateStep = mock(SearchLiteStep.class);
+		SearchLiteGraphMessageEmitter messageEmitter = mock(SearchLiteGraphMessageEmitter.class);
 		OverAllState graphState = mock(OverAllState.class);
 
 		when(sqlGenerateStep.stage()).thenReturn(SearchLiteStage.SQL_GENERATE);
@@ -39,7 +41,7 @@ class SearchLiteSqlGenerateGraphNodeTest {
 
 		when(sqlGenerateStep.run(any(), any())).thenReturn(new SearchLiteStepResult(Flux.empty(), Mono.just(updated)));
 
-		SearchLiteSqlGenerateGraphNode node = new SearchLiteSqlGenerateGraphNode(java.util.List.of(sqlGenerateStep));
+		SearchLiteSqlGenerateGraphNode node = new SearchLiteSqlGenerateGraphNode(java.util.List.of(sqlGenerateStep), messageEmitter);
 
 		Map<String, Object> result = node.apply(graphState);
 
