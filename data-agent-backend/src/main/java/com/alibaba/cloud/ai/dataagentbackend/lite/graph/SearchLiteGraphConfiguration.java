@@ -8,6 +8,7 @@ import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLiteIntentGra
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLiteResultGraphNode;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLiteSchemaGraphNode;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLiteSchemaRecallGraphNode;
+import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLiteSqlExecuteGraphNode;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLiteSqlGenerateGraphNode;
 import com.alibaba.cloud.ai.graph.KeyStrategy;
 import com.alibaba.cloud.ai.graph.KeyStrategyFactory;
@@ -45,13 +46,15 @@ public class SearchLiteGraphConfiguration {
 
 	public static final String SQL_GENERATE_NODE = "sqlGenerateNode";
 
+	public static final String SQL_EXECUTE_NODE = "sqlExecuteNode";
+
 	public static final String RESULT_NODE = "resultNode";
 
 	@Bean
 	public StateGraph searchLiteGraph(SearchLiteIntentGraphNode intentNode, SearchLiteContinueGraphNode continueNode,
 			SearchLiteEvidenceGraphNode evidenceNode, SearchLiteSchemaGraphNode schemaNode,
 			SearchLiteSchemaRecallGraphNode schemaRecallNode, SearchLiteEnhanceGraphNode enhanceNode,
-			SearchLiteSqlGenerateGraphNode sqlGenerateNode,
+			SearchLiteSqlGenerateGraphNode sqlGenerateNode, SearchLiteSqlExecuteGraphNode sqlExecuteNode,
 			SearchLiteResultGraphNode resultNode)
 			throws GraphStateException {
 		KeyStrategyFactory keyStrategyFactory = () -> {
@@ -88,6 +91,7 @@ public class SearchLiteGraphConfiguration {
 			.addNode(SCHEMA_RECALL_NODE, node_async(schemaRecallNode))
 			.addNode(ENHANCE_NODE, node_async(enhanceNode))
 			.addNode(SQL_GENERATE_NODE, node_async(sqlGenerateNode))
+			.addNode(SQL_EXECUTE_NODE, node_async(sqlExecuteNode))
 			.addNode(RESULT_NODE, node_async(resultNode));
 
 		graph.addEdge(START, INTENT_NODE)
@@ -97,7 +101,8 @@ public class SearchLiteGraphConfiguration {
 			.addEdge(SCHEMA_NODE, SCHEMA_RECALL_NODE)
 			.addEdge(SCHEMA_RECALL_NODE, ENHANCE_NODE)
 			.addEdge(ENHANCE_NODE, SQL_GENERATE_NODE)
-			.addEdge(SQL_GENERATE_NODE, CONTINUE_NODE)
+			.addEdge(SQL_GENERATE_NODE, SQL_EXECUTE_NODE)
+			.addEdge(SQL_EXECUTE_NODE, CONTINUE_NODE)
 			.addEdge(CONTINUE_NODE, END);
 		return graph;
 	}
