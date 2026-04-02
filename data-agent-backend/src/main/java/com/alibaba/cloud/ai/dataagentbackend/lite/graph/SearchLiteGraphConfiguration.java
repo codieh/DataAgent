@@ -5,6 +5,7 @@ import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLiteContinueG
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLiteEvidenceGraphNode;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLiteIntentGraphNode;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLiteResultGraphNode;
+import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLiteSchemaGraphNode;
 import com.alibaba.cloud.ai.graph.KeyStrategy;
 import com.alibaba.cloud.ai.graph.KeyStrategyFactory;
 import com.alibaba.cloud.ai.graph.StateGraph;
@@ -33,11 +34,14 @@ public class SearchLiteGraphConfiguration {
 
 	public static final String EVIDENCE_NODE = "evidenceNode";
 
+	public static final String SCHEMA_NODE = "schemaNode";
+
 	public static final String RESULT_NODE = "resultNode";
 
 	@Bean
 	public StateGraph searchLiteGraph(SearchLiteIntentGraphNode intentNode, SearchLiteContinueGraphNode continueNode,
-			SearchLiteEvidenceGraphNode evidenceNode, SearchLiteResultGraphNode resultNode)
+			SearchLiteEvidenceGraphNode evidenceNode, SearchLiteSchemaGraphNode schemaNode,
+			SearchLiteResultGraphNode resultNode)
 			throws GraphStateException {
 		KeyStrategyFactory keyStrategyFactory = () -> {
 			HashMap<String, KeyStrategy> strategies = new HashMap<>();
@@ -69,12 +73,14 @@ public class SearchLiteGraphConfiguration {
 			.addNode(INTENT_NODE, node_async(intentNode))
 			.addNode(CONTINUE_NODE, node_async(continueNode))
 			.addNode(EVIDENCE_NODE, node_async(evidenceNode))
+			.addNode(SCHEMA_NODE, node_async(schemaNode))
 			.addNode(RESULT_NODE, node_async(resultNode));
 
 		graph.addEdge(START, INTENT_NODE)
 			.addConditionalEdges(INTENT_NODE, edge_async(new SearchLiteIntentDispatcher()),
 					Map.of(EVIDENCE_NODE, EVIDENCE_NODE, END, END))
-			.addEdge(EVIDENCE_NODE, CONTINUE_NODE)
+			.addEdge(EVIDENCE_NODE, SCHEMA_NODE)
+			.addEdge(SCHEMA_NODE, CONTINUE_NODE)
 			.addEdge(CONTINUE_NODE, END);
 		return graph;
 	}

@@ -1,0 +1,34 @@
+package com.alibaba.cloud.ai.dataagentbackend.lite.graph.node;
+
+import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteStage;
+import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStep;
+import com.alibaba.cloud.ai.graph.OverAllState;
+import com.alibaba.cloud.ai.graph.action.NodeAction;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Component;
+
+import java.util.List;
+import java.util.Map;
+
+@Component
+public class SearchLiteSchemaGraphNode extends SearchLiteStepGraphNodeSupport implements NodeAction {
+
+	private static final Logger log = LoggerFactory.getLogger(SearchLiteSchemaGraphNode.class);
+
+	private final SearchLiteStep schemaStep;
+
+	public SearchLiteSchemaGraphNode(List<SearchLiteStep> steps) {
+		this.schemaStep = steps.stream()
+			.filter(step -> step.stage() == SearchLiteStage.SCHEMA)
+			.findFirst()
+			.orElseThrow(() -> new IllegalStateException("No SCHEMA step configured for graph node"));
+	}
+
+	@Override
+	public Map<String, Object> apply(OverAllState state) {
+		log.debug("search-lite graph schema node invoked");
+		return executeStep(state, schemaStep);
+	}
+
+}
