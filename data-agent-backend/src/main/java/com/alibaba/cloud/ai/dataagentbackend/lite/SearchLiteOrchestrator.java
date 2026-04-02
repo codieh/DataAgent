@@ -82,7 +82,7 @@ public class SearchLiteOrchestrator {
 			reactor.core.publisher.Sinks.Many<SearchLiteMessage> sink = reactor.core.publisher.Sinks.many()
 				.unicast()
 				.onBackpressureBuffer();
-			graphService.graphStreamProcess(sink, ctx, state, updatedState -> runSteps(ctx, updatedState, 4));
+			graphService.graphStreamProcess(sink, ctx, state, updatedState -> runSteps(ctx, updatedState, 5));
 			return sink.asFlux();
 		});
 	}

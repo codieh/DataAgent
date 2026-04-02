@@ -3,6 +3,7 @@ package com.alibaba.cloud.ai.dataagentbackend.lite.graph;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.dispatcher.SearchLiteIntentDispatcher;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLiteContinueGraphNode;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLiteEvidenceGraphNode;
+import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLiteEnhanceGraphNode;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLiteIntentGraphNode;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLiteResultGraphNode;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLiteSchemaGraphNode;
@@ -39,12 +40,14 @@ public class SearchLiteGraphConfiguration {
 
 	public static final String SCHEMA_RECALL_NODE = "schemaRecallNode";
 
+	public static final String ENHANCE_NODE = "enhanceNode";
+
 	public static final String RESULT_NODE = "resultNode";
 
 	@Bean
 	public StateGraph searchLiteGraph(SearchLiteIntentGraphNode intentNode, SearchLiteContinueGraphNode continueNode,
 			SearchLiteEvidenceGraphNode evidenceNode, SearchLiteSchemaGraphNode schemaNode,
-			SearchLiteSchemaRecallGraphNode schemaRecallNode,
+			SearchLiteSchemaRecallGraphNode schemaRecallNode, SearchLiteEnhanceGraphNode enhanceNode,
 			SearchLiteResultGraphNode resultNode)
 			throws GraphStateException {
 		KeyStrategyFactory keyStrategyFactory = () -> {
@@ -79,6 +82,7 @@ public class SearchLiteGraphConfiguration {
 			.addNode(EVIDENCE_NODE, node_async(evidenceNode))
 			.addNode(SCHEMA_NODE, node_async(schemaNode))
 			.addNode(SCHEMA_RECALL_NODE, node_async(schemaRecallNode))
+			.addNode(ENHANCE_NODE, node_async(enhanceNode))
 			.addNode(RESULT_NODE, node_async(resultNode));
 
 		graph.addEdge(START, INTENT_NODE)
@@ -86,7 +90,8 @@ public class SearchLiteGraphConfiguration {
 					Map.of(EVIDENCE_NODE, EVIDENCE_NODE, END, END))
 			.addEdge(EVIDENCE_NODE, SCHEMA_NODE)
 			.addEdge(SCHEMA_NODE, SCHEMA_RECALL_NODE)
-			.addEdge(SCHEMA_RECALL_NODE, CONTINUE_NODE)
+			.addEdge(SCHEMA_RECALL_NODE, ENHANCE_NODE)
+			.addEdge(ENHANCE_NODE, CONTINUE_NODE)
 			.addEdge(CONTINUE_NODE, END);
 		return graph;
 	}
