@@ -8,6 +8,7 @@ import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLiteIntentGra
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLiteResultGraphNode;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLiteSchemaGraphNode;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLiteSchemaRecallGraphNode;
+import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLiteSqlGenerateGraphNode;
 import com.alibaba.cloud.ai.graph.KeyStrategy;
 import com.alibaba.cloud.ai.graph.KeyStrategyFactory;
 import com.alibaba.cloud.ai.graph.StateGraph;
@@ -42,12 +43,15 @@ public class SearchLiteGraphConfiguration {
 
 	public static final String ENHANCE_NODE = "enhanceNode";
 
+	public static final String SQL_GENERATE_NODE = "sqlGenerateNode";
+
 	public static final String RESULT_NODE = "resultNode";
 
 	@Bean
 	public StateGraph searchLiteGraph(SearchLiteIntentGraphNode intentNode, SearchLiteContinueGraphNode continueNode,
 			SearchLiteEvidenceGraphNode evidenceNode, SearchLiteSchemaGraphNode schemaNode,
 			SearchLiteSchemaRecallGraphNode schemaRecallNode, SearchLiteEnhanceGraphNode enhanceNode,
+			SearchLiteSqlGenerateGraphNode sqlGenerateNode,
 			SearchLiteResultGraphNode resultNode)
 			throws GraphStateException {
 		KeyStrategyFactory keyStrategyFactory = () -> {
@@ -83,6 +87,7 @@ public class SearchLiteGraphConfiguration {
 			.addNode(SCHEMA_NODE, node_async(schemaNode))
 			.addNode(SCHEMA_RECALL_NODE, node_async(schemaRecallNode))
 			.addNode(ENHANCE_NODE, node_async(enhanceNode))
+			.addNode(SQL_GENERATE_NODE, node_async(sqlGenerateNode))
 			.addNode(RESULT_NODE, node_async(resultNode));
 
 		graph.addEdge(START, INTENT_NODE)
@@ -91,7 +96,8 @@ public class SearchLiteGraphConfiguration {
 			.addEdge(EVIDENCE_NODE, SCHEMA_NODE)
 			.addEdge(SCHEMA_NODE, SCHEMA_RECALL_NODE)
 			.addEdge(SCHEMA_RECALL_NODE, ENHANCE_NODE)
-			.addEdge(ENHANCE_NODE, CONTINUE_NODE)
+			.addEdge(ENHANCE_NODE, SQL_GENERATE_NODE)
+			.addEdge(SQL_GENERATE_NODE, CONTINUE_NODE)
 			.addEdge(CONTINUE_NODE, END);
 		return graph;
 	}
