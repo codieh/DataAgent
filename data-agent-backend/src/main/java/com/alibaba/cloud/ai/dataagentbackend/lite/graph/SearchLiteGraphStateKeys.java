@@ -43,4 +43,8 @@ public final class SearchLiteGraphStateKeys {
 
 	public static final String ERROR = "error";
 
+	public static final String GRAPH_MESSAGES = "graphMessages";
+
+	public static final String GRAPH_ROUTE = "graphRoute";
+
 }

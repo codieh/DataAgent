@@ -1,6 +1,7 @@
 package com.alibaba.cloud.ai.dataagentbackend.lite.graph;
 
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.dispatcher.SearchLiteIntentDispatcher;
+import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLiteContinueGraphNode;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLiteIntentGraphNode;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLiteResultGraphNode;
 import com.alibaba.cloud.ai.graph.KeyStrategy;
@@ -12,6 +13,8 @@ import org.springframework.context.annotation.Configuration;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import static com.alibaba.cloud.ai.graph.action.AsyncEdgeAction.edge_async;
 import static com.alibaba.cloud.ai.graph.action.AsyncNodeAction.node_async;
@@ -25,10 +28,13 @@ public class SearchLiteGraphConfiguration {
 
 	public static final String INTENT_NODE = "intentNode";
 
+	public static final String CONTINUE_NODE = "continueNode";
+
 	public static final String RESULT_NODE = "resultNode";
 
 	@Bean
-	public StateGraph searchLiteGraph(SearchLiteIntentGraphNode intentNode, SearchLiteResultGraphNode resultNode)
+	public StateGraph searchLiteGraph(SearchLiteIntentGraphNode intentNode, SearchLiteContinueGraphNode continueNode,
+			SearchLiteResultGraphNode resultNode)
 			throws GraphStateException {
 		KeyStrategyFactory keyStrategyFactory = () -> {
 			HashMap<String, KeyStrategy> strategies = new HashMap<>();
@@ -51,18 +57,31 @@ public class SearchLiteGraphConfiguration {
 			strategies.put(SearchLiteGraphStateKeys.ROWS, KeyStrategy.REPLACE);
 			strategies.put(SearchLiteGraphStateKeys.RESULT_SUMMARY, KeyStrategy.REPLACE);
 			strategies.put(SearchLiteGraphStateKeys.ERROR, KeyStrategy.REPLACE);
+			strategies.put(SearchLiteGraphStateKeys.GRAPH_MESSAGES, KeyStrategy.REPLACE);
+			strategies.put(SearchLiteGraphStateKeys.GRAPH_ROUTE, KeyStrategy.REPLACE);
 			return strategies;
 		};
 
 		StateGraph graph = new StateGraph(SEARCH_LITE_GRAPH_NAME, keyStrategyFactory)
 			.addNode(INTENT_NODE, node_async(intentNode))
+			.addNode(CONTINUE_NODE, node_async(continueNode))
 			.addNode(RESULT_NODE, node_async(resultNode));
 
 		graph.addEdge(START, INTENT_NODE)
 			.addConditionalEdges(INTENT_NODE, edge_async(new SearchLiteIntentDispatcher()),
-					Map.of(RESULT_NODE, RESULT_NODE, END, END))
-			.addEdge(RESULT_NODE, END);
+					Map.of(CONTINUE_NODE, CONTINUE_NODE, END, END))
+			.addEdge(CONTINUE_NODE, END);
 		return graph;
+	}
+
+	@Bean(destroyMethod = "shutdown")
+	public ExecutorService searchLiteGraphExecutor() {
+		return Executors.newFixedThreadPool(4, runnable -> {
+			Thread thread = new Thread(runnable);
+			thread.setName("search-lite-graph-" + thread.getId());
+			thread.setDaemon(true);
+			return thread;
+		});
 	}
 
 }

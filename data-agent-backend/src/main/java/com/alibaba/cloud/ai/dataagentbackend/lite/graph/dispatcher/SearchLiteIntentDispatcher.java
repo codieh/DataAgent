@@ -8,7 +8,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.Optional;
 
-import static com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphConfiguration.RESULT_NODE;
+import static com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphConfiguration.CONTINUE_NODE;
 import static com.alibaba.cloud.ai.graph.StateGraph.END;
 
 public class SearchLiteIntentDispatcher implements EdgeAction {
@@ -24,8 +24,8 @@ public class SearchLiteIntentDispatcher implements EdgeAction {
 			.orElse("");
 
 		if ("DATA_ANALYSIS".equalsIgnoreCase(classification)) {
-			log.info("graph intent dispatcher: classified as data analysis, route to {}", RESULT_NODE);
-			return RESULT_NODE;
+			log.info("graph intent dispatcher: classified as data analysis, route to {}", CONTINUE_NODE);
+			return CONTINUE_NODE;
 		}
 
 		log.info("graph intent dispatcher: classified as {}, route to END", normalize(classification));

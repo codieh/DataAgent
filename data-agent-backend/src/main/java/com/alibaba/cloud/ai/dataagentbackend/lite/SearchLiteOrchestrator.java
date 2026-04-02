@@ -4,6 +4,7 @@ import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteMessage;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteRequest;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteStage;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteState;
+import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphService;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStep;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStepResult;
 import java.util.List;
@@ -11,6 +12,7 @@ import java.util.UUID;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import reactor.core.publisher.Flux;
@@ -28,8 +30,15 @@ public class SearchLiteOrchestrator {
 
 	private final List<SearchLiteStep> steps;
 
-	public SearchLiteOrchestrator(List<SearchLiteStep> steps) {
+	private final String mode;
+
+	private final SearchLiteGraphService graphService;
+
+	public SearchLiteOrchestrator(List<SearchLiteStep> steps,
+			@Value("${search.lite.orchestrator.mode:pipeline}") String mode, SearchLiteGraphService graphService) {
 		this.steps = steps;
+		this.mode = mode == null ? "pipeline" : mode.trim().toLowerCase();
+		this.graphService = graphService;
 	}
 
 	public Flux<SearchLiteMessage> stream(SearchLiteRequest request) {
@@ -50,7 +59,7 @@ public class SearchLiteOrchestrator {
 		log.info("search-lite 开始：agentId={}, threadId={}, queryLen={}, steps=[{}]", request.agentId(), threadId,
 				queryLen, stepsDesc);
 
-		return runSteps(ctx, state, 0)
+		return runWithSelectedMode(ctx, state)
 			.doFinally(signal -> log.info("search-lite 结束：agentId={}, threadId={}, signal={}", request.agentId(),
 					threadId, signal))
 			.onErrorResume(error -> {
@@ -58,6 +67,24 @@ public class SearchLiteOrchestrator {
 				log.warn("search-lite 异常：agentId={}, threadId={}, error={}", request.agentId(), threadId, msg, error);
 				return Flux.just(SearchLiteMessages.error(ctx, SearchLiteStage.RESULT, msg));
 			});
+	}
+
+	private Flux<SearchLiteMessage> runWithSelectedMode(SearchLiteContext ctx, SearchLiteState state) {
+		if ("graph".equalsIgnoreCase(mode)) {
+			return runGraphMode(ctx, state);
+		}
+		return runSteps(ctx, state, 0);
+	}
+
+	private Flux<SearchLiteMessage> runGraphMode(SearchLiteContext ctx, SearchLiteState state) {
+		return Flux.defer(() -> {
+			log.info("search-lite 使用 graph 编排：threadId={}", ctx.threadId());
+			reactor.core.publisher.Sinks.Many<SearchLiteMessage> sink = reactor.core.publisher.Sinks.many()
+				.unicast()
+				.onBackpressureBuffer();
+			graphService.graphStreamProcess(sink, ctx, state, updatedState -> runSteps(ctx, updatedState, 1));
+			return sink.asFlux();
+		});
 	}
 
 	/**

@@ -5,7 +5,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
 
-import static com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphConfiguration.RESULT_NODE;
+import static com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphConfiguration.CONTINUE_NODE;
 import static com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphStateKeys.INTENT_CLASSIFICATION;
 import static com.alibaba.cloud.ai.graph.StateGraph.END;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -18,12 +18,12 @@ class SearchLiteIntentDispatcherTest {
 	private final SearchLiteIntentDispatcher dispatcher = new SearchLiteIntentDispatcher();
 
 	@Test
-	void should_route_data_analysis_to_result_node() {
+	void should_route_data_analysis_to_continue_node() {
 		OverAllState state = mock(OverAllState.class);
 		when(state.value(anyString())).thenReturn(Optional.empty());
 		when(state.value(INTENT_CLASSIFICATION)).thenReturn(Optional.of("DATA_ANALYSIS"));
 
-		assertEquals(RESULT_NODE, dispatcher.apply(state));
+		assertEquals(CONTINUE_NODE, dispatcher.apply(state));
 	}
 
 	@Test
