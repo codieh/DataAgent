@@ -26,6 +26,21 @@ public class SearchLiteGraphMessageEmitter {
 		sinkMap.remove(threadId);
 	}
 
+	public boolean hasSink(String threadId) {
+		return threadId != null && !threadId.isBlank() && sinkMap.containsKey(threadId);
+	}
+
+	public boolean emitOne(String threadId, SearchLiteMessage message) {
+		if (threadId == null || threadId.isBlank() || message == null) {
+			return false;
+		}
+		Sinks.Many<SearchLiteMessage> sink = sinkMap.get(threadId);
+		if (sink == null) {
+			return false;
+		}
+		return !sink.tryEmitNext(message).isFailure();
+	}
+
 	public boolean emit(String threadId, List<SearchLiteMessage> messages) {
 		if (threadId == null || threadId.isBlank() || messages == null || messages.isEmpty()) {
 			return false;

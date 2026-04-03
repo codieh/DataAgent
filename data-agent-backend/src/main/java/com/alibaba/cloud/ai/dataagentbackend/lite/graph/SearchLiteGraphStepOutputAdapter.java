@@ -22,13 +22,15 @@ public class SearchLiteGraphStepOutputAdapter {
 		SearchLiteState originalState = snapshot.originalState();
 		SearchLiteState updatedState = stepResult.updatedState().defaultIfEmpty(originalState).block();
 		List<SearchLiteMessage> existingMessages = snapshot.existingMessages();
-		List<SearchLiteMessage> stepMessages = stepResult.messages().collectList().block();
 
 		Map<String, Object> mappedState = SearchLiteGraphStateMapper
 			.fromSearchLiteState(updatedState == null ? originalState : updatedState);
 
-		boolean emittedDirectly = messageEmitter.emit(snapshot.threadId(), stepMessages);
-		if (!emittedDirectly) {
+		if (messageEmitter.hasSink(snapshot.threadId())) {
+			stepResult.messages().doOnNext(message -> messageEmitter.emitOne(snapshot.threadId(), message)).blockLast();
+		}
+		else {
+			List<SearchLiteMessage> stepMessages = stepResult.messages().collectList().block();
 			ArrayList<SearchLiteMessage> mergedMessages = new ArrayList<>(existingMessages);
 			if (stepMessages != null && !stepMessages.isEmpty()) {
 				mergedMessages.addAll(stepMessages);
