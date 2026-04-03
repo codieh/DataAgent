@@ -18,18 +18,22 @@ public class SearchLiteGraphStepOutputAdapter {
 		this.messageEmitter = messageEmitter;
 	}
 
+	public boolean hasLiveSink(String threadId) {
+		return messageEmitter.hasSink(threadId);
+	}
+
 	public Map<String, Object> adapt(OverAllStateSnapshot snapshot, SearchLiteStepResult stepResult) {
 		SearchLiteState originalState = snapshot.originalState();
 		SearchLiteState updatedState = stepResult.updatedState().defaultIfEmpty(originalState).block();
-		List<SearchLiteMessage> existingMessages = snapshot.existingMessages();
-
 		Map<String, Object> mappedState = SearchLiteGraphStateMapper
 			.fromSearchLiteState(updatedState == null ? originalState : updatedState);
 
 		if (messageEmitter.hasSink(snapshot.threadId())) {
 			stepResult.messages().doOnNext(message -> messageEmitter.emitOne(snapshot.threadId(), message)).blockLast();
+			mappedState.remove(SearchLiteGraphStateKeys.GRAPH_MESSAGES);
 		}
 		else {
+			List<SearchLiteMessage> existingMessages = snapshot.existingMessages();
 			List<SearchLiteMessage> stepMessages = stepResult.messages().collectList().block();
 			ArrayList<SearchLiteMessage> mergedMessages = new ArrayList<>(existingMessages);
 			if (stepMessages != null && !stepMessages.isEmpty()) {

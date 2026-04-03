@@ -24,9 +24,14 @@ abstract class SearchLiteStepGraphNodeSupport {
 		String threadId = resolveThreadId(liteState);
 		SearchLiteContext context = new SearchLiteContext(threadId);
 		SearchLiteStepResult stepResult = step.run(context, liteState);
-		List<SearchLiteMessage> existingMessages = readMessages(graphState);
+		List<SearchLiteMessage> existingMessages = shouldReadFallbackMessages(outputAdapter, threadId) ? readMessages(graphState)
+				: List.of();
 		return outputAdapter.adapt(new SearchLiteGraphStepOutputAdapter.OverAllStateSnapshot(threadId, liteState, existingMessages),
 				stepResult);
+	}
+
+	private boolean shouldReadFallbackMessages(SearchLiteGraphStepOutputAdapter outputAdapter, String threadId) {
+		return !outputAdapter.hasLiveSink(threadId);
 	}
 
 	private String resolveThreadId(SearchLiteState state) {

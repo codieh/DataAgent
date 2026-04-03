@@ -12,6 +12,12 @@ public class SearchLiteGraphMessageEmitter {
 
 	private final ConcurrentHashMap<String, Sinks.Many<SearchLiteMessage>> sinkMap = new ConcurrentHashMap<>();
 
+	private final SearchLiteGraphMessageNormalizer messageNormalizer;
+
+	public SearchLiteGraphMessageEmitter(SearchLiteGraphMessageNormalizer messageNormalizer) {
+		this.messageNormalizer = messageNormalizer;
+	}
+
 	public void register(String threadId, Sinks.Many<SearchLiteMessage> sink) {
 		if (threadId == null || threadId.isBlank() || sink == null) {
 			return;
@@ -38,7 +44,8 @@ public class SearchLiteGraphMessageEmitter {
 		if (sink == null) {
 			return false;
 		}
-		return !sink.tryEmitNext(message).isFailure();
+		SearchLiteMessage normalizedMessage = messageNormalizer.normalizeMessage(message);
+		return normalizedMessage != null && !sink.tryEmitNext(normalizedMessage).isFailure();
 	}
 
 	public boolean emit(String threadId, List<SearchLiteMessage> messages) {
@@ -50,7 +57,7 @@ public class SearchLiteGraphMessageEmitter {
 			return false;
 		}
 		boolean emitted = false;
-		for (SearchLiteMessage message : messages) {
+		for (SearchLiteMessage message : messageNormalizer.normalizeMessages(messages)) {
 			if (message == null) {
 				continue;
 			}
