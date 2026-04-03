@@ -2,6 +2,7 @@ package com.alibaba.cloud.ai.dataagentbackend.lite.graph;
 
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteMessage;
 import org.springframework.stereotype.Component;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Sinks;
 
 import java.util.List;
@@ -40,12 +41,8 @@ public class SearchLiteGraphMessageEmitter {
 		if (threadId == null || threadId.isBlank() || message == null) {
 			return false;
 		}
-		Sinks.Many<SearchLiteMessage> sink = sinkMap.get(threadId);
-		if (sink == null) {
-			return false;
-		}
 		SearchLiteMessage normalizedMessage = messageNormalizer.normalizeMessage(message);
-		return normalizedMessage != null && !sink.tryEmitNext(normalizedMessage).isFailure();
+		return emitNormalized(threadId, normalizedMessage);
 	}
 
 	public boolean emit(String threadId, List<SearchLiteMessage> messages) {
@@ -68,6 +65,30 @@ public class SearchLiteGraphMessageEmitter {
 			emitted = true;
 		}
 		return emitted;
+	}
+
+	public void emitStream(String threadId, Flux<SearchLiteMessage> messageFlux) {
+		if (threadId == null || threadId.isBlank() || messageFlux == null) {
+			return;
+		}
+		if (!hasSink(threadId)) {
+			return;
+		}
+		messageFlux.map(messageNormalizer::normalizeMessage)
+			.filter(message -> message != null)
+			.doOnNext(message -> emitNormalized(threadId, message))
+			.blockLast();
+	}
+
+	private boolean emitNormalized(String threadId, SearchLiteMessage message) {
+		if (threadId == null || threadId.isBlank() || message == null) {
+			return false;
+		}
+		Sinks.Many<SearchLiteMessage> sink = sinkMap.get(threadId);
+		if (sink == null) {
+			return false;
+		}
+		return !sink.tryEmitNext(message).isFailure();
 	}
 
 }

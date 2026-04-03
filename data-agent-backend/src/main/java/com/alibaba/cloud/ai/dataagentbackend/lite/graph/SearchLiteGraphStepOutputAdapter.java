@@ -29,7 +29,7 @@ public class SearchLiteGraphStepOutputAdapter {
 			.fromSearchLiteState(updatedState == null ? originalState : updatedState);
 
 		if (messageEmitter.hasSink(snapshot.threadId())) {
-			stepResult.messages().doOnNext(message -> messageEmitter.emitOne(snapshot.threadId(), message)).blockLast();
+			messageEmitter.emitStream(snapshot.threadId(), stepResult.messages());
 			mappedState.remove(SearchLiteGraphStateKeys.GRAPH_MESSAGES);
 		}
 		else {
