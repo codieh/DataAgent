@@ -80,6 +80,21 @@ public class SearchLiteGraphMessageEmitter {
 			.blockLast();
 	}
 
+	public DispatchResult dispatch(String threadId, Flux<SearchLiteMessage> messageFlux) {
+		if (threadId == null || threadId.isBlank() || messageFlux == null) {
+			return new DispatchResult(false, List.of());
+		}
+		if (hasSink(threadId)) {
+			emitStream(threadId, messageFlux);
+			return new DispatchResult(true, List.of());
+		}
+		List<SearchLiteMessage> buffered = messageFlux.map(messageNormalizer::normalizeMessage)
+			.filter(message -> message != null)
+			.collectList()
+			.block();
+		return new DispatchResult(false, buffered == null ? List.of() : buffered);
+	}
+
 	private boolean emitNormalized(String threadId, SearchLiteMessage message) {
 		if (threadId == null || threadId.isBlank() || message == null) {
 			return false;
@@ -89,6 +104,9 @@ public class SearchLiteGraphMessageEmitter {
 			return false;
 		}
 		return !sink.tryEmitNext(message).isFailure();
+	}
+
+	public record DispatchResult(boolean emittedToSink, List<SearchLiteMessage> bufferedMessages) {
 	}
 
 }
