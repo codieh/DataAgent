@@ -2,6 +2,7 @@ package com.alibaba.cloud.ai.dataagentbackend.lite.graph;
 
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.dispatcher.SearchLiteIntentDispatcher;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.dispatcher.SearchLiteSchemaRecallDispatcher;
+import com.alibaba.cloud.ai.dataagentbackend.lite.graph.dispatcher.SearchLiteSqlExecuteDispatcher;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.dispatcher.SearchLiteSqlGenerateDispatcher;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLiteEvidenceGraphNode;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLiteEnhanceGraphNode;
@@ -102,7 +103,8 @@ public class SearchLiteGraphConfiguration {
 			.addEdge(ENHANCE_NODE, SQL_GENERATE_NODE)
 			.addConditionalEdges(SQL_GENERATE_NODE, edge_async(new SearchLiteSqlGenerateDispatcher()),
 					Map.of(SQL_EXECUTE_NODE, SQL_EXECUTE_NODE, RESULT_NODE, RESULT_NODE))
-			.addEdge(SQL_EXECUTE_NODE, RESULT_NODE)
+			.addConditionalEdges(SQL_EXECUTE_NODE, edge_async(new SearchLiteSqlExecuteDispatcher()),
+					Map.of(RESULT_NODE, RESULT_NODE))
 			.addEdge(RESULT_NODE, END);
 		return graph;
 	}
