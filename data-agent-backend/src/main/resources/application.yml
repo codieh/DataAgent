@@ -44,7 +44,7 @@ search:
       top-k: 5
       rewrite:
         # none|minimax
-        provider: none
+        provider: minimax
     document:
       dir: D:\GitHub\DataAgent\data-agent-backend\data\documents
       top-k: 3
