@@ -72,7 +72,8 @@ public class SchemaRecallStep implements SearchLiteStep {
 			return new SearchLiteStepResult(start.concatWith(msg), Mono.just(state));
 		}
 
-		SchemaRecallResult recallResult = recallService.recallSchema(state.getQuery(), state.getEvidenceText(), tables, topK);
+		SchemaRecallResult recallResult = recallService.recallSchema(state.getRecallQuery(), state.getEvidenceText(), tables,
+				topK);
 		List<SchemaTable> recalled = recallResult.tables();
 		List<SchemaTable> focused = recallResult.focusedTables();
 		List<String> recalledNames = recallResult.tableNames();

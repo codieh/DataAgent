@@ -15,6 +15,10 @@ public class SearchLiteState {
 
 	private String query;
 
+	private String multiTurnContext;
+
+	private String contextualizedQuery;
+
 	// intent
 	private String intentClassification;
 
@@ -83,6 +87,22 @@ public class SearchLiteState {
 
 	public void setQuery(String query) {
 		this.query = query;
+	}
+
+	public String getMultiTurnContext() {
+		return multiTurnContext;
+	}
+
+	public void setMultiTurnContext(String multiTurnContext) {
+		this.multiTurnContext = multiTurnContext;
+	}
+
+	public String getContextualizedQuery() {
+		return contextualizedQuery;
+	}
+
+	public void setContextualizedQuery(String contextualizedQuery) {
+		this.contextualizedQuery = contextualizedQuery;
 	}
 
 	public String getIntentClassification() {
@@ -184,6 +204,16 @@ public class SearchLiteState {
 	public String getEffectiveQuery() {
 		if (canonicalQuery != null && !canonicalQuery.isBlank()) {
 			return canonicalQuery.trim();
+		}
+		if (contextualizedQuery != null && !contextualizedQuery.isBlank()) {
+			return contextualizedQuery.trim();
+		}
+		return query == null ? "" : query.trim();
+	}
+
+	public String getRecallQuery() {
+		if (contextualizedQuery != null && !contextualizedQuery.isBlank()) {
+			return contextualizedQuery.trim();
 		}
 		return query == null ? "" : query.trim();
 	}

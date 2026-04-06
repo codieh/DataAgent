@@ -62,6 +62,8 @@ public class SearchLiteGraphConfiguration {
 			strategies.put(SearchLiteGraphStateKeys.AGENT_ID, KeyStrategy.REPLACE);
 			strategies.put(SearchLiteGraphStateKeys.THREAD_ID, KeyStrategy.REPLACE);
 			strategies.put(SearchLiteGraphStateKeys.QUERY, KeyStrategy.REPLACE);
+			strategies.put(SearchLiteGraphStateKeys.MULTI_TURN_CONTEXT, KeyStrategy.REPLACE);
+			strategies.put(SearchLiteGraphStateKeys.CONTEXTUALIZED_QUERY, KeyStrategy.REPLACE);
 			strategies.put(SearchLiteGraphStateKeys.INTENT_CLASSIFICATION, KeyStrategy.REPLACE);
 			strategies.put(SearchLiteGraphStateKeys.EVIDENCES, KeyStrategy.REPLACE);
 			strategies.put(SearchLiteGraphStateKeys.EVIDENCE_TEXT, KeyStrategy.REPLACE);

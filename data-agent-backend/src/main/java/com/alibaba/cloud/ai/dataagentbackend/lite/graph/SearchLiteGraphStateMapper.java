@@ -19,6 +19,8 @@ public final class SearchLiteGraphStateMapper {
 		values.put(SearchLiteGraphStateKeys.AGENT_ID, state.getAgentId());
 		values.put(SearchLiteGraphStateKeys.THREAD_ID, state.getThreadId());
 		values.put(SearchLiteGraphStateKeys.QUERY, state.getQuery());
+		values.put(SearchLiteGraphStateKeys.MULTI_TURN_CONTEXT, state.getMultiTurnContext());
+		values.put(SearchLiteGraphStateKeys.CONTEXTUALIZED_QUERY, state.getContextualizedQuery());
 		values.put(SearchLiteGraphStateKeys.INTENT_CLASSIFICATION, state.getIntentClassification());
 		values.put(SearchLiteGraphStateKeys.EVIDENCES, state.getEvidences());
 		values.put(SearchLiteGraphStateKeys.EVIDENCE_TEXT, state.getEvidenceText());
@@ -46,6 +48,8 @@ public final class SearchLiteGraphStateMapper {
 		state.setAgentId(get(graphState, SearchLiteGraphStateKeys.AGENT_ID, String.class));
 		state.setThreadId(get(graphState, SearchLiteGraphStateKeys.THREAD_ID, String.class));
 		state.setQuery(get(graphState, SearchLiteGraphStateKeys.QUERY, String.class));
+		state.setMultiTurnContext(get(graphState, SearchLiteGraphStateKeys.MULTI_TURN_CONTEXT, String.class));
+		state.setContextualizedQuery(get(graphState, SearchLiteGraphStateKeys.CONTEXTUALIZED_QUERY, String.class));
 		state.setIntentClassification(get(graphState, SearchLiteGraphStateKeys.INTENT_CLASSIFICATION, String.class));
 		state.setEvidences(get(graphState, SearchLiteGraphStateKeys.EVIDENCES, java.util.List.class));
 		state.setEvidenceText(get(graphState, SearchLiteGraphStateKeys.EVIDENCE_TEXT, String.class));

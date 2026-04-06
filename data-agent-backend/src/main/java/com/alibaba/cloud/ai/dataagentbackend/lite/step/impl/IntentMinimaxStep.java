@@ -58,12 +58,18 @@ public class IntentMinimaxStep implements SearchLiteStep {
 				- DATA_ANALYSIS: requires SQL/data retrieval/analysis
 				- CHITCHAT: casual chat or unrelated
 
+				Use the multi-turn context only when the current query clearly refers to previous turns
+				(e.g. pronouns, follow-up constraints, "these", "continue", "change to", etc.).
+
 				Output JSON schema:
 				{"classification":"DATA_ANALYSIS|CHITCHAT","reason":"short reason"}
 
+				Multi-turn context:
+				%s
+
 				User query:
 				%s
-				""".formatted(state.getQuery()).trim();
+				""".formatted(resolveMultiTurnContext(state), state.getQuery()).trim();
 
 		Flux<SearchLiteMessage> start = Flux
 			.just(SearchLiteMessages.message(context, stage(), SearchLiteMessageType.TEXT, "正在进行意图识别...", null))
@@ -113,6 +119,11 @@ public class IntentMinimaxStep implements SearchLiteStep {
 	}
 
 	private record IntentResult(String classification, String reason) {
+	}
+
+	private static String resolveMultiTurnContext(SearchLiteState state) {
+		String multiTurn = state == null ? "" : state.getMultiTurnContext();
+		return multiTurn == null || multiTurn.isBlank() ? "(无)" : multiTurn.trim();
 	}
 
 }

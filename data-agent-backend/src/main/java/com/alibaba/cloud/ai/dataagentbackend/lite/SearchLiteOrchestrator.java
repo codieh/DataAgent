@@ -4,11 +4,15 @@ import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteMessage;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteRequest;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteStage;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteState;
+import com.alibaba.cloud.ai.dataagentbackend.lite.conversation.MultiTurnContextManager;
+import com.alibaba.cloud.ai.dataagentbackend.lite.conversation.PreparedConversationContext;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphService;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStep;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStepResult;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -34,11 +38,19 @@ public class SearchLiteOrchestrator {
 
 	private final SearchLiteGraphService graphService;
 
+	private final MultiTurnContextManager multiTurnContextManager;
+
+	public SearchLiteOrchestrator(List<SearchLiteStep> steps) {
+		this(steps, "pipeline", null, new MultiTurnContextManager(5, 240));
+	}
+
 	public SearchLiteOrchestrator(List<SearchLiteStep> steps,
-			@Value("${search.lite.orchestrator.mode:pipeline}") String mode, SearchLiteGraphService graphService) {
+			@Value("${search.lite.orchestrator.mode:pipeline}") String mode, SearchLiteGraphService graphService,
+			MultiTurnContextManager multiTurnContextManager) {
 		this.steps = steps;
 		this.mode = mode == null ? "pipeline" : mode.trim().toLowerCase();
 		this.graphService = graphService;
+		this.multiTurnContextManager = multiTurnContextManager;
 	}
 
 	public Flux<SearchLiteMessage> stream(SearchLiteRequest request) {
@@ -46,6 +58,11 @@ public class SearchLiteOrchestrator {
 		SearchLiteContext ctx = new SearchLiteContext(threadId);
 		SearchLiteState state = SearchLiteState
 			.fromRequest(new SearchLiteRequest(request.agentId(), threadId, request.query()));
+		PreparedConversationContext preparedConversationContext = multiTurnContextManager.prepareTurn(threadId, request.query());
+		state.setMultiTurnContext(preparedConversationContext.multiTurnContext());
+		state.setContextualizedQuery(preparedConversationContext.contextualizedQuery());
+		AtomicReference<SearchLiteState> latestState = new AtomicReference<>(state);
+		AtomicBoolean completed = new AtomicBoolean(false);
 
 		if (steps == null || steps.isEmpty()) {
 			log.warn("search-lite 无可用 steps：agentId={}, threadId={}", request.agentId(), threadId);
@@ -59,9 +76,18 @@ public class SearchLiteOrchestrator {
 		log.info("search-lite 开始：agentId={}, threadId={}, queryLen={}, steps=[{}]", request.agentId(), threadId,
 				queryLen, stepsDesc);
 
-		return runWithSelectedMode(ctx, state)
+		return runWithSelectedMode(ctx, state, latestState)
+			.doOnComplete(() -> {
+				completed.set(true);
+				multiTurnContextManager.finishTurn(latestState.get());
+			})
 			.doFinally(signal -> log.info("search-lite 结束：agentId={}, threadId={}, signal={}", request.agentId(),
 					threadId, signal))
+			.doFinally(signal -> {
+				if (!completed.get()) {
+					multiTurnContextManager.discardPending(threadId);
+				}
+			})
 			.onErrorResume(error -> {
 				String msg = (error == null || error.getMessage() == null) ? "unknown error" : error.getMessage();
 				log.warn("search-lite 异常：agentId={}, threadId={}, error={}", request.agentId(), threadId, msg, error);
@@ -69,20 +95,22 @@ public class SearchLiteOrchestrator {
 			});
 	}
 
-	private Flux<SearchLiteMessage> runWithSelectedMode(SearchLiteContext ctx, SearchLiteState state) {
+	private Flux<SearchLiteMessage> runWithSelectedMode(SearchLiteContext ctx, SearchLiteState state,
+			AtomicReference<SearchLiteState> latestState) {
 		if ("graph".equalsIgnoreCase(mode)) {
-			return runGraphMode(ctx, state);
+			return runGraphMode(ctx, state, latestState);
 		}
-		return runSteps(ctx, state, 0);
+		return runSteps(ctx, state, 0, latestState);
 	}
 
-	private Flux<SearchLiteMessage> runGraphMode(SearchLiteContext ctx, SearchLiteState state) {
+	private Flux<SearchLiteMessage> runGraphMode(SearchLiteContext ctx, SearchLiteState state,
+			AtomicReference<SearchLiteState> latestState) {
 		return Flux.defer(() -> {
 			log.info("search-lite 使用 graph 编排：threadId={}", ctx.threadId());
 			reactor.core.publisher.Sinks.Many<SearchLiteMessage> sink = reactor.core.publisher.Sinks.many()
 				.unicast()
 				.onBackpressureBuffer();
-			graphService.graphStreamProcess(sink, ctx, state);
+			graphService.graphStreamProcess(sink, ctx, state, latestState);
 			return sink.asFlux();
 		});
 	}
@@ -92,7 +120,8 @@ public class SearchLiteOrchestrator {
 	 * <p>
 	 * 注意：这是一个 {@link Flux}，只有当 WebFlux 为了写 HTTP 响应而订阅（subscribe）时，才会真正开始执行。
 	 */
-	private Flux<SearchLiteMessage> runSteps(SearchLiteContext ctx, SearchLiteState currentState, int index) {
+	private Flux<SearchLiteMessage> runSteps(SearchLiteContext ctx, SearchLiteState currentState, int index,
+			AtomicReference<SearchLiteState> latestState) {
 		if (index >= steps.size()) {
 			return Flux.empty();
 		}
@@ -112,6 +141,7 @@ public class SearchLiteOrchestrator {
 			}
 
 			return result.messages().concatWith(result.updatedState().doOnNext(updatedState -> {
+				latestState.set(updatedState);
 				long tookMs = (System.nanoTime() - startedAt) / 1_000_000;
 				log.debug("step 完成：threadId={}, index={}, stage={}, impl={}, tookMs={}", ctx.threadId(), index,
 						step.stage(), step.getClass().getSimpleName(), tookMs);
@@ -119,7 +149,8 @@ public class SearchLiteOrchestrator {
 				long tookMs = (System.nanoTime() - startedAt) / 1_000_000;
 				log.warn("step 失败：threadId={}, index={}, stage={}, impl={}, tookMs={}, error={}", ctx.threadId(), index,
 						step.stage(), step.getClass().getSimpleName(), tookMs, e == null ? null : e.getMessage(), e);
-			}).defaultIfEmpty(currentState).flatMapMany(updatedState -> runSteps(ctx, updatedState, index + 1)));
+			}).defaultIfEmpty(currentState)
+				.flatMapMany(updatedState -> runSteps(ctx, updatedState, index + 1, latestState)));
 		});
 	}
 

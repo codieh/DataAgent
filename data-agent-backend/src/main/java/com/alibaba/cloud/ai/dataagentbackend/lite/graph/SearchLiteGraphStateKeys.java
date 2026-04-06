@@ -11,6 +11,10 @@ public final class SearchLiteGraphStateKeys {
 
 	public static final String QUERY = "query";
 
+	public static final String MULTI_TURN_CONTEXT = "multiTurnContext";
+
+	public static final String CONTEXTUALIZED_QUERY = "contextualizedQuery";
+
 	public static final String INTENT_CLASSIFICATION = "intentClassification";
 
 	public static final String EVIDENCES = "evidences";

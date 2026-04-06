@@ -13,6 +13,9 @@ search:
     orchestrator:
       # pipeline|graph
       mode: graph
+    context:
+      max-turn-history: 5
+      max-field-length: 240
     recall:
       # keyword|vector|hybrid
       provider: hybrid

@@ -92,7 +92,8 @@ public class EvidenceFileStep implements SearchLiteStep {
 			Flux<SearchLiteMessage> intro = Flux
 				.just(SearchLiteMessages.message(context, stage(), SearchLiteMessageType.TEXT, "正在召回证据...", null),
 						SearchLiteMessages.message(context, stage(), SearchLiteMessageType.JSON, null,
-								Map.of("originalQuery", safe(run.originalQuery()), "rewrittenQuery", safe(run.rewrittenQuery()))),
+								Map.of("originalQuery", safe(run.originalQuery()), "recallQuery", safe(run.recallQuery()),
+										"rewrittenQuery", safe(run.rewrittenQuery()))),
 						SearchLiteMessages.message(context, stage(), SearchLiteMessageType.TEXT,
 								"已找到 " + run.selected().size() + " 条相关证据，并补充 " + run.documentCount() + " 条文档片段。", null))
 				.delayElements(Duration.ofMillis(80));
@@ -118,15 +119,18 @@ public class EvidenceFileStep implements SearchLiteStep {
 
 	private EvidenceRun buildEvidenceRun(SearchLiteContext context, SearchLiteState state) {
 		String originalQuery = state.getQuery();
-		String rewrittenQuery = evidenceQueryRewriteService.rewrite(originalQuery);
+		String recallQuery = state.getRecallQuery();
+		String rewrittenQuery = evidenceQueryRewriteService.rewrite(recallQuery);
 		state.setEvidenceRewriteQuery(rewrittenQuery);
 		List<EvidenceItem> all = evidenceRepository.listAll();
 		if (all == null || all.isEmpty()) {
 			log.warn("evidence 为空：threadId={}, topK={}", context.threadId(), topK);
 		}
 		else {
-			log.info("evidence 召回准备：threadId={}, originalQueryLen={}, rewriteQueryLen={}, topK={}, total={}", context.threadId(),
-					originalQuery == null ? 0 : originalQuery.length(), rewrittenQuery == null ? 0 : rewrittenQuery.length(), topK, all.size());
+			log.info("evidence 召回准备：threadId={}, originalQueryLen={}, recallQueryLen={}, rewriteQueryLen={}, topK={}, total={}",
+					context.threadId(), originalQuery == null ? 0 : originalQuery.length(),
+					recallQuery == null ? 0 : recallQuery.length(), rewrittenQuery == null ? 0 : rewrittenQuery.length(), topK,
+					all.size());
 		}
 
 		EvidenceRecallResult recallResult = recallService.recallEvidence(rewrittenQuery, all, topK);
@@ -140,7 +144,8 @@ public class EvidenceFileStep implements SearchLiteStep {
 		state.setEvidences(selected);
 		state.setEvidenceText(knowledgeContextFormatter.formatEvidenceContext(selected));
 		state.setDocumentText(knowledgeContextFormatter.formatDocumentContext(documentRecallResult.documents()));
-		return new EvidenceRun(originalQuery, rewrittenQuery, selected, summarizeDocuments(documentRecallResult.documents()), state);
+		return new EvidenceRun(originalQuery, recallQuery, rewrittenQuery, selected,
+				summarizeDocuments(documentRecallResult.documents()), state);
 	}
 
 	private static List<Map<String, Object>> summarizeDocuments(List<RecallDocument> documents) {
@@ -151,7 +156,7 @@ public class EvidenceFileStep implements SearchLiteStep {
 				"sectionTitle", String.valueOf(document.metadata().getOrDefault("sectionTitle", "")))).toList();
 	}
 
-	private record EvidenceRun(String originalQuery, String rewrittenQuery, List<EvidenceItem> selected,
+	private record EvidenceRun(String originalQuery, String recallQuery, String rewrittenQuery, List<EvidenceItem> selected,
 			List<Map<String, Object>> documentSummaries, SearchLiteState state) {
 		private int documentCount() {
 			return documentSummaries == null ? 0 : documentSummaries.size();

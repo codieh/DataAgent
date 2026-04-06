@@ -76,6 +76,7 @@ public class EnhanceMinimaxStep implements SearchLiteStep {
 				Rules:
 				- Keep the meaning the same; do NOT invent new business requirements.
 				- Preserve time ranges and filters if present.
+				- If the current query is a follow-up, use the multi-turn context to resolve pronouns and omitted conditions.
 				- You may use business rules and document definitions to clarify domain terms, but do NOT add unrelated constraints.
 				- If the query is already clear, canonicalQuery can equal the original query.
 
@@ -88,9 +89,13 @@ public class EnhanceMinimaxStep implements SearchLiteStep {
 				Definition / background documents:
 				%s
 
+				Multi-turn context:
+				%s
+
 				User query:
 				%s
-				""".formatted(resolveEvidenceContext(state), resolveDocumentContext(state), state.getQuery()).trim();
+				""".formatted(resolveEvidenceContext(state), resolveDocumentContext(state), resolveMultiTurnContext(state),
+						state.getQuery()).trim();
 
 		Flux<SearchLiteMessage> start = Flux
 			.just(SearchLiteMessages.message(context, stage(), SearchLiteMessageType.TEXT, "正在进行查询增强...", null))
@@ -159,6 +164,11 @@ public class EnhanceMinimaxStep implements SearchLiteStep {
 	private static String resolveDocumentContext(SearchLiteState state) {
 		String documents = state == null ? "" : state.getDocumentText();
 		return documents == null || documents.isBlank() ? "(无文档定义补充)" : documents.trim();
+	}
+
+	private static String resolveMultiTurnContext(SearchLiteState state) {
+		String multiTurn = state == null ? "" : state.getMultiTurnContext();
+		return multiTurn == null || multiTurn.isBlank() ? "(无)" : multiTurn.trim();
 	}
 
 	private record EnhanceResult(String canonicalQuery, List<String> expandedQueries) {
