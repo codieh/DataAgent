@@ -5,6 +5,7 @@ import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteMessage;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteMessageType;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteStage;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteState;
+import com.alibaba.cloud.ai.dataagentbackend.lite.knowledge.KnowledgeContextFormatter;
 import com.alibaba.cloud.ai.dataagentbackend.lite.SearchLiteContext;
 import com.alibaba.cloud.ai.dataagentbackend.lite.SearchLiteMessages;
 import com.alibaba.cloud.ai.dataagentbackend.lite.evidence.EvidenceRepository;
@@ -58,18 +59,21 @@ public class EvidenceFileStep implements SearchLiteStep {
 
 	private final EvidenceQueryRewriteService evidenceQueryRewriteService;
 
+	private final KnowledgeContextFormatter knowledgeContextFormatter;
+
 	private final int topK;
 
 	private final int documentTopK;
 
 	public EvidenceFileStep(EvidenceRepository evidenceRepository, DocumentRepository documentRepository, RecallService recallService,
-			EvidenceQueryRewriteService evidenceQueryRewriteService,
+			EvidenceQueryRewriteService evidenceQueryRewriteService, KnowledgeContextFormatter knowledgeContextFormatter,
 			@Value("${search.lite.evidence.top-k:5}") int topK,
 			@Value("${search.lite.document.top-k:3}") int documentTopK) {
 		this.evidenceRepository = Objects.requireNonNull(evidenceRepository, "evidenceRepository");
 		this.documentRepository = Objects.requireNonNull(documentRepository, "documentRepository");
 		this.recallService = Objects.requireNonNull(recallService, "recallService");
 		this.evidenceQueryRewriteService = Objects.requireNonNull(evidenceQueryRewriteService, "evidenceQueryRewriteService");
+		this.knowledgeContextFormatter = Objects.requireNonNull(knowledgeContextFormatter, "knowledgeContextFormatter");
 		this.topK = Math.max(1, topK);
 		this.documentTopK = Math.max(1, documentTopK);
 	}
@@ -134,21 +138,9 @@ public class EvidenceFileStep implements SearchLiteStep {
 			.limit(10)
 			.toList());
 		state.setEvidences(selected);
-		state.setDocumentText(documentRecallResult.promptText());
-		state.setEvidenceText(mergeEvidenceAndDocuments(recallResult.promptText(), documentRecallResult.promptText()));
+		state.setEvidenceText(knowledgeContextFormatter.formatEvidenceContext(selected));
+		state.setDocumentText(knowledgeContextFormatter.formatDocumentContext(documentRecallResult.documents()));
 		return new EvidenceRun(originalQuery, rewrittenQuery, selected, summarizeDocuments(documentRecallResult.documents()), state);
-	}
-
-	private static String mergeEvidenceAndDocuments(String evidenceText, String documentText) {
-		String evidence = safe(evidenceText);
-		String documents = safe(documentText);
-		if (evidence.isBlank()) {
-			return documents;
-		}
-		if (documents.isBlank() || "(无文档补充)".equals(documents)) {
-			return evidence;
-		}
-		return (evidence + "\n\n" + documents).trim();
 	}
 
 	private static List<Map<String, Object>> summarizeDocuments(List<RecallDocument> documents) {

@@ -76,14 +76,21 @@ public class EnhanceMinimaxStep implements SearchLiteStep {
 				Rules:
 				- Keep the meaning the same; do NOT invent new business requirements.
 				- Preserve time ranges and filters if present.
+				- You may use business rules and document definitions to clarify domain terms, but do NOT add unrelated constraints.
 				- If the query is already clear, canonicalQuery can equal the original query.
 
 				Output JSON schema:
 				{"canonicalQuery":"...","expandedQueries":["...","..."]}
 
+				Business rules / FAQ hints:
+				%s
+
+				Definition / background documents:
+				%s
+
 				User query:
 				%s
-				""".formatted(state.getQuery()).trim();
+				""".formatted(resolveEvidenceContext(state), resolveDocumentContext(state), state.getQuery()).trim();
 
 		Flux<SearchLiteMessage> start = Flux
 			.just(SearchLiteMessages.message(context, stage(), SearchLiteMessageType.TEXT, "正在进行查询增强...", null))
@@ -142,6 +149,16 @@ public class EnhanceMinimaxStep implements SearchLiteStep {
 			return text.substring(start, end + 1);
 		}
 		return text;
+	}
+
+	private static String resolveEvidenceContext(SearchLiteState state) {
+		String evidence = state == null ? "" : state.getEvidenceText();
+		return evidence == null || evidence.isBlank() ? "(无业务规则提示)" : evidence.trim();
+	}
+
+	private static String resolveDocumentContext(SearchLiteState state) {
+		String documents = state == null ? "" : state.getDocumentText();
+		return documents == null || documents.isBlank() ? "(无文档定义补充)" : documents.trim();
 	}
 
 	private record EnhanceResult(String canonicalQuery, List<String> expandedQueries) {

@@ -72,11 +72,13 @@ public class SqlGenerateMinimaxStep implements SearchLiteStep {
 		String question = state.getEffectiveQuery();
 		String schema = resolveSchemaContext(state);
 		String evidence = resolveEvidenceContext(state);
+		String documents = resolveDocumentContext(state);
 
 		int schemaLen = schema == null ? 0 : schema.length();
 		int evidenceLen = evidence == null ? 0 : evidence.length();
-		log.info("sql-generate start: threadId={}, qLen={}, schemaLen={}, evidenceLen={}", context.threadId(),
-				question == null ? 0 : question.length(), schemaLen, evidenceLen);
+		int documentLen = documents == null ? 0 : documents.length();
+		log.info("sql-generate start: threadId={}, qLen={}, schemaLen={}, evidenceLen={}, documentLen={}", context.threadId(),
+				question == null ? 0 : question.length(), schemaLen, evidenceLen, documentLen);
 
 		String system = """
 				You are a senior data analyst who writes correct and safe SQL.
@@ -84,7 +86,7 @@ public class SqlGenerateMinimaxStep implements SearchLiteStep {
 				Do NOT return markdown, code fences, explanations, or JSON.
 				""".trim();
 
-		String user = buildSqlGenerationPrompt(question, schema, evidence, defaultLimit);
+		String user = buildSqlGenerationPrompt(question, schema, evidence, documents, defaultLimit);
 
 		Flux<SearchLiteMessage> start = Flux.just(SearchLiteMessages.message(context, stage(), SearchLiteMessageType.TEXT,
 				"正在生成 SQL...", null)).delayElements(Duration.ofMillis(50));
@@ -139,7 +141,8 @@ public class SqlGenerateMinimaxStep implements SearchLiteStep {
 		return withoutFences;
 	}
 
-	static String buildSqlGenerationPrompt(String question, String schema, String evidence, int defaultLimit) {
+	static String buildSqlGenerationPrompt(String question, String schema, String evidence, String documents,
+			int defaultLimit) {
 		return """
 				User question:
 				%s
@@ -147,15 +150,21 @@ public class SqlGenerateMinimaxStep implements SearchLiteStep {
 				Authoritative database schema (STRUCTURE SOURCE, must be obeyed):
 				%s
 
-				Supporting business evidence (SOFT HINTS only):
+				Supporting business rules and FAQ hints:
+				%s
+
+				Supporting definitions and background documents:
 				%s
 
 				How to use context:
 				- Treat schema as the hard constraint for tables, columns, joins, and SQL structure.
 				- Use ONLY tables/columns that exist in the schema section.
-				- Treat evidence only as business terminology / metric hints.
+				- Treat evidence as explicit business rules, FAQ answers, or metric calculation hints.
+				- Treat documents as concept definitions and background explanations, especially for business terms like user segments and metrics.
 				- If evidence conflicts with schema, always trust schema.
-				- If evidence is irrelevant, ignore it.
+				- If documents conflict with schema, always trust schema.
+				- If a document provides a definition that clearly matches the user question, prefer that definition over unrelated evidence.
+				- If evidence or documents are irrelevant to the current question, ignore them.
 
 				Constraints:
 				- Output must be a single MySQL SELECT statement (no semicolons, no multiple statements).
@@ -164,7 +173,7 @@ public class SqlGenerateMinimaxStep implements SearchLiteStep {
 				- Do NOT add debug/system columns (e.g., CURRENT_USER(), USER(), VERSION(), @@variables).
 				- Avoid reserved keywords as aliases.
 				- If the question is ambiguous or cannot be answered with the schema, still output the best-effort SELECT.
-				""".formatted(safe(question), safe(schema), safe(evidence), Math.max(1, defaultLimit)).trim();
+				""".formatted(safe(question), safe(schema), safe(evidence), safe(documents), Math.max(1, defaultLimit)).trim();
 	}
 
 	private static String resolveSchemaContext(SearchLiteState state) {
@@ -182,6 +191,17 @@ public class SqlGenerateMinimaxStep implements SearchLiteStep {
 			return "(无 evidence)";
 		}
 		return evidence;
+	}
+
+	private static String resolveDocumentContext(SearchLiteState state) {
+		if (state == null) {
+			return "(无文档定义补充)";
+		}
+		String documents = safe(state.getDocumentText());
+		if (!StringUtils.hasText(documents)) {
+			return "(无文档定义补充)";
+		}
+		return documents;
 	}
 
 	private static String safe(String s) {
