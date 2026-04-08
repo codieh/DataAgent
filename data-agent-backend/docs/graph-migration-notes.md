@@ -1770,3 +1770,1364 @@ RESULT -> END
 - 不太适合长期原样保存那些复杂运行时对象
 
 这也是后续如果我们继续往更完整的 graph streaming 演进时，需要持续优化的一点。
+
+---
+
+## 24. Step G8.1 完成内容（记录时间：2026-04-02）
+
+本步骤目标：
+
+- 开始把 Graph 的消息机制向 `management` 靠拢
+- 减少“先把复杂消息塞进 graph state，再统一回放”的依赖
+- 先做一层稳妥演进：让 graph node 在 step 执行后直接把消息推到 sink
+
+本步骤已完成：
+
+- 新增 `SearchLiteGraphMessageEmitter`
+  - 用 `threadId -> sink` 的注册表维护当前 graph 请求对应的 SSE sink
+- 更新 `SearchLiteGraphService`
+  - 在 `graphStreamProcess(...)` 开始时注册 sink
+  - 结束时注销 sink
+- 更新 `SearchLiteStepGraphNodeSupport`
+  - step 执行后，如果当前 threadId 已注册 sink
+  - 则直接把 `stepMessages` emit 到 sink
+  - 只有在没有可用 sink 时，才退回到旧的 `GRAPH_MESSAGES` 暂存逻辑
+- 更新所有 graph node
+  - 现在统一通过 `SearchLiteGraphMessageEmitter` 走消息直推能力
+
+### 24.1 这一步和 management 的关系
+
+这一步还不是完全等同于 `management` 的 streaming 模式。
+
+`management` 更进一步，它是：
+
+- 节点内部直接产生 `StreamingOutput`
+- service 订阅 graph stream 后立刻往 sink 推送
+
+而当前 lite backend 的 G8.1 仍然保留了一个过渡特征：
+
+- step 内部消息先 `collectList().block()`
+- 但 collect 完后不再优先塞进 graph state
+- 而是优先直接 emit 到 sink
+
+所以这一步可以理解为：
+
+> 还没做到“节点内逐 delta 直出”，但已经做到“消息优先直接输出，而不是优先塞回 graph state”。
+
+### 24.2 为什么这一步很重要
+
+它直接减少了当前最脆弱的一环：
+
+- `SearchLiteMessage` 中带复杂 payload
+- payload 在 graph state 里走一圈
+- 再统一回放时发生序列化问题
+
+G8.1 之后，这个风险显著下降，因为：
+
+- 大部分主链路消息不再依赖 `GRAPH_MESSAGES`
+- 而是在节点完成后直接推送给 SSE sink
+
+### 24.3 这一步之后的架构含义
+
+这说明 Graph 模式的职责开始变得更清晰：
+
+- Graph state：更偏向保存业务状态
+- sink：更偏向承担消息输出
+
+这正是后续继续向 `management` 靠拢的基础。
+
+---
+
+## 25. Step G8.2 完成内容（记录时间：2026-04-02）
+
+本步骤目标：
+
+- 把当前“step 执行后如何把结果变成 graph 输出”的逻辑再抽一层
+- 让 graph node 的职责更纯，只负责执行业务
+- 让“结果适配 + 消息输出”更接近 `management` 里 `FluxUtil` 那种独立适配层思路
+
+本步骤已完成：
+
+- 新增 `SearchLiteGraphStepOutputAdapter`
+  - 专门负责：
+    - 聚合 `SearchLiteStepResult`
+    - 决定是直接 emit 到 sink，还是回退到 `GRAPH_MESSAGES`
+    - 把更新后的 `SearchLiteState` 再映射回 graph state
+- 更新 `SearchLiteStepGraphNodeSupport`
+  - 不再自己处理：
+    - `messages().collectList()`
+    - `updatedState().block()`
+    - 直推还是暂存的决策
+  - 这些都交给 `SearchLiteGraphStepOutputAdapter`
+- 更新所有 graph node
+  - 现在统一依赖 `SearchLiteGraphStepOutputAdapter`
+  - node 本身只做：
+    - 选中正确的 step
+    - 调 `executeStep(...)`
+
+### 25.1 这一步和 G8.1 的区别
+
+G8.1 做的是：
+
+- 行为层面的改变
+  - “消息优先直推 sink，而不是优先塞回 graph state”
+
+G8.2 做的是：
+
+- 结构层面的改变
+  - 把“step 输出如何适配成 graph 输出”抽成独立组件
+
+所以 G8.2 的价值不只是代码更整洁，而是：
+
+> graph node、step output adapter、message emitter 三者的职责开始分离了。
+
+### 25.2 和 management 的相似点在哪里
+
+虽然当前 lite backend 还没做到 `management` 那种：
+
+- 节点直接产出 `StreamingOutput`
+- service 订阅 graph stream 即时推送
+
+但 G8.2 已经在结构上开始对齐它的思想：
+
+- 节点不直接承担所有输出细节
+- 输出适配被抽到专门层里
+
+这和 `management` 中：
+
+- node 负责业务
+- `FluxUtil` 负责把业务输出适配成 graph streaming response
+
+是同一类思路。
+
+### 25.3 这一步之后的收益
+
+G8.2 完成后，我们后面如果要继续往真正 streaming 演进，会更容易：
+
+- 继续替换 adapter 内部实现
+- 逐步减少 `collectList().block()`
+- 最后把 step 输出进一步改造成更贴近 graph-native 的流式输出
+
+也就是说，这一步是一次很重要的“中间层抽象”。
+
+---
+
+## 26. Step G8.3 完成内容（记录时间：2026-04-02）
+
+本步骤目标：
+
+- 开始减少 `collectList().block()` 这类“先收齐再发”的行为
+- 先把 graph 输出路径中的“消息”这一条改成更接近 streaming
+- 让用户在 graph 模式下更早看到节点输出
+
+本步骤已完成：
+
+- 更新 `SearchLiteGraphMessageEmitter`
+  - 新增：
+    - `hasSink(threadId)`
+    - `emitOne(threadId, message)`
+- 更新 `SearchLiteGraphStepOutputAdapter`
+  - 当当前 threadId 已注册 sink 时：
+    - 不再 `collectList().block()`
+    - 而是对 `stepResult.messages()` 逐条 `doOnNext(...emitOne...)`
+    - 然后等待消息流完成
+  - 只有在没有 sink 的兜底场景下，才继续保留：
+    - `collectList().block()`
+    - 放入 `GRAPH_MESSAGES`
+
+### 26.1 这一步具体减少了什么阻塞
+
+G8.2 之前，adapter 里是：
+
+- `updatedState().block()`
+- `messages().collectList().block()`
+
+也就是说：
+
+- 消息必须先全部收齐
+- 才会一次性发给用户
+
+G8.3 之后，至少在有 sink 的主路径下：
+
+- message 不再先收齐
+- 而是边从 `Flux<SearchLiteMessage>` 里取出
+- 边直接推给 sink
+
+这意味着：
+
+- 用户能更早看到节点输出
+- graph 消息路径更接近真实 streaming
+
+### 26.2 为什么这一步还不是完全 non-blocking
+
+需要很诚实地说，这一步还不是“彻底无阻塞”的最终形态。
+
+因为当前 adapter 里仍然保留了一处：
+
+- `updatedState().defaultIfEmpty(...).block()`
+
+这是因为当前 graph node 的 `apply(...)` 仍然是同步返回 `Map<String, Object>`，
+所以在不彻底改造 node contract 的前提下，我们仍然需要等到 state 更新完成，
+才能把更新后的 graph state 返回给图继续往下走。
+
+所以 G8.3 更准确地说是：
+
+> 先把“消息输出”这条线从“收齐后回放”改成“逐条直出”，而不是一步到位把整个 node 都改成完全异步。
+
+### 26.3 这一步和 management 的距离
+
+相比 `management`，我们现在仍然还差一层：
+
+- `management` 更像是节点天然产出 graph streaming output
+- 而当前 lite backend 还是：
+  - step 先产出 Reactor 消息流
+  - adapter 再把它桥接到 sink
+
+但 G8.3 至少已经完成了一个很关键的转变：
+
+- **消息输出不再优先依赖 `collectList().block()`**
+
+这让后续继续往真正的 graph-native streaming 演进时，阻力小了很多。
+
+---
+
+## 27. Step G8.4 完成内容（记录时间：2026-04-03）
+
+本步骤目标：
+
+- 继续减少 `GRAPH_MESSAGES` 在主路径中的存在感
+- 让 graph state 更像“状态容器”，而不是“消息暂存区”
+- 进一步向 `management` 的“消息直接流向 sink”靠拢
+
+本步骤已完成：
+
+- 更新 `SearchLiteGraphStepOutputAdapter`
+  - 新增：
+    - `hasLiveSink(threadId)`
+  - 当当前请求已经绑定 live sink 时：
+    - 继续逐条直推 `stepResult.messages()`
+    - 同时显式从 `mappedState` 中移除 `GRAPH_MESSAGES`
+- 更新 `SearchLiteStepGraphNodeSupport`
+  - 只有在 **没有 live sink** 的兜底场景下，才读取 graph state 中已有的 `GRAPH_MESSAGES`
+  - 对于正常的 SSE 主路径：
+    - 不再先把旧消息读出来
+    - 也不再让新的 graph state 继续携带这批消息
+
+### 27.1 这一步具体减少了什么耦合
+
+G8.3 之后，虽然消息已经优先直推 sink 了，但 graph node 仍然还会做一件多余的事：
+
+- 每次执行 step 前，先从 graph state 里读取 `GRAPH_MESSAGES`
+
+这意味着即使主路径已经不需要“消息回放”，
+node 仍然会把自己和 `GRAPH_MESSAGES` 这个兼容字段绑定在一起。
+
+G8.4 做的事情就是把这层耦合继续拆掉：
+
+- **有 sink 的时候，node 只关心状态推进和消息直推**
+- **没有 sink 的时候，才回退到旧的消息暂存机制**
+
+### 27.2 为什么这一步重要
+
+这一步看起来像“小优化”，但其实非常关键。
+
+因为它让 graph state 的职责进一步收敛成：
+
+- 保存业务状态
+  - `intentClassification`
+  - `schemaText`
+  - `sql`
+  - `rows`
+  - `resultSummary`
+
+而不是继续承担：
+
+- “顺带缓存所有中间消息”
+
+这正是我们向 `management` 靠拢时最需要的方向：
+
+> **图负责状态推进，sink 负责消息流出。**
+
+### 27.3 G8.4 完成后的当前形态
+
+到这一步，当前 graph 输出机制可以这样理解：
+
+- **主路径（SSE + live sink）**
+  - 节点消息优先逐条直推到 sink
+  - graph state 不再继续携带 `GRAPH_MESSAGES`
+- **兜底路径（无 sink / 直接调用）**
+  - 仍然允许使用 `GRAPH_MESSAGES`
+  - 以便保留兼容性和调试能力
+
+所以 G8.4 并不是完全移除了 `GRAPH_MESSAGES`，
+而是把它降级成了一个：
+
+- **兼容层字段**
+
+而不再是主输出通道。
+
+---
+
+## 28. Step G8.5 完成内容（记录时间：2026-04-03）
+
+本步骤目标：
+
+- 让 `SearchLiteGraphService` 的主路径也进一步摆脱 `GRAPH_MESSAGES`
+- 避免 graph 结束后再做一次“整批消息回放”
+- 把 graph service 的职责更明确地拆成：
+  - 调图拿最终 state
+  - 在需要时才读取兜底消息
+
+本步骤已完成：
+
+- 更新 `SearchLiteGraphService`
+  - 抽出：
+    - `invokeFinalState(...)`
+    - `toExecutionResult(...)`
+  - `graphStreamProcess(...)` 的主路径现在直接：
+    - 调图得到最终 `OverAllState`
+    - 只还原 `SearchLiteState` 和 `route`
+    - **不再读取 `GRAPH_MESSAGES`**
+- `runInitialGraph(...)` 仍然保留
+  - 但它现在被明确收敛为：
+    - **同步/兜底路径**
+    - 如果未来需要在无 sink 场景下直接拿 graph 结果，仍然可以继续读取并规范化 `GRAPH_MESSAGES`
+
+### 28.1 这一步具体减少了什么
+
+G8.4 之后，node 侧已经做到：
+
+- 主路径下优先直推 sink
+- graph state 不再继续携带 `GRAPH_MESSAGES`
+
+但 service 侧仍然保留了一个旧思维：
+
+- graph 跑完后，默认还会去 final state 里读 `GRAPH_MESSAGES`
+- 然后再尝试 `emitMessages(...)`
+
+这会带来两个问题：
+
+- 即使主路径已经不需要“消息回放”，service 仍然会保留这条逻辑
+- 代码结构上会让人误以为：
+  - graph 主路径还是依赖 `GRAPH_MESSAGES`
+
+G8.5 把这层历史包袱继续拆掉了。
+
+### 28.2 现在 service 的两条路径
+
+到这一步，`SearchLiteGraphService` 已经更清晰地分成了两类用途：
+
+- **主路径：`graphStreamProcess(...)`**
+  - 面向 SSE + live sink
+  - 只关心：
+    - graph 最终 state
+    - route
+    - 兜底完成/错误消息
+  - 不再读取 `GRAPH_MESSAGES`
+
+- **兼容路径：`runInitialGraph(...)`**
+  - 面向同步调用/调试/兜底
+  - 仍然可以把 `GRAPH_MESSAGES` 读出来并做规范化
+
+### 28.3 这一步和 management 的关系
+
+这一步很接近 `management` 的一个重要思想：
+
+> **主流式链路不要在 graph 结束后再做消息回放。**
+
+虽然我们现在还没有完全做到 `compiledGraph.stream(...) + StreamingOutput`，
+但至少在 service 这一层，主路径已经开始更像：
+
+- 图负责推进状态
+- sink 负责承接消息
+
+而不是：
+
+- 图先把消息都存起来
+- service 再统一拿出来回放
+
+---
+
+## 29. Step G8.6 完成内容（记录时间：2026-04-03）
+
+本步骤目标：
+
+- 把消息规范化逻辑从 `SearchLiteGraphService` 里继续抽出来
+- 让“直接发到 sink”和“兜底读取 `GRAPH_MESSAGES`”共用同一套消息归一化规则
+- 继续减少 Graph service 中与消息序列化细节的耦合
+
+本步骤已完成：
+
+- 新增：
+  - `SearchLiteGraphMessageNormalizer`
+- 更新：
+  - `SearchLiteGraphMessageEmitter`
+  - `SearchLiteGraphService`
+
+### 29.1 这一步具体做了什么
+
+在 G8.5 之前，消息规范化逻辑仍然主要放在 `SearchLiteGraphService` 里：
+
+- `normalizeMessages(...)`
+- `normalizeMessage(...)`
+- `normalizePayload(...)`
+
+这会带来一个结构问题：
+
+- **service 既负责调图、拿最终 state，又负责处理消息序列化细节**
+
+而实际在当前架构里，真正需要消息规范化的地方有两处：
+
+- **主路径**
+  - 节点消息直接推给 sink
+- **兜底路径**
+  - 从 `GRAPH_MESSAGES` 读回旧消息再返回
+
+所以 G8.6 把消息规范化继续抽成独立组件：
+
+- `SearchLiteGraphMessageNormalizer`
+
+### 29.2 现在三层职责如何分工
+
+到这一步，graph 消息相关职责已经更清楚了：
+
+- `SearchLiteGraphMessageNormalizer`
+  - 负责把消息和 payload 压平成稳定的 JSON 友好结构
+- `SearchLiteGraphMessageEmitter`
+  - 负责把消息推到 sink
+  - 推送前统一经过 normalizer
+- `SearchLiteGraphService`
+  - 负责：
+    - 编译后的图执行
+    - 组装最终 state / route
+    - 在兜底路径下读取 `GRAPH_MESSAGES`
+
+这意味着：
+
+- **service 不再直接关心 payload 递归规整的具体实现**
+- **emitter 和 fallback path 也终于用上了同一套标准**
+
+### 29.3 为什么这一步很值得做
+
+这是一个典型的“把稳定性做成公共能力”的改造。
+
+因为之前即使主路径已经优先直推 sink，
+消息规范化却只在 fallback 回放路径里做得比较完整，
+这会留下一个风险：
+
+- 直推 sink 的消息
+- 和 fallback 回放的消息
+- 可能走不同的规范化规则
+
+G8.6 之后，这个风险显著降低：
+
+- **无论消息是直推还是回放，都经过同一个 normalizer**
+
+### 29.4 这一步和 management 的关系
+
+这一步虽然还不是 `management` 那种原生 `StreamingOutput`，
+但它已经非常接近一个成熟 graph streaming 系统该有的形态：
+
+- graph service 不再膨胀
+- 输出细节不再散落在多个类里
+- “消息如何安全流出”被收敛成一个独立能力
+
+这会让后面继续往更 graph-native 的 streaming 演进时，代码基础更稳。
+
+---
+
+## 30. Step G8.7 完成内容（记录时间：2026-04-03）
+
+本步骤目标：
+
+- 继续把“消息如何流向 sink”从 adapter 中抽出来
+- 让 adapter 更像“状态适配层”，而不是“半个 streaming 执行器”
+- 进一步集中 graph 输出机制
+
+本步骤已完成：
+
+- 更新 `SearchLiteGraphMessageEmitter`
+  - 新增：
+    - `emitStream(threadId, Flux<SearchLiteMessage>)`
+- 更新 `SearchLiteGraphStepOutputAdapter`
+  - 当主路径有 live sink 时：
+    - 不再自己写 `doOnNext(...).blockLast()`
+    - 改为直接委托给：
+      - `messageEmitter.emitStream(...)`
+
+### 30.1 这一步为什么值得单独做
+
+在 G8.6 之后，虽然 normalizer 已经抽出来了，
+但 adapter 里仍然保留着一段很“底层”的 streaming 桥接逻辑：
+
+- 订阅 `stepResult.messages()`
+- 逐条发消息
+- 等待流完成
+
+这会带来一个结构问题：
+
+- adapter 本来应该主要负责：
+  - `SearchLiteStepResult -> graph state`
+- 但实际上还夹带了一部分：
+  - “怎样把 Flux 消息流送进 sink”
+
+G8.7 做的事情，就是把这部分再往外推一步。
+
+### 30.2 现在 adapter 和 emitter 的职责边界
+
+到这一步，两者的职责分工更清楚了：
+
+- `SearchLiteGraphStepOutputAdapter`
+  - 负责：
+    - 取出更新后的 `SearchLiteState`
+    - 映射为 graph state
+    - 决定走主路径还是兜底路径
+- `SearchLiteGraphMessageEmitter`
+  - 负责：
+    - 单条消息发送
+    - 批量消息发送
+    - **消息流发送**
+    - 发送前统一做 normalizer 规整
+
+所以 G8.7 的本质是：
+
+> **让 emitter 真正变成 graph 输出通道，而不是一个只会发单条消息的小工具。**
+
+### 30.3 这一步和 management 的关系
+
+这一步依然不是 `management` 的原生 `StreamingOutput`，
+但它已经进一步逼近那种结构：
+
+- 节点/适配层越来越少关心 sink 的发送细节
+- 输出机制越来越集中
+- 后面如果要继续替换成更 graph-native 的 streaming 实现，
+  改动面会更小
+
+---
+
+## 31. Step G8.8 完成内容（记录时间：2026-04-03）
+
+本步骤目标：
+
+- 继续把“主路径直推 / 兜底缓冲”这类分支判断从 adapter 中抽出去
+- 让 adapter 更专注于：
+  - state 更新
+  - graph state 映射
+- 让 emitter 真正成为统一的消息分发入口
+
+本步骤已完成：
+
+- 更新 `SearchLiteGraphMessageEmitter`
+  - 新增：
+    - `dispatch(threadId, Flux<SearchLiteMessage>)`
+    - `DispatchResult`
+- 更新 `SearchLiteGraphStepOutputAdapter`
+  - 不再自己判断：
+    - 是否直接发 sink
+    - 是否 `collectList()` 做兜底缓存
+  - 现在统一委托给：
+    - `messageEmitter.dispatch(...)`
+
+### 31.1 这一步具体改变了什么
+
+在 G8.7 之前，adapter 里虽然已经不再直接写 `doOnNext(...).blockLast()`，
+但它仍然保留了“主路径 vs 兜底路径”的具体分支逻辑：
+
+- 有 sink：
+  - `emitStream(...)`
+- 没有 sink：
+  - `collectList().block()`
+  - 再合并到 `GRAPH_MESSAGES`
+
+G8.8 之后，这层判断被继续抽到了 emitter：
+
+- `messageEmitter.dispatch(...)`
+  - 统一决定：
+    - 是直接发到 sink
+    - 还是收集成 fallback 消息列表
+
+adapter 只根据 `DispatchResult` 做后续 graph state 处理。
+
+### 31.2 现在 adapter 的角色更像什么
+
+到这一步，`SearchLiteGraphStepOutputAdapter` 更接近一个真正的：
+
+- **step output -> graph state adapter**
+
+它现在主要负责的是：
+
+- 解析 `updatedState`
+- 映射 graph state
+- 根据 dispatch 结果决定：
+  - 移除 `GRAPH_MESSAGES`
+  - 或写入兜底消息
+
+而不再亲自管理：
+
+- Flux 消息流到底怎么发送
+- sink 是否存在
+- fallback 消息怎么收集
+
+### 31.3 这一步和 management 的关系
+
+`management` 的 graph 体系里，一个很重要的特点就是：
+
+- **节点执行**
+- **状态推进**
+- **流式输出**
+
+这几层职责分得比较开。
+
+G8.8 虽然还是过渡式实现，
+但它又把我们当前 lite backend 往这个方向推近了一步：
+
+- emitter 成为统一消息分发口
+- adapter 进一步瘦身
+- 后面如果继续做更原生的 graph streaming，阻力会更小
+
+---
+
+## 32. Step G9.1 完成内容（记录时间：2026-04-04）
+
+本步骤目标：
+
+- 给 graph 主链路补上第二批条件分支里的第一条：
+  - `SCHEMA_RECALL` 为空时不要继续进入 `ENHANCE -> SQL_GENERATE`
+- 让“无有效 schema 命中”的场景尽早收口
+
+本步骤已完成：
+
+- 新增：
+  - `SearchLiteSchemaRecallDispatcher`
+- 更新：
+  - `SearchLiteGraphConfiguration`
+  - `SCHEMA_RECALL_NODE` 不再固定连到 `ENHANCE_NODE`
+  - 改成条件边：
+    - 有 `recalledTables` -> `ENHANCE_NODE`
+    - 无 `recalledTables` -> `RESULT_NODE`
+- 新增测试：
+  - `SearchLiteSchemaRecallDispatcherTest`
+
+### 32.1 这一步解决了什么问题
+
+在 G9.1 之前，graph 主链路里这段是固定的：
+
+- `SCHEMA_RECALL -> ENHANCE`
+
+这意味着即使 schema recall 没有召回任何相关表，
+系统也仍然会继续：
+
+- 查询增强
+- SQL 生成
+- SQL 执行
+
+这既浪费调用成本，也容易让系统在“缺乏结构依据”的情况下硬生成 SQL。
+
+G9.1 把这条路径改成了真正的条件路由：
+
+- **召回到表**：继续分析链路
+- **没召回到表**：直接进入 `RESULT`
+
+### 32.2 为什么这里先路由到 `RESULT` 而不是 `END`
+
+这是一个有意识的设计选择。
+
+如果直接 `END`：
+
+- 用户只会看到前面阶段消息
+- 没有一个统一的收尾结果
+
+而进入 `RESULT` 的好处是：
+
+- 仍然能保持当前 SSE 协议里的“结果收口”体验
+- 后面我们还可以继续把：
+  - “为什么没有继续执行 SQL”
+  - “建议补充哪些实体/字段/时间范围”
+  这种解释进一步做得更友好
+
+所以当前 G9.1 选择的是：
+
+- **无 schema 命中 -> `RESULT_NODE`**
+
+而不是直接终止。
+
+### 32.3 这一步和 management 的关系
+
+这一步开始真正进入 `management` 风格 graph 的另一个核心能力：
+
+- **不是只有 intent 才能分支**
+- **中间节点也可以根据 state 决定是否继续推进**
+
+这意味着我们现在的 graph 已经不只是“入口路由”，
+而是开始具备：
+
+- **过程中的条件裁剪能力**
+
+这对后面继续做：
+
+- `SQL_GENERATE` 空结果分支
+- `SQL_EXECUTE` 失败分支
+
+会形成一个很自然的模式复用。
+
+---
+
+## 33. Step G9.2 完成内容（记录时间：2026-04-04）
+
+本步骤目标：
+
+- 给 graph 主链路补上第二批条件分支里的第二条：
+  - `SQL_GENERATE` 没有产出可执行 SQL 时，不再继续进入 `SQL_EXECUTE`
+- 避免出现：
+  - SQL 为空
+  - 还继续执行数据库阶段
+  - 最后再由结果阶段被动兜底
+
+本步骤已完成：
+
+- 新增：
+  - `SearchLiteSqlGenerateDispatcher`
+- 更新：
+  - `SearchLiteGraphConfiguration`
+  - `SQL_GENERATE_NODE` 不再固定连到 `SQL_EXECUTE_NODE`
+  - 改成条件边：
+    - 有可用 SQL -> `SQL_EXECUTE_NODE`
+    - 无可用 SQL -> `RESULT_NODE`
+- 新增测试：
+  - `SearchLiteSqlGenerateDispatcherTest`
+
+### 33.1 当前“可用 SQL”的判断规则
+
+这一版先采用了一个比较克制、易解释的规则：
+
+- SQL 非空
+- 并且以：
+  - `SELECT`
+  - 或 `WITH`
+  开头
+
+这样做的好处是：
+
+- 足够简单
+- 和当前系统“只读查询”的约束一致
+- 能覆盖：
+  - 普通 `SELECT`
+  - 带 CTE 的查询
+
+### 33.2 为什么这一步有价值
+
+在 G9.2 之前，graph 主链路里这段是固定的：
+
+- `SQL_GENERATE -> SQL_EXECUTE`
+
+所以一旦模型：
+
+- 没输出任何 SQL
+- 只输出了空字符串
+- 或输出了明显无效的内容
+
+系统仍然会继续尝试执行 SQL。
+
+这会带来两个问题：
+
+- 浪费执行阶段调用成本
+- 错误位置被拖后，排障体验更差
+
+G9.2 把这件事前移了：
+
+- **SQL 生成阶段就决定“是否值得进入执行”**
+
+### 33.3 这一步和 management 的关系
+
+这一步继续强化了我们当前 graph 的一个重要方向：
+
+- **中间阶段根据 state 做条件裁剪**
+
+到现在为止，我们已经有了两类中途分支：
+
+- `SCHEMA_RECALL` 无命中 -> `RESULT`
+- `SQL_GENERATE` 无有效 SQL -> `RESULT`
+
+这让 graph 逐步从“线性节点串联”演进成了更像 `management` 的：
+
+- **状态驱动工作流**
+
+---
+
+## 34. Step G9.3 完成内容（记录时间：2026-04-04）
+
+本步骤目标：
+
+- 给 graph 主链路补上第二批条件分支里的第三条：
+  - `SQL_EXECUTE` 之后根据执行结果做显式分支判断
+- 即使当前成功/失败都先落到 `RESULT_NODE`，
+  也要把“执行是否失败”这层语义独立出来
+
+本步骤已完成：
+
+- 新增：
+  - `SearchLiteSqlExecuteDispatcher`
+- 更新：
+  - `SearchLiteGraphConfiguration`
+  - `SQL_EXECUTE_NODE` 不再使用固定边
+  - 改成条件边，由 dispatcher 根据 state 决定后续
+- 新增测试：
+  - `SearchLiteSqlExecuteDispatcherTest`
+
+### 34.1 为什么这一步现在就值得做
+
+从纯路由结果看，这一步目前还是：
+
+- 执行成功 -> `RESULT_NODE`
+- 执行失败 -> `RESULT_NODE`
+
+看上去像“功能上没变”。
+
+但这里真正重要的不是最终跳转目标，
+而是：
+
+- **graph 已经开始把“SQL 是否执行成功”显式建模成一个中间判断点**
+
+这有两个好处：
+
+- 当前：
+  - 失败场景会更清楚地在 graph 里留下分支语义
+- 后续：
+  - 如果我们要引入：
+    - `ERROR_RESULT_NODE`
+    - 重试节点
+    - fallback answer 节点
+  - 就不需要再重改整段主链结构
+
+### 34.2 当前 dispatcher 判断依据
+
+当前这版 `SearchLiteSqlExecuteDispatcher` 的判断很直接：
+
+- 如果 `error` 非空：
+  - 视为执行失败
+- 否则：
+  - 视为执行成功
+
+同时它会把：
+
+- 错误信息
+- 或结果行数
+
+记到日志里，方便后续排查。
+
+### 34.3 这一步和 management 的关系
+
+这一步开始更明显地贴近 `management` 的另一个特点：
+
+- **即使暂时走向同一个节点，也会把中间判断点单独抽出来**
+
+因为在 graph/workflow 设计里，
+“当前先共用一个收尾节点”和“没有分支能力”是两回事。
+
+G9.3 完成后，我们当前 graph 主链已经具备了这三类中途条件裁剪能力：
+
+- `SCHEMA_RECALL` 无命中
+- `SQL_GENERATE` 无有效 SQL
+- `SQL_EXECUTE` 执行结果判断
+
+这为后面继续做更细粒度的：
+
+- 错误分流
+- 重试
+- fallback
+
+打下了比较好的结构基础。
+
+## 35. 多轮上下文 V1（参考 management 的窗口式方案）
+
+记录时间：2026-04-06
+
+这一步开始，我们不再只把 `threadId` 当成 SSE/Graph 的运行标识，
+而是让它真正承担“多轮对话上下文”的语义。
+
+参考对象主要是 `management` 的：
+
+- `MultiTurnContextManager`
+- `GraphServiceImpl`
+
+它的核心特点不是“做了一个很重的 memory 系统”，
+而是：
+
+- 按 `threadId` 维护最近几轮窗口
+- 在每轮开始前构造 `multiTurnContext`
+- 在每轮结束后回写当前轮摘要
+- 对上下文长度做硬裁剪（默认只保留最近 5 轮）
+
+我们这次基本沿着这条思路，做了一个适合 `search-lite` 的 V1。
+
+### 35.1 新增了哪些核心对象
+
+本次新增了：
+
+- `ConversationTurn`
+- `PendingConversationTurn`
+- `PreparedConversationContext`
+- `MultiTurnContextManager`
+
+位置：
+
+- `D:\\GitHub\\DataAgent\\data-agent-backend\\src\\main\\java\\com\\alibaba\\cloud\\ai\\dataagentbackend\\lite\\conversation`
+
+职责拆分如下：
+
+- `ConversationTurn`
+  - 表示一个已经完成的历史轮次摘要
+- `PendingConversationTurn`
+  - 表示当前正在执行、尚未收口的一轮
+- `PreparedConversationContext`
+  - 表示新请求进入时，预先计算出的：
+    - `multiTurnContext`
+    - `contextualizedQuery`
+- `MultiTurnContextManager`
+  - 统一负责：
+    - 最近几轮窗口维护
+    - 当前轮 begin/finish/discard
+    - `multiTurnContext` 构建
+    - follow-up query 的上下文补全
+
+### 35.2 为什么要同时引入 `multiTurnContext` 和 `contextualizedQuery`
+
+这两个字段看起来有点像，但作用不同：
+
+- `multiTurnContext`
+  - 给 LLM prompt 用
+  - 主要服务：
+    - `INTENT`
+    - `ENHANCE`
+- `contextualizedQuery`
+  - 给检索/召回链路用
+  - 主要服务：
+    - `EVIDENCE`
+    - `SCHEMA_RECALL`
+    - 以及后续 `SQL_GENERATE` 的 `effectiveQuery`
+
+这是因为我们当前主链顺序是：
+
+- `INTENT -> EVIDENCE -> SCHEMA -> SCHEMA_RECALL -> ENHANCE -> SQL_GENERATE`
+
+如果只在 `ENHANCE` 阶段处理多轮问题，
+那么前面的：
+
+- evidence recall
+- schema recall
+
+仍然会只看到一句像“这些用户里谁下单最多”的追问，
+召回质量会很不稳定。
+
+所以这次我们增加了一个更早可用的：
+
+- `contextualizedQuery`
+
+它本质上是：
+
+- 如果当前 query 明显依赖前文
+- 就把上一轮的核心 query 补进当前 query
+
+例如：
+
+- 上一轮：`查询累计消费金额最高的用户`
+- 当前轮：`这些用户里谁下单最多`
+
+V1 会补成类似：
+
+- `基于上一轮查询“查询累计消费金额最高的用户”，当前追问：这些用户里谁下单最多`
+
+这样前面的 recall 阶段也能更早看到上下文。
+
+### 35.3 这次在状态对象里新增了什么
+
+`SearchLiteState` 新增了：
+
+- `multiTurnContext`
+- `contextualizedQuery`
+
+并补了两个约定：
+
+- `getRecallQuery()`
+  - 优先返回 `contextualizedQuery`
+  - 否则返回原始 `query`
+- `getEffectiveQuery()`
+  - 优先级改成：
+    - `canonicalQuery`
+    - `contextualizedQuery`
+    - `query`
+
+这意味着：
+
+- recall 阶段优先用“补全后的追问”
+- SQL 生成阶段优先用 canonical query；如果还没 canonical，再退回 contextualized query
+
+### 35.4 这次把多轮上下文接到了哪些地方
+
+#### 1）请求入口
+
+在 `SearchLiteOrchestrator` 中，
+每次请求进入时都会：
+
+- `prepareTurn(threadId, query)`
+
+得到：
+
+- `multiTurnContext`
+- `contextualizedQuery`
+
+并写入 `SearchLiteState`。
+
+这一步相当于 management 里：
+
+- `buildContext(threadId)`
+- `beginTurn(threadId, query)`
+
+的组合版本。
+
+#### 2）Intent
+
+`IntentMinimaxStep` 现在会把：
+
+- `Multi-turn context`
+
+带进 prompt，
+并显式告诉模型：
+
+- 只有当前问题明显依赖前文时，才使用多轮上下文做分类判断
+
+这样能更好地处理：
+
+- “再看一下前10个”
+- “改成最近30天”
+
+这类单看当前句子并不完整的问题。
+
+#### 3）Evidence Recall
+
+`EvidenceFileStep` 这次没有直接引入一个更重的 LLM rewrite memory 机制，
+而是先走了一版更轻的控制：
+
+- evidence rewrite 不再只吃原始 `query`
+- 改为优先吃：
+  - `state.getRecallQuery()`
+
+同时 SSE payload 中也额外输出了：
+
+- `recallQuery`
+
+方便我们观察多轮补全后的检索输入到底是什么。
+
+#### 4）Schema Recall
+
+`SchemaRecallStep` 也同步切到了：
+
+- `state.getRecallQuery()`
+
+这一步非常关键，
+因为 schema recall 比 query enhance 更早执行。
+
+#### 5）Enhance
+
+`EnhanceMinimaxStep` 现在也会带上：
+
+- `multiTurnContext`
+
+并显式提示模型：
+
+- 如果当前 query 是 follow-up，要用多轮上下文来补足省略条件和指代关系
+
+### 35.5 这次如何控制上下文长度
+
+这次延续了 management 的“窗口式”思路，
+而不是一下子上复杂 memory：
+
+- `search.lite.context.max-turn-history: 5`
+- `search.lite.context.max-field-length: 240`
+
+控制点包括：
+
+- 最多只保留最近 5 轮
+- 每个 turn 中的字段（query / canonical / sql / summary）都会做长度裁剪
+
+也就是说：
+
+- 我们优先解决“多轮追问能不能接得住”
+- 不追求一开始就做长期记忆/向量化会话检索
+
+### 35.6 这次如何回写当前轮
+
+当前轮完成后会调用：
+
+- `MultiTurnContextManager.finishTurn(state)`
+
+回写内容包括：
+
+- 用户原问题
+- `contextualizedQuery`
+- `canonicalQuery`
+- `sql`
+- `resultSummary`
+- `intentClassification`
+
+这里用了一个很重要的策略：
+
+- 不是任何轮次都强制入历史
+- 如果没有形成有效分析结果，就不会盲目污染 history
+
+例如：
+
+- 普通闲聊 `CHITCHAT`
+  - 默认不会持久进多轮分析历史
+
+### 35.7 这次和 management 的差异
+
+虽然整体思路参考 management，
+但我们这次也做了一个适合 lite 链路的补充：
+
+- `management`
+  - 更强调：
+    - `multiTurnContext` 给 prompt 使用
+- 我们
+  - 除了 `multiTurnContext`
+  - 还增加了：
+    - `contextualizedQuery`
+
+这是因为我们当前链路里：
+
+- recall 阶段在 enhance 之前
+
+如果不提前补全 query，
+很多 follow-up query 会在 recall 阶段就掉精度。
+
+所以这是一个“在 management 思路基础上，为 lite 主链做的顺序适配”。
+
+### 35.8 当前 V1 的边界
+
+这仍然只是多轮上下文 V1，
+还没有做：
+
+- 长期记忆
+- 用户偏好 memory
+- 向量化历史检索
+- 多轮结果结构化实体抽取
+- 基于错误恢复的 turn restart
+
+但它已经足够支持第一批最常见的追问：
+
+- 指代延续
+- 条件补充
+- 上一轮结果追问
+
+也足够成为后面继续做：
+
+- 多轮 NL2SQL
+- 更强 evidence/schema recall
+- 评测闭环
+
+的基础。
+
+## 36. Graph 收口：结果分流与 SQL 重试（记录时间：2026-04-06）
+
+这一轮不是再加更多节点数量，
+而是把当前 Graph 从“主链闭环”往“更像 workflow”推进一层。
+
+改造目标主要有三个：
+
+- 把 `RESULT` 之前的结果语义先整理清楚
+- 给 `SQL_EXECUTE` 增加一次受控重试
+- 让 graph 分支不再只是“都汇到 RESULT”，而是先经过一个显式的收口准备节点
+
+### 36.1 为什么这一轮值得做
+
+之前的主链虽然已经 graph 化，
+但还存在几个典型问题：
+
+- `SCHEMA_RECALL` 为空时，虽然能提前结束，但没有单独的结果语义
+- `SQL_GENERATE` 为空时，也只是直接去 `RESULT`
+- `SQL_EXECUTE` 失败后没有自动修正能力
+- `RESULT` 节点需要同时处理：
+  - 正常结果
+  - 无 schema
+  - 无 SQL
+  - 执行失败
+
+这说明之前的 graph 更像：
+
+- “能分支”
+
+但还不够像：
+
+- “会根据失败类型决定怎么收口和怎么继续”
+
+### 36.2 这次新增的 graph 语义字段
+
+`SearchLiteState` / graph state 这次新增了：
+
+- `sqlRetryCount`
+- `lastFailedSql`
+- `sqlRetryReason`
+- `resultMode`
+
+对应 graph key 也同步加到了：
+
+- `SearchLiteGraphStateKeys`
+- `SearchLiteGraphStateMapper`
+
+这样做的意义是：
+
+- SQL 重试不再只靠日志或瞬时异常
+- 结果类型也不再只靠 `error != null` 这种弱判断
+
+### 36.3 新增了两个中间节点
+
+这次新增了：
+
+- `SearchLiteSqlRetryGraphNode`
+- `SearchLitePrepareResultGraphNode`
+
+#### `SearchLiteSqlRetryGraphNode`
+
+职责：
+
+- 保存上一次失败的 SQL
+- 保存失败原因
+- `sqlRetryCount + 1`
+- 清空 `error`
+- 清空 `rows / resultSummary`
+- 再回到 `SQL_GENERATE`
+
+这一步的本质是：
+
+- **把“执行失败后的再生成”显式建模成 graph 中的一个中间动作**
+
+#### `SearchLitePrepareResultGraphNode`
+
+职责：
+
+- 在进入 `RESULT_NODE` 之前，先统一判断当前是哪种结果模式
+
+当前会输出四类 `resultMode`：
+
+- `success`
+- `no_schema`
+- `no_sql`
+- `execution_error`
+
+也就是说：
+
+- 不是直接让 `RESULT` 自己猜“现在到底是为什么失败/为什么结束”
+- 而是先由 graph 统一标好语义
+
+### 36.4 SQL 执行失败后的重试策略
+
+这次在 `SearchLiteSqlExecuteDispatcher` 里加了一版 V1 重试策略：
+
+- 如果执行失败
+- 且 `retryCount < maxAttempts`
+- 且错误类型不是明显的连接/权限/超时类基础设施错误
+
+那么：
+
+- `SQL_EXECUTE -> SQL_RETRY -> SQL_GENERATE`
+
+否则：
+
+- `SQL_EXECUTE -> PREPARE_RESULT`
+
+当前默认配置：
+
+- `search.lite.graph.sql-retry.max-attempts: 1`
+
+这版设计故意比较保守：
+
+- 先做一次自动修正
+- 避免把失败 query 带进无限重试
+
+### 36.5 这次 graph 结构怎么变了
+
+当前主链从：
+
+- `... -> SQL_GENERATE -> SQL_EXECUTE -> RESULT`
+
+变成了：
+
+- `... -> SQL_GENERATE -> SQL_EXECUTE`
+- `SQL_EXECUTE -> SQL_RETRY | PREPARE_RESULT`
+- `SQL_RETRY -> SQL_GENERATE`
+- `PREPARE_RESULT -> RESULT`
+
+同时：
+
+- `SCHEMA_RECALL` 无命中时
+- `SQL_GENERATE` 无有效 SQL 时
+
+也不再直接跳 `RESULT`，
+而是先跳：
+
+- `PREPARE_RESULT`
+
+也就是说，
+现在 graph 对“为什么结束”这件事有了更明确的中间语义层。
+
+### 36.6 结果节点也随之变得更简单
+
+`ResultMinimaxStep` / `ResultMockStep` 这次也一起收口了：
+
+- 当 `resultMode` 已经明确时：
+  - 直接走预定义结果总结
+  - 不再强行请求 LLM 去总结一个“根本没查出来”的结果
+
+例如：
+
+- `no_schema`
+  - 直接给用户明确说明“当前没有召回到相关数据表”
+- `no_sql`
+  - 直接提示“当前问题未生成可执行 SQL”
+- `execution_error`
+  - 直接输出执行失败原因
+
+这让 `RESULT` 节点更像：
+
+- “负责表达”
+
+而不是：
+
+- “既负责判因，又负责表达”
+
+### 36.7 这一步和 management 的关系
+
+这次继续贴近了 management 的两个思路：
+
+- **失败场景要显式建模**
+- **即使最后都落到一个节点，中间也要有清晰的 workflow 语义**
+
+虽然我们现在还没有做到它那种更完整的：
+
+- 多次 SQL retry
+- 更细的 fallback graph
+- human feedback 后 restart
+
+但这次已经把最关键的骨架补出来了：
+
+- retry
+- prepare-result
+- result-mode
+
+### 36.8 当前仍然保留的边界
+
+这一轮做完后，Graph 仍然不是最终形态，主要还剩这些边界：
+
+- `RESULT` 还没有真正拆成多个 node
+- retry 目前只有一轮
+- 重试判断规则还偏规则化，而不是结合错误分类器/LLM 修复
+- adapter / step bridge 痕迹还在
+
+但从工程价值上看，
+这一轮已经把 Graph 从：
+
+- “主链闭环”
+
+推进到了：
+
+- “具备失败恢复和结果语义收口能力的 workflow”

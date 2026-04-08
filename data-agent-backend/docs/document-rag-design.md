@@ -476,3 +476,195 @@ Document RAG V1 完成时，至少应满足：
 - 风险较低
 - 容易讲清楚
 - 非常适合作为简历项目的下一阶段增强
+
+---
+
+## 18. `bge-m3` 对当前 Recall 设计的启发（记录时间：2026-04-01 10:00）
+
+**TODO**：思考为什么不能将bge-m3直接用于keywordRecall和vectorRecall。
+
+当前项目使用本地 embedding 模型：
+
+- `bge-m3`
+- `http://localhost:11434/v1/embeddings`
+
+虽然当前代码里的 hybrid recall 仍是“关键词 + 向量分数融合”的轻量实现，但 `bge-m3` 本身强调的多粒度、多能力检索思路，对当前项目后续演进有很强启发。
+
+### 18.1 启发一：不要把 keyword recall 和 vector recall 完全割裂
+
+`bge-m3` 的价值不只是 dense embedding，本质启发是：
+
+- 词面命中有价值
+- 语义相似也有价值
+- 检索系统应该同时利用这两类信号
+
+这说明当前项目继续保留并强化 `hybrid recall` 是正确方向，而不是简单切换到“只做向量检索”。
+
+对应到当前项目：
+
+- `schema recall` 需要保留表名、列名的精确命中能力
+- `evidence recall` 需要保留术语、规则短语的关键词能力
+- `document recall` 需要利用语义召回补齐同义表达和自然语言问法
+
+### 18.2 启发二：metadata 与 chunk 质量会直接决定 hybrid 是否有效
+
+`bge-m3` 可以提供更强的语义检索能力，但前提仍然是：
+
+- 文档切块合理
+- `topic/tags/docType` 元数据准确
+- 不同知识源边界清楚
+
+否则即使 embedding 模型很强，也会出现：
+
+- 命中语义相似但业务不相关的 chunk
+- 文档噪声压过 evidence/schema
+- query 稍模糊时召回范围过宽
+
+因此当前项目后续仍应优先优化：
+
+- chunk 粒度
+- metadata 质量
+- source/type 边界
+
+### 18.3 启发三：更适合采用“先筛后排”的检索链路
+
+基于 `bge-m3` 的特点，当前项目的 recall 更适合继续演进为：
+
+1. **先筛**
+   - 先用 `type/topic/tags/docType` 等 metadata 缩小候选集
+   - 或先做轻量 keyword/topic 粗筛
+2. **再排**
+   - 再用 vector / hybrid 对候选集排序
+3. **必要时再做 rerank**
+   - 对 topN 结果进一步做规则加权或二次排序
+
+这比当前“一次 search 直接决定最终 topK”更稳，也更符合多知识源 recall 的实际需求。
+
+### 18.4 启发四：不同知识源应该有不同的融合策略
+
+即使都使用 `bge-m3` 做 embedding，以下几类知识也不应完全等权：
+
+- `SCHEMA_TABLE`
+- `SCHEMA_COLUMN`
+- `EVIDENCE`
+- `DOCUMENT`
+
+后续更合理的策略应该是：
+
+- `schema`：保留较强关键词权重，强调精确结构命中
+- `evidence`：强调规则短语、术语和 topic 一致性
+- `document`：强调语义补充能力，但避免喧宾夺主
+
+也就是说，模型可以统一，但召回策略不能统一为“一套简单权重打天下”。
+
+### 18.5 对当前代码的直接落地建议
+
+基于 `bge-m3` 的启发，后续代码层最值得做的不是“换模型”，而是以下演进：
+
+- **先筛后排**
+  - metadata/topic 过滤后再做 hybrid recall
+- **扩大候选，再精排**
+  - 先取较大的候选集，再做二次排序，而不是一次 topK 截断
+- **分来源配置权重**
+  - `schema/evidence/document` 使用不同融合权重
+- **增加 rerank 思维**
+  - 对定义类、规则类、FAQ 类文档做不同后处理
+- **提高日志可解释性**
+  - 明确区分：
+    - keyword score
+    - vector score
+    - metadata filter 命中
+    - rerank/fused score
+
+### 18.6 一句话总结
+
+`bge-m3` 对当前项目最大的启发不是“模型更强”，而是：
+
+> **当前 recall 应继续朝“metadata 粗筛 + hybrid 排序 + 多知识源分类型治理”演进。**
+
+这条路线既符合当前项目的工程现状，也更容易在后续评测与简历表达中讲清楚。
+
+---
+
+## 19. 多知识源使用策略（记录时间：2026-04-06）
+
+在参考 `management` 项目之后，当前 backend 的下一阶段重点不再只是“多召回一些内容”，
+而是要把不同知识源真正**按角色使用**。
+
+### 19.1 设计目标
+
+当前知识使用策略调整为：
+
+- `schema`
+  - 结构真相、硬约束
+- `evidence`
+  - 业务规则、FAQ、指标提示
+- `document`
+  - 定义、背景说明、术语解释
+
+这意味着后续 prompt 不再把 `evidence` 和 `document` 简单拼接成一个大字符串，
+而是明确告诉模型：
+
+- 什么能决定 SQL 结构
+- 什么能补充业务规则
+- 什么能解释业务概念
+
+### 19.2 为什么要这样做
+
+此前已经暴露出一个典型问题：
+
+- query：`高消费用户`
+- evidence：命中 `核心用户定义`
+- document：命中 `高消费用户定义`
+
+如果把这些信息混在一起，模型很容易：
+
+- 召回对了 document
+- 但仍被不匹配的 evidence 抢走主语义
+
+所以这一阶段的核心优化方向不是“再召回更多”，而是：
+
+> **让 query 更有机会使用到真正匹配的定义型知识。**
+
+### 19.3 当前实现方向
+
+当前 backend 已开始向 `management` 的思路靠拢：
+
+- `EvidenceFileStep`
+  - 不再把 evidence 与 document 直接合并
+  - 而是分别格式化为：
+    - 业务规则与 FAQ 提示
+    - 定义与背景文档
+- `EnhanceMinimaxStep`
+  - 在 query rewrite / query enhance 时引入：
+    - 业务规则
+    - 定义文档
+  - 但要求：
+    - 只能用于澄清术语
+    - 不能引入新的业务要求
+- `SqlGenerateMinimaxStep`
+  - prompt 中显式区分：
+    - schema
+    - evidence
+    - documents
+  - 并强调：
+    - schema 决定结构
+    - evidence 决定规则提示
+    - document 提供定义解释
+
+### 19.4 后续继续优化的重点
+
+后续还可以继续增强：
+
+- 判断某条 evidence 是否与 query 语义匹配
+- 对“定义型 document”做更强优先级提示
+- 对不匹配的 evidence 做降权或抑制
+- 把定义型知识进一步转化为：
+  - topN / 阈值 / 默认周期
+  这类更强的 SQL 约束
+
+### 19.5 一句话总结
+
+当前多知识源使用策略的方向是：
+
+> **不是把 schema/evidence/document 一起塞给模型，而是让它们以不同角色参与决策。**
