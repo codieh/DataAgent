@@ -5,7 +5,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
 
-import static com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphConfiguration.RESULT_NODE;
+import static com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphConfiguration.PREPARE_RESULT_NODE;
 import static com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphConfiguration.SQL_EXECUTE_NODE;
 import static com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphStateKeys.SQL;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -41,6 +41,6 @@ class SearchLiteSqlGenerateDispatcherTest {
 		when(state.value(anyString())).thenReturn(Optional.empty());
 		when(state.value(SQL)).thenReturn(Optional.of(""));
 
-		assertEquals(RESULT_NODE, dispatcher.apply(state));
+		assertEquals(PREPARE_RESULT_NODE, dispatcher.apply(state));
 	}
 }

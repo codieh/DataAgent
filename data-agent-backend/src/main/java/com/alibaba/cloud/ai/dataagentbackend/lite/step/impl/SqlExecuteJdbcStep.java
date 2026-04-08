@@ -106,7 +106,13 @@ public class SqlExecuteJdbcStep implements SearchLiteStep {
 			state.setSql(r.sql);
 			state.setRows(r.rows == null ? List.of() : r.rows);
 			if (!r.ok) {
+				state.setLastFailedSql(r.sql);
+				state.setSqlRetryReason(r.error);
 				state.setError(r.error);
+			}
+			else {
+				state.setError(null);
+				state.setSqlRetryReason(null);
 			}
 			return state;
 		});

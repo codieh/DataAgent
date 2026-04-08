@@ -41,9 +41,17 @@ public final class SearchLiteGraphStateKeys {
 
 	public static final String SQL = "sql";
 
+	public static final String SQL_RETRY_COUNT = "sqlRetryCount";
+
+	public static final String LAST_FAILED_SQL = "lastFailedSql";
+
+	public static final String SQL_RETRY_REASON = "sqlRetryReason";
+
 	public static final String ROWS = "rows";
 
 	public static final String RESULT_SUMMARY = "resultSummary";
+
+	public static final String RESULT_MODE = "resultMode";
 
 	public static final String ERROR = "error";
 

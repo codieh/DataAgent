@@ -16,6 +16,9 @@ search:
     context:
       max-turn-history: 5
       max-field-length: 240
+    graph:
+      sql-retry:
+        max-attempts: 1
     recall:
       # keyword|vector|hybrid
       provider: hybrid

@@ -50,10 +50,18 @@ public class SearchLiteState {
 	// sql
 	private String sql;
 
+	private int sqlRetryCount;
+
+	private String lastFailedSql;
+
+	private String sqlRetryReason;
+
 	// execution result
 	private List<Map<String, Object>> rows = new ArrayList<>();
 
 	private String resultSummary;
+
+	private String resultMode;
 
 	private String error;
 
@@ -226,6 +234,30 @@ public class SearchLiteState {
 		this.sql = sql;
 	}
 
+	public int getSqlRetryCount() {
+		return sqlRetryCount;
+	}
+
+	public void setSqlRetryCount(int sqlRetryCount) {
+		this.sqlRetryCount = Math.max(0, sqlRetryCount);
+	}
+
+	public String getLastFailedSql() {
+		return lastFailedSql;
+	}
+
+	public void setLastFailedSql(String lastFailedSql) {
+		this.lastFailedSql = lastFailedSql;
+	}
+
+	public String getSqlRetryReason() {
+		return sqlRetryReason;
+	}
+
+	public void setSqlRetryReason(String sqlRetryReason) {
+		this.sqlRetryReason = sqlRetryReason;
+	}
+
 	public List<Map<String, Object>> getRows() {
 		return rows;
 	}
@@ -240,6 +272,14 @@ public class SearchLiteState {
 
 	public void setResultSummary(String resultSummary) {
 		this.resultSummary = resultSummary;
+	}
+
+	public String getResultMode() {
+		return resultMode;
+	}
+
+	public void setResultMode(String resultMode) {
+		this.resultMode = resultMode;
 	}
 
 	public String getError() {

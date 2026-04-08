@@ -37,6 +37,8 @@ public class SqlExecuteMockStep implements SearchLiteStep {
 
 		List<Map<String, Object>> rows = List.of(Map.of("greeting", "hello", "value", 1));
 		state.setRows(rows);
+		state.setError(null);
+		state.setSqlRetryReason(null);
 
 		Flux<SearchLiteMessage> messages = Flux.just(
 				SearchLiteMessages.message(context, stage(), SearchLiteMessageType.TEXT, "正在生成并执行 SQL...", null),

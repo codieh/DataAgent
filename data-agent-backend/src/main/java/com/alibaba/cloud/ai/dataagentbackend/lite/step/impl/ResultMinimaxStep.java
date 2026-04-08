@@ -60,6 +60,11 @@ public class ResultMinimaxStep implements SearchLiteStep {
 
 	@Override
 	public SearchLiteStepResult run(SearchLiteContext context, SearchLiteState state) {
+		SearchLiteStepResult predefinedResult = handlePredefinedResultMode(context, state);
+		if (predefinedResult != null) {
+			return predefinedResult;
+		}
+
 		// 如果前面已经有错误，直接收尾输出（避免再请求 LLM）
 		if (StringUtils.hasText(state.getError())) {
 			String summary = "执行失败：" + state.getError();
@@ -113,6 +118,30 @@ public class ResultMinimaxStep implements SearchLiteStep {
 		return new SearchLiteStepResult(start.concatWith(streaming).concatWith(done), updated);
 	}
 
+	private SearchLiteStepResult handlePredefinedResultMode(SearchLiteContext context, SearchLiteState state) {
+		String mode = safe(state.getResultMode());
+		if (!StringUtils.hasText(mode) || "success".equalsIgnoreCase(mode)) {
+			return null;
+		}
+		String summary = switch (mode) {
+			case "no_schema" -> "未找到与当前问题相关的数据表，请补充更明确的业务对象、指标名称或筛选条件后再试。";
+			case "no_sql" -> "当前问题暂未生成可执行 SQL，请换一种更明确的描述，或拆分问题后重试。";
+			case "execution_error" -> "执行失败：" + safe(state.getError());
+			default -> null;
+		};
+		if (!StringUtils.hasText(summary)) {
+			return null;
+		}
+		state.setResultSummary(summary);
+		boolean ok = "success".equalsIgnoreCase(mode);
+		Flux<SearchLiteMessage> messages = Flux.just(
+				SearchLiteMessages.message(context, stage(), SearchLiteMessageType.TEXT, "正在整理结果...", null),
+				SearchLiteMessages.done(context, stage(), SearchLiteMessageType.JSON, null,
+						Map.of("summary", summary, "ok", ok, "resultMode", mode)))
+			.delayElements(Duration.ofMillis(80));
+		return new SearchLiteStepResult(messages, Mono.just(state));
+	}
+
 	private String buildUserPrompt(SearchLiteState state, String sql, int rowCount, List<Map<String, Object>> preview) {
 		String query = state.getQuery();
 		String rowsJson;
@@ -147,4 +176,3 @@ public class ResultMinimaxStep implements SearchLiteStep {
 	}
 
 }
-

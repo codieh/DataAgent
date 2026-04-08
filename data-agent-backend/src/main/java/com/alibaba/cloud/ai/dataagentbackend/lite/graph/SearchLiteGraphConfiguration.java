@@ -1,15 +1,18 @@
 package com.alibaba.cloud.ai.dataagentbackend.lite.graph;
 
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.dispatcher.SearchLiteIntentDispatcher;
+import com.alibaba.cloud.ai.dataagentbackend.lite.graph.dispatcher.SearchLiteResultModeDispatcher;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.dispatcher.SearchLiteSchemaRecallDispatcher;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.dispatcher.SearchLiteSqlExecuteDispatcher;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.dispatcher.SearchLiteSqlGenerateDispatcher;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLiteEvidenceGraphNode;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLiteEnhanceGraphNode;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLiteIntentGraphNode;
+import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLitePrepareResultGraphNode;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLiteResultGraphNode;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLiteSchemaGraphNode;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLiteSchemaRecallGraphNode;
+import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLiteSqlRetryGraphNode;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLiteSqlExecuteGraphNode;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLiteSqlGenerateGraphNode;
 import com.alibaba.cloud.ai.graph.KeyStrategy;
@@ -48,6 +51,10 @@ public class SearchLiteGraphConfiguration {
 
 	public static final String SQL_EXECUTE_NODE = "sqlExecuteNode";
 
+	public static final String SQL_RETRY_NODE = "sqlRetryNode";
+
+	public static final String PREPARE_RESULT_NODE = "prepareResultNode";
+
 	public static final String RESULT_NODE = "resultNode";
 
 	@Bean
@@ -55,7 +62,10 @@ public class SearchLiteGraphConfiguration {
 			SearchLiteSchemaGraphNode schemaNode,
 			SearchLiteSchemaRecallGraphNode schemaRecallNode, SearchLiteEnhanceGraphNode enhanceNode,
 			SearchLiteSqlGenerateGraphNode sqlGenerateNode, SearchLiteSqlExecuteGraphNode sqlExecuteNode,
-			SearchLiteResultGraphNode resultNode)
+			SearchLiteSqlRetryGraphNode sqlRetryNode, SearchLitePrepareResultGraphNode prepareResultNode,
+			SearchLiteResultGraphNode resultNode, SearchLiteIntentDispatcher intentDispatcher,
+			SearchLiteSchemaRecallDispatcher schemaRecallDispatcher, SearchLiteSqlGenerateDispatcher sqlGenerateDispatcher,
+			SearchLiteSqlExecuteDispatcher sqlExecuteDispatcher, SearchLiteResultModeDispatcher resultModeDispatcher)
 			throws GraphStateException {
 		KeyStrategyFactory keyStrategyFactory = () -> {
 			HashMap<String, KeyStrategy> strategies = new HashMap<>();
@@ -77,8 +87,12 @@ public class SearchLiteGraphConfiguration {
 			strategies.put(SearchLiteGraphStateKeys.CANONICAL_QUERY, KeyStrategy.REPLACE);
 			strategies.put(SearchLiteGraphStateKeys.EXPANDED_QUERIES, KeyStrategy.REPLACE);
 			strategies.put(SearchLiteGraphStateKeys.SQL, KeyStrategy.REPLACE);
+			strategies.put(SearchLiteGraphStateKeys.SQL_RETRY_COUNT, KeyStrategy.REPLACE);
+			strategies.put(SearchLiteGraphStateKeys.LAST_FAILED_SQL, KeyStrategy.REPLACE);
+			strategies.put(SearchLiteGraphStateKeys.SQL_RETRY_REASON, KeyStrategy.REPLACE);
 			strategies.put(SearchLiteGraphStateKeys.ROWS, KeyStrategy.REPLACE);
 			strategies.put(SearchLiteGraphStateKeys.RESULT_SUMMARY, KeyStrategy.REPLACE);
+			strategies.put(SearchLiteGraphStateKeys.RESULT_MODE, KeyStrategy.REPLACE);
 			strategies.put(SearchLiteGraphStateKeys.ERROR, KeyStrategy.REPLACE);
 			strategies.put(SearchLiteGraphStateKeys.GRAPH_MESSAGES, KeyStrategy.REPLACE);
 			strategies.put(SearchLiteGraphStateKeys.GRAPH_ROUTE, KeyStrategy.REPLACE);
@@ -93,19 +107,24 @@ public class SearchLiteGraphConfiguration {
 			.addNode(ENHANCE_NODE, node_async(enhanceNode))
 			.addNode(SQL_GENERATE_NODE, node_async(sqlGenerateNode))
 			.addNode(SQL_EXECUTE_NODE, node_async(sqlExecuteNode))
+			.addNode(SQL_RETRY_NODE, node_async(sqlRetryNode))
+			.addNode(PREPARE_RESULT_NODE, node_async(prepareResultNode))
 			.addNode(RESULT_NODE, node_async(resultNode));
 
 		graph.addEdge(START, INTENT_NODE)
-			.addConditionalEdges(INTENT_NODE, edge_async(new SearchLiteIntentDispatcher()),
+			.addConditionalEdges(INTENT_NODE, edge_async(intentDispatcher),
 					Map.of(EVIDENCE_NODE, EVIDENCE_NODE, END, END))
 			.addEdge(EVIDENCE_NODE, SCHEMA_NODE)
 			.addEdge(SCHEMA_NODE, SCHEMA_RECALL_NODE)
-			.addConditionalEdges(SCHEMA_RECALL_NODE, edge_async(new SearchLiteSchemaRecallDispatcher()),
-					Map.of(ENHANCE_NODE, ENHANCE_NODE, RESULT_NODE, RESULT_NODE))
+			.addConditionalEdges(SCHEMA_RECALL_NODE, edge_async(schemaRecallDispatcher),
+					Map.of(ENHANCE_NODE, ENHANCE_NODE, PREPARE_RESULT_NODE, PREPARE_RESULT_NODE))
 			.addEdge(ENHANCE_NODE, SQL_GENERATE_NODE)
-			.addConditionalEdges(SQL_GENERATE_NODE, edge_async(new SearchLiteSqlGenerateDispatcher()),
-					Map.of(SQL_EXECUTE_NODE, SQL_EXECUTE_NODE, RESULT_NODE, RESULT_NODE))
-			.addConditionalEdges(SQL_EXECUTE_NODE, edge_async(new SearchLiteSqlExecuteDispatcher()),
+			.addConditionalEdges(SQL_GENERATE_NODE, edge_async(sqlGenerateDispatcher),
+					Map.of(SQL_EXECUTE_NODE, SQL_EXECUTE_NODE, PREPARE_RESULT_NODE, PREPARE_RESULT_NODE))
+			.addConditionalEdges(SQL_EXECUTE_NODE, edge_async(sqlExecuteDispatcher),
+					Map.of(PREPARE_RESULT_NODE, PREPARE_RESULT_NODE, SQL_RETRY_NODE, SQL_RETRY_NODE))
+			.addEdge(SQL_RETRY_NODE, SQL_GENERATE_NODE)
+			.addConditionalEdges(PREPARE_RESULT_NODE, edge_async(resultModeDispatcher),
 					Map.of(RESULT_NODE, RESULT_NODE))
 			.addEdge(RESULT_NODE, END);
 		return graph;

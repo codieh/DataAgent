@@ -34,8 +34,12 @@ public final class SearchLiteGraphStateMapper {
 		values.put(SearchLiteGraphStateKeys.CANONICAL_QUERY, state.getCanonicalQuery());
 		values.put(SearchLiteGraphStateKeys.EXPANDED_QUERIES, state.getExpandedQueries());
 		values.put(SearchLiteGraphStateKeys.SQL, state.getSql());
+		values.put(SearchLiteGraphStateKeys.SQL_RETRY_COUNT, state.getSqlRetryCount());
+		values.put(SearchLiteGraphStateKeys.LAST_FAILED_SQL, state.getLastFailedSql());
+		values.put(SearchLiteGraphStateKeys.SQL_RETRY_REASON, state.getSqlRetryReason());
 		values.put(SearchLiteGraphStateKeys.ROWS, state.getRows());
 		values.put(SearchLiteGraphStateKeys.RESULT_SUMMARY, state.getResultSummary());
+		values.put(SearchLiteGraphStateKeys.RESULT_MODE, state.getResultMode());
 		values.put(SearchLiteGraphStateKeys.ERROR, state.getError());
 		return values;
 	}
@@ -63,8 +67,13 @@ public final class SearchLiteGraphStateMapper {
 		state.setCanonicalQuery(get(graphState, SearchLiteGraphStateKeys.CANONICAL_QUERY, String.class));
 		state.setExpandedQueries(get(graphState, SearchLiteGraphStateKeys.EXPANDED_QUERIES, java.util.List.class));
 		state.setSql(get(graphState, SearchLiteGraphStateKeys.SQL, String.class));
+		Integer retryCount = get(graphState, SearchLiteGraphStateKeys.SQL_RETRY_COUNT, Integer.class);
+		state.setSqlRetryCount(retryCount == null ? 0 : retryCount);
+		state.setLastFailedSql(get(graphState, SearchLiteGraphStateKeys.LAST_FAILED_SQL, String.class));
+		state.setSqlRetryReason(get(graphState, SearchLiteGraphStateKeys.SQL_RETRY_REASON, String.class));
 		state.setRows(get(graphState, SearchLiteGraphStateKeys.ROWS, java.util.List.class));
 		state.setResultSummary(get(graphState, SearchLiteGraphStateKeys.RESULT_SUMMARY, String.class));
+		state.setResultMode(get(graphState, SearchLiteGraphStateKeys.RESULT_MODE, String.class));
 		state.setError(get(graphState, SearchLiteGraphStateKeys.ERROR, String.class));
 		return state;
 	}

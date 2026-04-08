@@ -5,12 +5,14 @@ import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.action.EdgeAction;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Component;
 
 import java.util.List;
 
 import static com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphConfiguration.ENHANCE_NODE;
-import static com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphConfiguration.RESULT_NODE;
+import static com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphConfiguration.PREPARE_RESULT_NODE;
 
+@Component
 public class SearchLiteSchemaRecallDispatcher implements EdgeAction {
 
 	private static final Logger log = LoggerFactory.getLogger(SearchLiteSchemaRecallDispatcher.class);
@@ -24,8 +26,8 @@ public class SearchLiteSchemaRecallDispatcher implements EdgeAction {
 			.orElse(List.of());
 
 		if (recalledTables.isEmpty()) {
-			log.info("graph schema-recall dispatcher: no recalled tables, route to {}", RESULT_NODE);
-			return RESULT_NODE;
+			log.info("graph schema-recall dispatcher: no recalled tables, route to {}", PREPARE_RESULT_NODE);
+			return PREPARE_RESULT_NODE;
 		}
 
 		log.info("graph schema-recall dispatcher: recalledTables={}, route to {}", recalledTables, ENHANCE_NODE);

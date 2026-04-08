@@ -5,12 +5,14 @@ import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.action.EdgeAction;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Component;
 
 import java.util.Optional;
 
 import static com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphConfiguration.EVIDENCE_NODE;
 import static com.alibaba.cloud.ai.graph.StateGraph.END;
 
+@Component
 public class SearchLiteIntentDispatcher implements EdgeAction {
 
 	private static final Logger log = LoggerFactory.getLogger(SearchLiteIntentDispatcher.class);

@@ -6,8 +6,11 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 import java.util.Optional;
 
-import static com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphConfiguration.RESULT_NODE;
+import static com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphConfiguration.PREPARE_RESULT_NODE;
+import static com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphConfiguration.SQL_RETRY_NODE;
 import static com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphStateKeys.ERROR;
+import static com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphStateKeys.SQL;
+import static com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphStateKeys.SQL_RETRY_COUNT;
 import static com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphStateKeys.ROWS;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -16,15 +19,28 @@ import static org.mockito.Mockito.when;
 
 class SearchLiteSqlExecuteDispatcherTest {
 
-	private final SearchLiteSqlExecuteDispatcher dispatcher = new SearchLiteSqlExecuteDispatcher();
+	private final SearchLiteSqlExecuteDispatcher dispatcher = new SearchLiteSqlExecuteDispatcher(1);
 
 	@Test
-	void should_route_failed_execution_to_result() {
+	void should_route_failed_execution_to_retry_when_retry_available() {
 		OverAllState state = mock(OverAllState.class);
 		when(state.value(anyString())).thenReturn(Optional.empty());
 		when(state.value(ERROR)).thenReturn(Optional.of("syntax error"));
+		when(state.value(SQL)).thenReturn(Optional.of("select bad"));
+		when(state.value(SQL_RETRY_COUNT)).thenReturn(Optional.of(0));
 
-		assertEquals(RESULT_NODE, dispatcher.apply(state));
+		assertEquals(SQL_RETRY_NODE, dispatcher.apply(state));
+	}
+
+	@Test
+	void should_route_failed_execution_to_prepare_result_when_retry_exhausted() {
+		OverAllState state = mock(OverAllState.class);
+		when(state.value(anyString())).thenReturn(Optional.empty());
+		when(state.value(ERROR)).thenReturn(Optional.of("syntax error"));
+		when(state.value(SQL)).thenReturn(Optional.of("select bad"));
+		when(state.value(SQL_RETRY_COUNT)).thenReturn(Optional.of(1));
+
+		assertEquals(PREPARE_RESULT_NODE, dispatcher.apply(state));
 	}
 
 	@Test
@@ -34,7 +50,7 @@ class SearchLiteSqlExecuteDispatcherTest {
 		when(state.value(ERROR)).thenReturn(Optional.of(""));
 		when(state.value(ROWS)).thenReturn(Optional.of(List.of(List.of("ok"))));
 
-		assertEquals(RESULT_NODE, dispatcher.apply(state));
+		assertEquals(PREPARE_RESULT_NODE, dispatcher.apply(state));
 	}
 
 }

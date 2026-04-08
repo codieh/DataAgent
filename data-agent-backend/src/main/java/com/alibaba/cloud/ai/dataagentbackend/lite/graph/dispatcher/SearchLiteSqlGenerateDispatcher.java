@@ -5,10 +5,12 @@ import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.action.EdgeAction;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Component;
 
-import static com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphConfiguration.RESULT_NODE;
+import static com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphConfiguration.PREPARE_RESULT_NODE;
 import static com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphConfiguration.SQL_EXECUTE_NODE;
 
+@Component
 public class SearchLiteSqlGenerateDispatcher implements EdgeAction {
 
 	private static final Logger log = LoggerFactory.getLogger(SearchLiteSqlGenerateDispatcher.class);
@@ -26,8 +28,8 @@ public class SearchLiteSqlGenerateDispatcher implements EdgeAction {
 			return SQL_EXECUTE_NODE;
 		}
 
-		log.info("graph sql-generate dispatcher: empty or invalid sql, route to {}", RESULT_NODE);
-		return RESULT_NODE;
+		log.info("graph sql-generate dispatcher: empty or invalid sql, route to {}", PREPARE_RESULT_NODE);
+		return PREPARE_RESULT_NODE;
 	}
 
 	private static boolean isUsableSql(String sql) {

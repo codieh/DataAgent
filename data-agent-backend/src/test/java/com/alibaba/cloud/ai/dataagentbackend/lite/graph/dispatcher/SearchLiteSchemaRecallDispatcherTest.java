@@ -7,7 +7,7 @@ import java.util.List;
 import java.util.Optional;
 
 import static com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphConfiguration.ENHANCE_NODE;
-import static com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphConfiguration.RESULT_NODE;
+import static com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphConfiguration.PREPARE_RESULT_NODE;
 import static com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphStateKeys.RECALLED_TABLES;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -24,7 +24,7 @@ class SearchLiteSchemaRecallDispatcherTest {
 		when(state.value(anyString())).thenReturn(Optional.empty());
 		when(state.value(RECALLED_TABLES)).thenReturn(Optional.of(List.of()));
 
-		assertEquals(RESULT_NODE, dispatcher.apply(state));
+		assertEquals(PREPARE_RESULT_NODE, dispatcher.apply(state));
 	}
 
 	@Test
