@@ -63,10 +63,5 @@ vectorstore/*
 .java-version
 /.m2repo/
 
-# ignore all files ending with -index.json
-*-index.json
-
-# ignore all data folders and their contents at any level
-**/data/
-
-*index.json
+# ignore generated recall index files
+data/recall/*index.json

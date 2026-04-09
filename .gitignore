@@ -62,3 +62,6 @@ uploads/*
 vectorstore/*
 .java-version
 /.m2repo/
+
+# ignore generated recall index files
+data-agent-backend/data/recall/*index.json
