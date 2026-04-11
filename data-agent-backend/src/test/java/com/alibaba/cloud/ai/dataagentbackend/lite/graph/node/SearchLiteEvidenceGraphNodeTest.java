@@ -3,6 +3,7 @@ package com.alibaba.cloud.ai.dataagentbackend.lite.graph.node;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.EvidenceItem;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteState;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphStepOutputAdapter;
+import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStep;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStepResult;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.impl.EvidenceFileStep;
 import com.alibaba.cloud.ai.graph.OverAllState;
@@ -51,7 +52,8 @@ class SearchLiteEvidenceGraphNodeTest {
 		when(outputAdapter.adapt(any(), any())).thenReturn(Map.of(THREAD_ID, "thread-3", QUERY, "查询高消费用户",
 				EVIDENCE_TEXT, "高消费用户：按消费金额排名靠前", DOCUMENT_TEXT, "用户分层定义文档", EVIDENCES, updated.getEvidences()));
 
-		SearchLiteEvidenceGraphNode node = new SearchLiteEvidenceGraphNode(evidenceStep, outputAdapter);
+		SearchLiteEvidenceGraphNode node = new SearchLiteEvidenceGraphNode(List.<SearchLiteStep>of(evidenceStep),
+				outputAdapter);
 
 		Map<String, Object> result = node.apply(graphState);
 

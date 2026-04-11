@@ -9,6 +9,7 @@ import com.alibaba.cloud.ai.dataagentbackend.lite.conversation.PreparedConversat
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphService;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStep;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStepResult;
+import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -21,6 +22,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 
 /**
  * {@code search-lite} 流水线编排器。
@@ -56,45 +58,18 @@ public class SearchLiteOrchestrator {
 	}
 
 	public Flux<SearchLiteMessage> stream(SearchLiteRequest request) {
-		String threadId = StringUtils.hasText(request.threadId()) ? request.threadId() : UUID.randomUUID().toString();
-		SearchLiteContext ctx = new SearchLiteContext(threadId);
-		SearchLiteState state = SearchLiteState
-			.fromRequest(new SearchLiteRequest(request.agentId(), threadId, request.query()));
-		PreparedConversationContext preparedConversationContext = multiTurnContextManager.prepareTurn(threadId, request.query());
-		state.setMultiTurnContext(preparedConversationContext.multiTurnContext());
-		state.setContextualizedQuery(preparedConversationContext.contextualizedQuery());
-		AtomicReference<SearchLiteState> latestState = new AtomicReference<>(state);
-		AtomicBoolean completed = new AtomicBoolean(false);
+		PreparedRun preparedRun = prepareRun(request);
+		return buildExecutionFlux(preparedRun);
+	}
 
-		if (steps == null || steps.isEmpty()) {
-			log.warn("search-lite 无可用 steps：agentId={}, threadId={}", request.agentId(), threadId);
-			return Flux.just(SearchLiteMessages.error(ctx, SearchLiteStage.RESULT, "no steps configured"));
-		}
-
-		String stepsDesc = steps.stream()
-			.map(s -> s.stage() + ":" + s.getClass().getSimpleName())
-			.collect(Collectors.joining(", "));
-		int queryLen = request.query() == null ? 0 : request.query().length();
-		log.info("search-lite 开始：agentId={}, threadId={}, queryLen={}, steps=[{}]", request.agentId(), threadId,
-				queryLen, stepsDesc);
-
-		return runWithSelectedMode(ctx, state, latestState)
-			.doOnComplete(() -> {
-				completed.set(true);
-				multiTurnContextManager.finishTurn(latestState.get());
-			})
-			.doFinally(signal -> log.info("search-lite 结束：agentId={}, threadId={}, signal={}", request.agentId(),
-					threadId, signal))
-			.doFinally(signal -> {
-				if (!completed.get()) {
-					multiTurnContextManager.discardPending(threadId);
-				}
-			})
-			.onErrorResume(error -> {
-				String msg = (error == null || error.getMessage() == null) ? "unknown error" : error.getMessage();
-				log.warn("search-lite 异常：agentId={}, threadId={}, error={}", request.agentId(), threadId, msg, error);
-				return Flux.just(SearchLiteMessages.error(ctx, SearchLiteStage.RESULT, msg));
-			});
+	public Mono<SearchLiteRunResult> runForEvaluation(SearchLiteRequest request) {
+		PreparedRun preparedRun = prepareRun(request);
+		long startedAt = System.nanoTime();
+		return buildExecutionFlux(preparedRun).collectList().map(messages -> new SearchLiteRunResult(
+				preparedRun.threadId(),
+				preparedRun.latestState().get(),
+				messages,
+				Duration.ofNanos(System.nanoTime() - startedAt).toMillis()));
 	}
 
 	private Flux<SearchLiteMessage> runWithSelectedMode(SearchLiteContext ctx, SearchLiteState state,
@@ -154,6 +129,61 @@ public class SearchLiteOrchestrator {
 			}).defaultIfEmpty(currentState)
 				.flatMapMany(updatedState -> runSteps(ctx, updatedState, index + 1, latestState)));
 		});
+	}
+
+	private PreparedRun prepareRun(SearchLiteRequest request) {
+		String threadId = StringUtils.hasText(request.threadId()) ? request.threadId() : UUID.randomUUID().toString();
+		SearchLiteContext ctx = new SearchLiteContext(threadId);
+		SearchLiteState state = SearchLiteState
+			.fromRequest(new SearchLiteRequest(request.agentId(), threadId, request.query()));
+		PreparedConversationContext preparedConversationContext = multiTurnContextManager.prepareTurn(threadId, request.query());
+		state.setMultiTurnContext(preparedConversationContext.multiTurnContext());
+		state.setContextualizedQuery(preparedConversationContext.contextualizedQuery());
+		AtomicReference<SearchLiteState> latestState = new AtomicReference<>(state);
+		AtomicBoolean completed = new AtomicBoolean(false);
+		return new PreparedRun(request, threadId, ctx, state, latestState, completed);
+	}
+
+	private Flux<SearchLiteMessage> buildExecutionFlux(PreparedRun preparedRun) {
+		if (steps == null || steps.isEmpty()) {
+			log.warn("search-lite 无可用 steps：agentId={}, threadId={}", preparedRun.request().agentId(),
+					preparedRun.threadId());
+			return Flux.just(SearchLiteMessages.error(preparedRun.context(), SearchLiteStage.RESULT, "no steps configured"));
+		}
+
+		String stepsDesc = steps.stream()
+			.map(s -> s.stage() + ":" + s.getClass().getSimpleName())
+			.collect(Collectors.joining(", "));
+		int queryLen = preparedRun.request().query() == null ? 0 : preparedRun.request().query().length();
+		log.info("search-lite 开始：agentId={}, threadId={}, queryLen={}, steps=[{}]", preparedRun.request().agentId(),
+				preparedRun.threadId(), queryLen, stepsDesc);
+
+		return runWithSelectedMode(preparedRun.context(), preparedRun.state(), preparedRun.latestState())
+			.doOnComplete(() -> {
+				preparedRun.completed().set(true);
+				multiTurnContextManager.finishTurn(preparedRun.latestState().get());
+			})
+			.doFinally(signal -> log.info("search-lite 结束：agentId={}, threadId={}, signal={}",
+					preparedRun.request().agentId(), preparedRun.threadId(), signal))
+			.doFinally(signal -> {
+				if (!preparedRun.completed().get()) {
+					multiTurnContextManager.discardPending(preparedRun.threadId());
+				}
+			})
+			.onErrorResume(error -> {
+				String msg = (error == null || error.getMessage() == null) ? "unknown error" : error.getMessage();
+				SearchLiteState latest = preparedRun.latestState().get();
+				if (latest != null) {
+					latest.setError(msg);
+				}
+				log.warn("search-lite 异常：agentId={}, threadId={}, error={}", preparedRun.request().agentId(),
+						preparedRun.threadId(), msg, error);
+				return Flux.just(SearchLiteMessages.error(preparedRun.context(), SearchLiteStage.RESULT, msg));
+			});
+	}
+
+	private record PreparedRun(SearchLiteRequest request, String threadId, SearchLiteContext context, SearchLiteState state,
+			AtomicReference<SearchLiteState> latestState, AtomicBoolean completed) {
 	}
 
 }

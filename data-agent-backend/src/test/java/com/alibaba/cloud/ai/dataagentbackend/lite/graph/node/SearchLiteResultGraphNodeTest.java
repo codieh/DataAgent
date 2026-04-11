@@ -2,6 +2,7 @@ package com.alibaba.cloud.ai.dataagentbackend.lite.graph.node;
 
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteState;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphStepOutputAdapter;
+import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStep;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStepResult;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.impl.ResultMinimaxStep;
 import com.alibaba.cloud.ai.graph.OverAllState;
@@ -50,7 +51,7 @@ class SearchLiteResultGraphNodeTest {
 		when(outputAdapter.adapt(any(), any())).thenReturn(Map.of(THREAD_ID, "thread-2", QUERY, "查询高消费用户",
 				RESULT_SUMMARY, "这是结果总结"));
 
-		SearchLiteResultGraphNode node = new SearchLiteResultGraphNode(resultStep, outputAdapter);
+		SearchLiteResultGraphNode node = new SearchLiteResultGraphNode(List.<SearchLiteStep>of(resultStep), outputAdapter);
 
 		Map<String, Object> result = node.apply(graphState);
 

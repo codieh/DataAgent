@@ -2,6 +2,7 @@ package com.alibaba.cloud.ai.dataagentbackend.lite.graph.node;
 
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteState;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphStepOutputAdapter;
+import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStep;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStepResult;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.impl.IntentMinimaxStep;
 import com.alibaba.cloud.ai.graph.OverAllState;
@@ -9,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -43,7 +45,7 @@ class SearchLiteIntentGraphNodeTest {
 
 		when(outputAdapter.adapt(any(), any())).thenReturn(Map.of(THREAD_ID, "thread-1", QUERY, "查询高消费用户", "intentClassification", "DATA_ANALYSIS"));
 
-		SearchLiteIntentGraphNode node = new SearchLiteIntentGraphNode(intentStep, outputAdapter);
+		SearchLiteIntentGraphNode node = new SearchLiteIntentGraphNode(List.<SearchLiteStep>of(intentStep), outputAdapter);
 
 		Map<String, Object> result = node.apply(graphState);
 
