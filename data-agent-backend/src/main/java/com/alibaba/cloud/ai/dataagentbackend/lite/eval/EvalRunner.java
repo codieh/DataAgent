@@ -16,11 +16,16 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 @Service
 public class EvalRunner {
@@ -37,16 +42,23 @@ public class EvalRunner {
 
 	private final String defaultAgentId;
 
+	private final String suite;
+
 	public EvalRunner(SearchLiteOrchestrator orchestrator, EvalCaseLoader caseLoader, EvalReportWriter reportWriter,
-			@Value("${search.lite.eval.agent-id:eval-agent}") String defaultAgentId) {
+			@Value("${search.lite.eval.agent-id:eval-agent}") String defaultAgentId,
+			@Value("${search.lite.eval.suite:standard}") String suite) {
 		this.orchestrator = orchestrator;
 		this.caseLoader = caseLoader;
 		this.reportWriter = reportWriter;
 		this.defaultAgentId = defaultAgentId;
+		this.suite = normalizeSuite(suite);
 	}
 
 	public EvalRunReport runDefaultSuite() throws IOException {
-		List<EvalCaseLoader.LoadedEvalDataset> loadedDatasets = caseLoader.loadAll();
+		List<EvalCaseLoader.LoadedEvalDataset> loadedDatasets = filterDatasets(caseLoader.loadAll());
+		if (loadedDatasets.isEmpty()) {
+			throw new IllegalStateException("no eval datasets matched suite: " + suite);
+		}
 		List<EvalCaseResult> results = new ArrayList<>();
 		for (EvalCaseLoader.LoadedEvalDataset loadedDataset : loadedDatasets) {
 			for (EvalCaseDefinition definition : loadedDataset.dataset().cases()) {
@@ -92,12 +104,22 @@ public class EvalRunner {
 				? expectations.expectedResultMode().equalsIgnoreCase(state.getResultMode()) : null;
 		Boolean multiTurnFollowupMatched = expectations.expectedContextualizedQueryContains().isEmpty() ? null
 				: containsAllSnippets(state.getContextualizedQuery(), expectations.expectedContextualizedQueryContains());
+		Boolean sqlReferenceMatched = hasReferenceSqlExpectation(expectations)
+				? matchesReferenceSql(state.getSql(), expectations.referenceSql(), expectations.expectedSqlContains()) : null;
+		Boolean resultSignatureMatched = hasResultSignatureExpectation(expectations)
+				? matchesResultSignature(state.getRows() == null ? 0 : state.getRows().size(), state.getResultSummary(),
+						expectations.expectedRowCount(), expectations.expectedSummaryContains())
+				: null;
+		boolean unexpectedSqlGeneration = Boolean.FALSE.equals(expectations.expectedSqlGenerated()) && sqlGenerated;
+		boolean unexpectedSqlExecution = Boolean.FALSE.equals(expectations.expectedSqlExecuted()) && sqlExecuted;
 
 		List<String> failedChecks = new ArrayList<>();
 		addFailure(failedChecks, "intent", intentMatched);
 		addFailure(failedChecks, "schema_recall", schemaRecallHit);
 		addFailure(failedChecks, "result_mode", resultModeMatched);
 		addFailure(failedChecks, "multi_turn_followup", multiTurnFollowupMatched);
+		addFailure(failedChecks, "sql_reference", sqlReferenceMatched);
+		addFailure(failedChecks, "result_signature", resultSignatureMatched);
 		if (expectations.expectedSqlGenerated() != null && expectations.expectedSqlGenerated() != sqlGenerated) {
 			failedChecks.add("sql_generated");
 		}
@@ -107,6 +129,8 @@ public class EvalRunner {
 		if (expectations.expectedSqlRetryCount() != null && expectations.expectedSqlRetryCount() != state.getSqlRetryCount()) {
 			failedChecks.add("sql_retry_count");
 		}
+		String diagnosticStatus = determineDiagnosticStatus(failedChecks, state, sqlGenerated, sqlExecuted);
+		String primaryFailure = failedChecks.isEmpty() ? "" : failedChecks.get(0);
 
 		return new EvalCaseResult(definition.caseId(), definition.title(), datasetId, definition.category(),
 				definition.scenarioType(), definition.query(), threadId,
@@ -114,16 +138,31 @@ public class EvalRunner {
 				copyList(state.getRecalledTables()), extractDocumentSummaries(messages),
 				state.getEvidences().stream().map(EvidenceItem::title).toList(), state.getCanonicalQuery(),
 				state.getContextualizedQuery(), state.getSql(), state.getSqlRetryCount(), state.getResultMode(),
-				state.getRows() == null ? 0 : state.getRows().size(), state.getResultSummary(), state.getError(), durationMs,
-				intentMatched, schemaRecallHit, sqlGenerated, sqlExecuted, resultModeMatched, multiTurnFollowupMatched,
+				state.getRows() == null ? 0 : state.getRows().size(), state.getResultSummary(), state.getError(),
+				durationMs, intentMatched, schemaRecallHit, sqlGenerated, sqlExecuted, unexpectedSqlGeneration,
+				unexpectedSqlExecution, sqlReferenceMatched, resultSignatureMatched, resultModeMatched,
+				multiTurnFollowupMatched, diagnosticStatus, primaryFailure,
 				failedChecks.isEmpty(), failedChecks);
 	}
 
 	private EvalRunReport buildReport(List<EvalCaseLoader.LoadedEvalDataset> loadedDatasets, List<EvalCaseResult> results) {
 		int passedCases = (int) results.stream().filter(EvalCaseResult::passed).count();
 		int failedCases = results.size() - passedCases;
+		long averageDurationMs = results.isEmpty() ? 0L
+				: Math.round(results.stream().mapToLong(EvalCaseResult::durationMs).average().orElse(0.0d));
 		EvalMetricsSummary metrics = new EvalMetricsSummary(
+				EvalMetricValue.of(passedCases, results.size()),
 				metric(results, EvalCaseResult::intentMatched),
+				EvalMetricValue.of((int) failureFallbackResults(results).stream().filter(EvalCaseResult::passed).count(),
+						failureFallbackResults(results).size()),
+				EvalMetricValue.of((int) failureFallbackResults(results).stream()
+					.filter(result -> !result.unexpectedSqlGeneration())
+					.count(), failureFallbackResults(results).size()),
+				EvalMetricValue.of((int) failureFallbackResults(results).stream()
+					.filter(result -> !result.unexpectedSqlExecution())
+					.count(), failureFallbackResults(results).size()),
+				metric(results, EvalCaseResult::sqlReferenceMatched),
+				metric(results, EvalCaseResult::resultSignatureMatched),
 				metric(results, EvalCaseResult::schemaRecallHit),
 				EvalMetricValue.of((int) results.stream().filter(EvalCaseResult::sqlGenerated).count(), results.size()),
 				EvalMetricValue.of((int) results.stream().filter(EvalCaseResult::sqlExecuted).count(), results.size()),
@@ -131,9 +170,28 @@ public class EvalRunner {
 				metric(results.stream()
 					.filter(result -> "multi_turn".equalsIgnoreCase(result.scenarioType()))
 					.toList(), EvalCaseResult::multiTurnFollowupMatched));
-		return new EvalRunReport("eval-v1-" + REPORT_ID_FORMAT.format(Instant.now()), Instant.now(),
+		return new EvalRunReport("eval-v1-" + REPORT_ID_FORMAT.format(Instant.now()), Instant.now(), suite,
 				loadedDatasets.stream().map(loaded -> loaded.path().toString()).toList(), results.size(), passedCases,
-				failedCases, metrics, results);
+				failedCases, averageDurationMs, metrics, buildStatusCounts(results), buildFailureCheckCounts(results),
+				buildDatasetSummaries(loadedDatasets, results), buildScenarioSummaries(results), results);
+	}
+
+	private List<EvalCaseLoader.LoadedEvalDataset> filterDatasets(List<EvalCaseLoader.LoadedEvalDataset> loadedDatasets) {
+		if ("all".equalsIgnoreCase(suite)) {
+			return loadedDatasets;
+		}
+		Set<String> allowedSuites = Arrays.stream(suite.split(","))
+			.map(String::trim)
+			.filter(StringUtils::hasText)
+			.map(value -> value.toLowerCase(Locale.ROOT))
+			.collect(Collectors.toCollection(LinkedHashSet::new));
+		return loadedDatasets.stream()
+			.filter(dataset -> allowedSuites.contains(dataset.dataset().suite()))
+			.toList();
+	}
+
+	private List<EvalCaseResult> failureFallbackResults(List<EvalCaseResult> results) {
+		return results.stream().filter(result -> "failure_fallback".equalsIgnoreCase(result.scenarioType())).toList();
 	}
 
 	private EvalMetricValue metric(List<EvalCaseResult> results,
@@ -184,6 +242,51 @@ public class EvalRunner {
 		return true;
 	}
 
+	private boolean hasReferenceSqlExpectation(EvalExpectations expectations) {
+		return StringUtils.hasText(expectations.referenceSql()) || !expectations.expectedSqlContains().isEmpty();
+	}
+
+	private boolean hasResultSignatureExpectation(EvalExpectations expectations) {
+		return expectations.expectedRowCount() != null || !expectations.expectedSummaryContains().isEmpty();
+	}
+
+	private boolean matchesReferenceSql(String actualSql, String referenceSql, List<String> expectedSqlContains) {
+		if (!StringUtils.hasText(actualSql)) {
+			return false;
+		}
+		String normalizedActual = normalizeSql(actualSql);
+		if (StringUtils.hasText(referenceSql) && normalizedActual.equals(normalizeSql(referenceSql))) {
+			return true;
+		}
+		if (expectedSqlContains.isEmpty()) {
+			return false;
+		}
+		for (String snippet : expectedSqlContains) {
+			if (!StringUtils.hasText(snippet)) {
+				continue;
+			}
+			if (!normalizedActual.contains(normalizeSql(snippet))) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	private boolean matchesResultSignature(int actualRowCount, String summary, Integer expectedRowCount,
+			List<String> expectedSummaryContains) {
+		if (expectedRowCount != null && expectedRowCount != actualRowCount) {
+			return false;
+		}
+		return containsAllSnippets(summary, expectedSummaryContains);
+	}
+
+	private String normalizeSql(String sql) {
+		if (!StringUtils.hasText(sql)) {
+			return "";
+		}
+		return sql.replaceAll("\\s+", " ").trim().toLowerCase(Locale.ROOT);
+	}
+
 	private boolean hasExpectation(String value) {
 		return StringUtils.hasText(value);
 	}
@@ -226,6 +329,84 @@ public class EvalRunner {
 
 	private List<String> copyList(List<String> values) {
 		return values == null ? List.of() : List.copyOf(values);
+	}
+
+	private Map<String, Integer> buildFailureCheckCounts(List<EvalCaseResult> results) {
+		Map<String, Integer> counts = new LinkedHashMap<>();
+		for (EvalCaseResult result : results) {
+			for (String failedCheck : result.failedChecks()) {
+				counts.merge(failedCheck, 1, Integer::sum);
+			}
+		}
+		return counts.entrySet().stream()
+			.sorted(Map.Entry.<String, Integer>comparingByValue(Comparator.reverseOrder())
+				.thenComparing(Map.Entry.comparingByKey()))
+			.collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue, (left, right) -> left,
+					LinkedHashMap::new));
+	}
+
+	private Map<String, Integer> buildStatusCounts(List<EvalCaseResult> results) {
+		return results.stream()
+			.collect(Collectors.groupingBy(EvalCaseResult::diagnosticStatus, LinkedHashMap::new, Collectors.summingInt(result -> 1)))
+			.entrySet()
+			.stream()
+			.sorted(Map.Entry.<String, Integer>comparingByValue(Comparator.reverseOrder())
+				.thenComparing(Map.Entry.comparingByKey()))
+			.collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue, (left, right) -> left,
+					LinkedHashMap::new));
+	}
+
+	private List<EvalDatasetSummary> buildDatasetSummaries(List<EvalCaseLoader.LoadedEvalDataset> loadedDatasets,
+			List<EvalCaseResult> results) {
+		Map<String, EvalCaseDataset> datasetIndex = loadedDatasets.stream()
+			.collect(Collectors.toMap(loaded -> loaded.dataset().datasetId(), EvalCaseLoader.LoadedEvalDataset::dataset,
+					(left, right) -> left, LinkedHashMap::new));
+		return datasetIndex.entrySet().stream().map(entry -> {
+			List<EvalCaseResult> datasetResults = results.stream()
+				.filter(result -> entry.getKey().equals(result.datasetId()))
+				.toList();
+			int passed = (int) datasetResults.stream().filter(EvalCaseResult::passed).count();
+			long average = datasetResults.isEmpty() ? 0L
+					: Math.round(datasetResults.stream().mapToLong(EvalCaseResult::durationMs).average().orElse(0.0d));
+			return new EvalDatasetSummary(entry.getKey(), entry.getValue().suite(), datasetResults.size(), passed,
+					datasetResults.size() - passed, average);
+		}).toList();
+	}
+
+	private List<EvalScenarioSummary> buildScenarioSummaries(List<EvalCaseResult> results) {
+		return results.stream()
+			.collect(Collectors.groupingBy(EvalCaseResult::scenarioType, LinkedHashMap::new, Collectors.toList()))
+			.entrySet()
+			.stream()
+			.map(entry -> {
+				int passed = (int) entry.getValue().stream().filter(EvalCaseResult::passed).count();
+				long average = entry.getValue().isEmpty() ? 0L
+						: Math.round(entry.getValue().stream().mapToLong(EvalCaseResult::durationMs).average().orElse(0.0d));
+				return new EvalScenarioSummary(entry.getKey(), entry.getValue().size(), passed,
+						entry.getValue().size() - passed, average);
+			})
+			.toList();
+	}
+
+	private String determineDiagnosticStatus(List<String> failedChecks, SearchLiteState state, boolean sqlGenerated,
+			boolean sqlExecuted) {
+		if (failedChecks.isEmpty()) {
+			return "passed";
+		}
+		if ("execution_error".equalsIgnoreCase(state.getResultMode()) || StringUtils.hasText(state.getError())) {
+			return "execution_error";
+		}
+		if ("CHITCHAT".equalsIgnoreCase(state.getIntentClassification()) && !sqlGenerated) {
+			return "short_circuit";
+		}
+		if (sqlGenerated && !sqlExecuted) {
+			return "execution_blocked";
+		}
+		return "expectation_failed";
+	}
+
+	private String normalizeSuite(String rawSuite) {
+		return StringUtils.hasText(rawSuite) ? rawSuite.trim().toLowerCase(Locale.ROOT) : "standard";
 	}
 
 }

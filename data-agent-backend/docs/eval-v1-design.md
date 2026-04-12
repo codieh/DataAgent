@@ -28,10 +28,24 @@ V1 使用统一 JSON dataset 格式，位置：
 {
   "datasetId": "single-turn-v1",
   "version": "eval-v1",
+  "suite": "standard",
   "description": "dataset description",
   "cases": []
 }
 ```
+
+其中 `suite` 用于支持评测分层。
+
+当前约定：
+
+- `quick`
+  - 快速回归集
+- `golden`
+  - 人工校准的核心黄金集
+- `standard`
+  - 标准评测集
+- `all`
+  - runner 层支持的聚合模式，表示同时跑全部 suite
 
 每条 case 结构重点字段：
 
@@ -115,21 +129,55 @@ Runner 直接复用：
 - 固定“最新结果”查看
 - 历史结果对比
 
+新版本报告还会额外输出：
+
+- dataset summary
+- scenario summary
+- diagnostic status breakdown
+- failure breakdown
+
 ## 5. 指标定义
 
-V1 先统计 6 个指标：
+V1 先统计 11 个指标：
 
+- `expectationPassRate`
 - `intentAccuracy`
+- `failureFallbackAccuracy`
+- `unexpectedSqlGenerationBlockRate`
+- `unexpectedSqlExecutionBlockRate`
+- `sqlReferenceAccuracy`
+- `resultSignatureAccuracy`
 - `schemaRecallHitRate`
 - `sqlGenerationRate`
 - `sqlExecutionSuccessRate`
 - `resultModeAccuracy`
 - `multiTurnFollowupAccuracy`
 
+同时 runner 现在支持按 suite 过滤 dataset。
+
+推荐用法：
+
+- 日常做可信基准核验先跑 `golden`
+- 日常改动后先跑 `quick`
+- 功能稳定后跑 `standard`
+- 需要全量对比时跑 `all`
+
 说明：
 
+- `expectationPassRate`
+  - 统计 case 是否整体满足当前 expectations，用来表示更接近“答对率”的指标
 - `intentAccuracy`
   - 只统计配置了 `expectedIntent` 的 case
+- `failureFallbackAccuracy`
+  - 只统计 `scenarioType=failure_fallback` 的 case，看整体 expectation 是否通过
+- `unexpectedSqlGenerationBlockRate`
+  - 只统计 `failure_fallback` case，看“不应生成 SQL”的样例是否真的没生成
+- `unexpectedSqlExecutionBlockRate`
+  - 只统计 `failure_fallback` case，看“不应执行 SQL”的样例是否真的被拦截
+- `sqlReferenceAccuracy`
+  - 只统计配置了 `referenceSql` 或 `expectedSqlContains` 的 case，看生成 SQL 是否满足参考约束
+- `resultSignatureAccuracy`
+  - 只统计配置了 `expectedRowCount` 或 `expectedSummaryContains` 的 case，看结果特征是否满足预期
 - `schemaRecallHitRate`
   - 只统计配置了 `expectedTables` 的 case
 - `sqlGenerationRate`
@@ -140,6 +188,50 @@ V1 先统计 6 个指标：
   - 只统计配置了 `expectedResultMode` 的 case
 - `multiTurnFollowupAccuracy`
   - 只统计 `scenarioType=multi_turn` 且配置了 `expectedContextualizedQueryContains` 的 case
+
+运行入口也支持更直接的短参数：
+
+- `--suite=quick`
+- `--suite=golden`
+- `--suite=standard`
+- `--suite=all`
+
+内部会自动转成 Spring 属性 `search.lite.eval.suite`。
+
+## 5.1 标准答案骨架
+
+V1 先不做重型结果对拍平台，但现在样例格式已经支持轻量“标准答案”表达：
+
+- `referenceSql`
+  - 用于标准 SQL 的规范化等价匹配
+- `expectedSqlContains`
+  - 用于 SQL 关键片段约束
+- `expectedRowCount`
+  - 用于结果行数特征约束
+- `expectedSummaryContains`
+  - 用于总结文本特征约束
+
+这样后续可以按题型渐进增强，而不是一次把所有 case 都抬成重平台。
+
+## 5.2 核心黄金集
+
+当前已经新增第一批 `golden-core-v1`，位置：
+
+- `D:\GitHub\DataAgent\data-agent-backend\data\eval\cases\golden-core.json`
+
+首批黄金集控制在 6 题，刻意覆盖三类高价值能力：
+
+- 单轮分析
+  - `GC01` 订单状态聚合
+  - `GC02` 六月订单趋势
+  - `GC03` 天气闲聊边界
+- 多轮追问
+  - `GC04` 高消费用户追问下单次数
+- failure / fallback
+  - `GC05` 仓库表缺失
+  - `GC06` 危险 SQL 注入
+
+这批样例的目标不是先追求覆盖面，而是先建立一块更可信的评测锚点。
 
 ## 6. 当前边界
 

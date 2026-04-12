@@ -65,6 +65,8 @@
 
 例如：
 
+- `golden-core.json`
+- `quick-regression.json`
 - `single-turn.json`
 - `multi-turn.json`
 - `failure-cases.json`
@@ -77,8 +79,23 @@
 
 - `datasetId`
 - `version`
+- `suite`
 - `description`
 - `cases`
+
+这里的 `suite` 用来支持评测分层：
+
+- `golden`
+- `quick`
+- `standard`
+
+runner 还支持：
+
+- `all`
+
+表示一次把所有 suite 都跑掉。
+
+其中 `golden-core.json` 是后来补上的第一批核心黄金样例集。它不是为了追求题量，而是为了给整套评测系统提供一块更可信的基准区。
 
 ### 3.2 单个 case 结构
 
@@ -140,6 +157,10 @@
 - `expectedSqlExecuted`
 - `expectedSqlRetryCount`
 - `expectedContextualizedQueryContains`
+- `referenceSql`
+- `expectedSqlContains`
+- `expectedRowCount`
+- `expectedSummaryContains`
 
 这是一个有意识的设计选择。
 
@@ -165,11 +186,20 @@ CLI 入口是：
 
 - [LiteEvalCliApplication.java](D:/GitHub/DataAgent/data-agent-backend/src/main/java/com/alibaba/cloud/ai/dataagentbackend/lite/eval/LiteEvalCliApplication.java)
 
+为了让本地运行更顺手，CLI 现在支持：
+
+- `--suite=quick`
+- `--suite=standard`
+- `--suite=all`
+
+它会把短参数转成 Spring 能识别的 `--search.lite.eval.suite=...`，所以运行入口更轻，但底层配置模型没有分叉。
+
 所以整条链路是：
 
 ```text
 LiteEvalCliApplication
 -> EvalRunner.runDefaultSuite()
+-> 按 suite 过滤 datasets
 -> 读取 datasets
 -> 逐条 runCase(...)
 -> 生成 report
@@ -312,14 +342,32 @@ LiteEvalCliApplication
 
 第三类：收口信息
 
+- `diagnosticStatus`
+- `primaryFailure`
 - `passed`
 - `failedChecks`
+- `unexpectedSqlGeneration`
+- `unexpectedSqlExecution`
+- `sqlReferenceMatched`
+- `resultSignatureMatched`
 
 这一层设计的好处是，
 结果对象同时服务两件事：
 
 - 机器可统计
 - 人可阅读排障
+
+其中：
+
+- `diagnosticStatus`
+  - 用于快速判断当前失败更像：
+    - `execution_error`
+    - `execution_blocked`
+    - `expectation_failed`
+    - `short_circuit`
+    - `passed`
+- `primaryFailure`
+  - 用于快速看这题最先暴露的是哪一类检查项
 
 ### 5.2 总报告结构
 
@@ -331,11 +379,17 @@ LiteEvalCliApplication
 
 - `reportId`
 - `generatedAt`
+- `suite`
 - `datasetFiles`
 - `totalCases`
 - `passedCases`
 - `failedCases`
+- `averageDurationMs`
 - `metrics`
+- `statusCounts`
+- `failureCheckCounts`
+- `datasetSummaries`
+- `scenarioSummaries`
 - `results`
 
 所以这份 JSON 报告本质上已经是一份完整的“评测快照”。
@@ -368,16 +422,52 @@ LiteEvalCliApplication
 - 没定义预期的 case 不会污染指标
 - 指标是可渐进扩展的
 
-### 6.2 当前 6 个指标
+### 6.2 当前 7 个指标
 
 当前支持：
 
+- `expectationPassRate`
 - `intentAccuracy`
+- `failureFallbackAccuracy`
+- `unexpectedSqlGenerationBlockRate`
+- `unexpectedSqlExecutionBlockRate`
+- `sqlReferenceAccuracy`
+- `resultSignatureAccuracy`
 - `schemaRecallHitRate`
 - `sqlGenerationRate`
 - `sqlExecutionSuccessRate`
 - `resultModeAccuracy`
 - `multiTurnFollowupAccuracy`
+
+这里新增的 `expectationPassRate` 很关键。
+
+因为它明确表达的是：
+
+- 这题按当前 expectations 是否整体通过
+
+所以它比：
+
+- `sqlExecutionSuccessRate`
+
+更接近“答对率”。
+
+而 failure/fallback 现在又额外拆出两层安全信号：
+
+- `unexpectedSqlGenerationBlockRate`
+- `unexpectedSqlExecutionBlockRate`
+
+它们专门回答一个更尖锐的问题：
+
+- 系统有没有在不该出手的时候真的停住
+
+另外，标准答案对拍这次也先铺了轻量骨架：
+
+- `sqlReferenceAccuracy`
+  - 基于 `referenceSql` 或 `expectedSqlContains`
+- `resultSignatureAccuracy`
+  - 基于 `expectedRowCount` 或 `expectedSummaryContains`
+
+这不是最终形态，但已经把“过程判定”往“答案判定”推进了一步。
 
 这里有一个很值得注意的点：
 
@@ -406,13 +496,16 @@ Markdown 渲染器在：
 
 - [EvalMarkdownReportRenderer.java](D:/GitHub/DataAgent/data-agent-backend/src/main/java/com/alibaba/cloud/ai/dataagentbackend/lite/eval/EvalMarkdownReportRenderer.java)
 
-它当前输出 4 块内容：
+它当前输出的核心内容包括：
 
 1. 报告头
 2. 数据集列表
-3. 指标表
-4. 失败样例表
-5. 全量 case summary
+3. dataset / scenario summary
+4. 指标表
+5. diagnostic status breakdown
+6. failure breakdown
+7. 失败样例表
+8. 全量 case summary
 
 为什么 V1 的 Markdown 报告很重要？
 
@@ -423,6 +516,8 @@ Markdown 渲染器在：
 
 - 失败了多少题
 - 失败集中在哪几类
+- 失败更像语义不达标、执行错误还是安全收口
+- 是集中在某个 dataset，还是某个 scenario
 - 每题失败检查项是什么
 - 实际 `resultMode` / `error` 是什么
 
@@ -456,6 +551,13 @@ Markdown 渲染器在：
 - 改 prompt 前后
 - 改 recall 前后
 - 改多轮策略前后
+
+而由于现在有 `suite`，
+你也可以采用更现实的节奏：
+
+- 先跑 `quick`
+- 再跑 `standard`
+- 最后跑 `all`
 
 这对后面写简历、做效果复盘都非常有帮助。
 
@@ -521,6 +623,18 @@ dataset、case、expectations、result、report 都有单独类，
 - SQL grounding 不够强
 - `resultMode=success` 不能等价理解为“答对”
 
+这也是为什么现在报告里会同时保留：
+
+- `expectationPassRate`
+- `sqlExecutionSuccessRate`
+- `diagnosticStatus`
+
+三者分别代表：
+
+- 当前 case expectation 是否通过
+- SQL 层面有没有跑通
+- 失败到底更像哪一类
+
 这恰恰说明评测系统已经开始工作了。
 
 如果一套评测系统永远只会产出“都很好”，
@@ -577,6 +691,9 @@ dataset、case、expectations、result、report 都有单独类，
 
 - 快速回归集
 - 标准评测集
+
+这一点现在已经开始落地，
+不是只停留在 TODO。
 
 ---
 

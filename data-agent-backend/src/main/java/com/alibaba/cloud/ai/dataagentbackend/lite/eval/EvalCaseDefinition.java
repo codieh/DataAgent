@@ -8,7 +8,8 @@ public record EvalCaseDefinition(String caseId, String title, String category, S
 	public EvalCaseDefinition {
 		history = history == null ? List.of() : List.copyOf(history);
 		tags = tags == null ? List.of() : List.copyOf(tags);
-		expectations = expectations == null ? new EvalExpectations(null, List.of(), null, null, null, null, null)
+		expectations = expectations == null
+				? new EvalExpectations(null, List.of(), null, null, null, null, null, null, null, null, null)
 				: expectations;
 	}
 

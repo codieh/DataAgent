@@ -15,10 +15,10 @@ search:
       mode: graph
     context:
       max-turn-history: 5
-      max-field-length: 240
+      max-field-length: 1000
     graph:
       sql-retry:
-        max-attempts: 1
+        max-attempts: 3
     recall:
       # keyword|vector|hybrid
       provider: hybrid
@@ -83,7 +83,7 @@ llm:
     # export LLM_ANTHROPIC_API_KEY=...
     api-key: "${LLM_ANTHROPIC_API_KEY:}"
     model: MiniMax-M2.7
-    temperature: 0.5
+    temperature: 0.8
     max-tokens: 8192
     anthropic-version: ""
 

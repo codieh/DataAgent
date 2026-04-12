@@ -7,13 +7,18 @@ public record EvalCaseResult(String caseId, String title, String datasetId, Stri
 		List<String> recalledDocuments, List<String> recalledEvidences, String canonicalQuery, String contextualizedQuery,
 		String sql, int sqlRetryCount, String resultMode, int rowCount, String summary, String error, long durationMs,
 		Boolean intentMatched, Boolean schemaRecallHit, boolean sqlGenerated, boolean sqlExecuted,
-		Boolean resultModeMatched, Boolean multiTurnFollowupMatched, boolean passed, List<String> failedChecks) {
+		boolean unexpectedSqlGeneration, boolean unexpectedSqlExecution,
+		Boolean sqlReferenceMatched, Boolean resultSignatureMatched, Boolean resultModeMatched,
+		Boolean multiTurnFollowupMatched, String diagnosticStatus, String primaryFailure, boolean passed,
+		List<String> failedChecks) {
 
 	public EvalCaseResult {
 		history = history == null ? List.of() : List.copyOf(history);
 		recalledTables = recalledTables == null ? List.of() : List.copyOf(recalledTables);
 		recalledDocuments = recalledDocuments == null ? List.of() : List.copyOf(recalledDocuments);
 		recalledEvidences = recalledEvidences == null ? List.of() : List.copyOf(recalledEvidences);
+		diagnosticStatus = diagnosticStatus == null || diagnosticStatus.isBlank() ? "unknown" : diagnosticStatus;
+		primaryFailure = primaryFailure == null ? "" : primaryFailure;
 		failedChecks = failedChecks == null ? List.of() : List.copyOf(failedChecks);
 	}
 

@@ -44,8 +44,18 @@ class EvalRunnerTest {
 		EvalRunReport report = evalRunner.runDefaultSuite();
 
 		assertNotNull(report);
+		assertEquals("standard", report.suite());
 		assertEquals(17, report.totalCases());
+		assertEquals(3, report.datasetSummaries().size());
 		assertNotNull(report.metrics());
+		assertEquals(report.passedCases(), report.metrics().expectationPassRate().passed());
+		assertEquals(report.totalCases(), report.metrics().expectationPassRate().total());
+		assertEquals(5, report.metrics().failureFallbackAccuracy().total());
+		assertEquals(0, report.metrics().unexpectedSqlExecutionBlockRate().passed());
+		assertEquals(0, report.metrics().sqlReferenceAccuracy().total());
+		assertEquals(0, report.metrics().resultSignatureAccuracy().total());
+		assertFalse(report.statusCounts().isEmpty());
+		assertFalse(report.failureCheckCounts().isEmpty());
 		assertFalse(report.results().isEmpty());
 
 		Path latestJson = Path.of("D:/GitHub/DataAgent/data-agent-backend/target/test-eval-reports/latest-report.json");
@@ -56,6 +66,10 @@ class EvalRunnerTest {
 		assertTrue(Files.size(latestJson) > 0L);
 		assertTrue(Files.size(latestMd) > 0L);
 		assertTrue(report.results().stream().anyMatch(result -> "multi_turn".equalsIgnoreCase(result.scenarioType())));
+		assertTrue(Files.readString(latestMd).contains("## Diagnostic Status Breakdown"));
+		assertTrue(Files.readString(latestMd).contains("SQL Reference Accuracy"));
+		assertTrue(Files.readString(latestMd).contains("Unexpected SQL Execution Block Rate"));
+		assertTrue(Files.readString(latestMd).contains("## Failure Breakdown"));
 	}
 
 }
