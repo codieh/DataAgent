@@ -1,0 +1,93 @@
+{
+  "datasetId": "multi-turn-v1",
+  "version": "eval-v1",
+  "suite": "standard",
+  "description": "首版多轮追问评测集，通过 history 回放复用 threadId，重点验证 contextualizedQuery 与 follow-up 处理。",
+  "cases": [
+    {
+      "caseId": "MT01",
+      "title": "高消费用户追问下单次数",
+      "category": "multi_turn_followup",
+      "scenarioType": "multi_turn",
+      "query": "这些用户里谁下单最多",
+      "history": [
+        {
+          "query": "查询累计消费金额最高的用户",
+          "note": "首轮建立高消费用户上下文"
+        }
+      ],
+      "tags": ["multi-turn", "follow-up"],
+      "expectations": {
+        "expectedIntent": "DATA_ANALYSIS",
+        "expectedTables": ["users", "orders"],
+        "expectedResultMode": "success",
+        "expectedSqlGenerated": true,
+        "expectedSqlExecuted": true,
+        "expectedContextualizedQueryContains": ["上一轮查询", "查询累计消费金额最高的用户"]
+      }
+    },
+    {
+      "caseId": "MT02",
+      "title": "时间条件改写",
+      "category": "multi_turn_followup",
+      "scenarioType": "multi_turn",
+      "query": "改成最近30天",
+      "history": [
+        {
+          "query": "查询 2025 年 6 月的订单总数",
+          "note": "首轮时间范围明确"
+        }
+      ],
+      "tags": ["multi-turn", "time"],
+      "expectations": {
+        "expectedIntent": "DATA_ANALYSIS",
+        "expectedTables": ["orders"],
+        "expectedSqlGenerated": true,
+        "expectedSqlExecuted": true,
+        "expectedContextualizedQueryContains": ["上一轮查询", "查询 2025 年 6 月的订单总数"]
+      }
+    },
+    {
+      "caseId": "MT03",
+      "title": "筛选条件补充",
+      "category": "multi_turn_followup",
+      "scenarioType": "multi_turn",
+      "query": "只看电子产品",
+      "history": [
+        {
+          "query": "查询销量最高的 10 个商品",
+          "note": "首轮确定排行榜对象"
+        }
+      ],
+      "tags": ["multi-turn", "filter"],
+      "expectations": {
+        "expectedIntent": "DATA_ANALYSIS",
+        "expectedTables": ["products", "order_items", "categories", "product_categories"],
+        "expectedSqlGenerated": true,
+        "expectedSqlExecuted": true,
+        "expectedContextualizedQueryContains": ["上一轮查询", "查询销量最高的 10 个商品"]
+      }
+    },
+    {
+      "caseId": "MT04",
+      "title": "结果对象继续追问",
+      "category": "multi_turn_followup",
+      "scenarioType": "multi_turn",
+      "query": "这些用户的平均客单价是多少",
+      "history": [
+        {
+          "query": "查询每个用户的累计消费金额",
+          "note": "首轮先拿用户消费维度"
+        }
+      ],
+      "tags": ["multi-turn", "follow-up"],
+      "expectations": {
+        "expectedIntent": "DATA_ANALYSIS",
+        "expectedTables": ["users", "orders"],
+        "expectedSqlGenerated": true,
+        "expectedSqlExecuted": true,
+        "expectedContextualizedQueryContains": ["上一轮查询", "查询每个用户的累计消费金额"]
+      }
+    }
+  ]
+}

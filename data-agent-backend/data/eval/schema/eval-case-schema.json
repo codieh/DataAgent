@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Lite Eval Dataset V1",
+  "type": "object",
+  "required": ["datasetId", "version", "cases"],
+  "properties": {
+    "datasetId": {
+      "type": "string"
+    },
+    "version": {
+      "type": "string"
+    },
+    "suite": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "cases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["caseId", "category", "scenarioType", "query", "expectations"],
+        "properties": {
+          "caseId": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string"
+          },
+          "scenarioType": {
+            "type": "string",
+            "enum": ["single_turn", "multi_turn", "failure_fallback"]
+          },
+          "agentId": {
+            "type": "string"
+          },
+          "query": {
+            "type": "string"
+          },
+          "history": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["query"],
+              "properties": {
+                "query": {
+                  "type": "string"
+                },
+                "note": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "notes": {
+            "type": "string"
+          },
+          "expectations": {
+            "type": "object",
+            "properties": {
+              "expectedIntent": {
+                "type": "string"
+              },
+              "expectedTables": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "expectedResultMode": {
+                "type": "string"
+              },
+              "expectedSqlGenerated": {
+                "type": "boolean"
+              },
+              "expectedSqlExecuted": {
+                "type": "boolean"
+              },
+              "expectedSqlRetryCount": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "expectedContextualizedQueryContains": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "referenceSql": {
+                "type": "string"
+              },
+              "expectedSqlContains": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "expectedRowCount": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "expectedSummaryContains": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

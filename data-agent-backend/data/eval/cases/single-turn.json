@@ -1,0 +1,127 @@
+{
+  "datasetId": "single-turn-v1",
+  "version": "eval-v1",
+  "suite": "standard",
+  "description": "首版单轮评测集，覆盖基础查询、聚合、多表、时间语义与非数据分析识别。",
+  "cases": [
+    {
+      "caseId": "ST01",
+      "title": "低库存商品",
+      "category": "single_turn_analysis",
+      "scenarioType": "single_turn",
+      "query": "查询库存低于 20 的商品",
+      "tags": ["single-turn", "inventory"],
+      "expectations": {
+        "expectedIntent": "DATA_ANALYSIS",
+        "expectedTables": ["products"],
+        "expectedResultMode": "success",
+        "expectedSqlGenerated": true,
+        "expectedSqlExecuted": true,
+        "expectedSqlRetryCount": 0
+      }
+    },
+    {
+      "caseId": "ST02",
+      "title": "订单状态聚合",
+      "category": "single_turn_analysis",
+      "scenarioType": "single_turn",
+      "query": "统计已完成订单数、待处理订单数、已取消订单数",
+      "tags": ["single-turn", "aggregate"],
+      "expectations": {
+        "expectedIntent": "DATA_ANALYSIS",
+        "expectedTables": ["orders"],
+        "expectedResultMode": "success",
+        "expectedSqlGenerated": true,
+        "expectedSqlExecuted": true
+      }
+    },
+    {
+      "caseId": "ST03",
+      "title": "商品购买用户查询",
+      "category": "single_turn_analysis",
+      "scenarioType": "single_turn",
+      "query": "查询购买过智能手机的用户",
+      "tags": ["single-turn", "join"],
+      "expectations": {
+        "expectedIntent": "DATA_ANALYSIS",
+        "expectedTables": ["users", "orders", "order_items", "products"],
+        "expectedResultMode": "success",
+        "expectedSqlGenerated": true,
+        "expectedSqlExecuted": true
+      }
+    },
+    {
+      "caseId": "ST04",
+      "title": "分类销售额",
+      "category": "single_turn_analysis",
+      "scenarioType": "single_turn",
+      "query": "统计每个分类的销售额",
+      "tags": ["single-turn", "many-to-many"],
+      "expectations": {
+        "expectedIntent": "DATA_ANALYSIS",
+        "expectedTables": ["categories", "product_categories", "products", "order_items"],
+        "expectedResultMode": "success",
+        "expectedSqlGenerated": true,
+        "expectedSqlExecuted": true
+      }
+    },
+    {
+      "caseId": "ST05",
+      "title": "六月订单趋势",
+      "category": "single_turn_analysis",
+      "scenarioType": "single_turn",
+      "query": "查询 2025 年 6 月每天的订单数趋势",
+      "tags": ["single-turn", "time"],
+      "expectations": {
+        "expectedIntent": "DATA_ANALYSIS",
+        "expectedTables": ["orders"],
+        "expectedResultMode": "success",
+        "expectedSqlGenerated": true,
+        "expectedSqlExecuted": true
+      }
+    },
+    {
+      "caseId": "ST06",
+      "title": "用户累计消费",
+      "category": "single_turn_analysis",
+      "scenarioType": "single_turn",
+      "query": "查询每个用户的累计消费金额",
+      "tags": ["single-turn", "business-metric"],
+      "expectations": {
+        "expectedIntent": "DATA_ANALYSIS",
+        "expectedTables": ["users", "orders"],
+        "expectedResultMode": "success",
+        "expectedSqlGenerated": true,
+        "expectedSqlExecuted": true
+      }
+    },
+    {
+      "caseId": "ST07",
+      "title": "未来空结果场景",
+      "category": "single_turn_analysis",
+      "scenarioType": "single_turn",
+      "query": "查询 2030 年 1 月订单数",
+      "tags": ["single-turn", "empty-result"],
+      "expectations": {
+        "expectedIntent": "DATA_ANALYSIS",
+        "expectedTables": ["orders"],
+        "expectedResultMode": "success",
+        "expectedSqlGenerated": true,
+        "expectedSqlExecuted": true
+      }
+    },
+    {
+      "caseId": "ST08",
+      "title": "天气闲聊",
+      "category": "intent_boundary",
+      "scenarioType": "single_turn",
+      "query": "今天天气怎么样",
+      "tags": ["single-turn", "intent"],
+      "expectations": {
+        "expectedIntent": "CHITCHAT",
+        "expectedSqlGenerated": false,
+        "expectedSqlExecuted": false
+      }
+    }
+  ]
+}
