@@ -65,3 +65,4 @@ vectorstore/*
 
 # ignore generated recall index files
 data/recall/*index.json
+/data/eval-reports/
