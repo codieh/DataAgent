@@ -39,6 +39,12 @@ public class ResultMockStep implements SearchLiteStep {
 				&& !state.getError().isBlank()) {
 			summary = "执行失败：" + state.getError();
 		}
+		else if ("blocked_sensitive_sql".equalsIgnoreCase(state.getResultMode())) {
+			summary = "当前查询涉及敏感字段或敏感明细，已被安全策略拦截。建议改为统计类查询或去除敏感字段后重试。";
+		}
+		else if ("blocked_wide_export".equalsIgnoreCase(state.getResultMode())) {
+			summary = "当前查询可能导致大范围明细导出，已被安全策略拦截。建议增加筛选条件、限制范围，或改为聚合统计后重试。";
+		}
 		else {
 			summary = "执行完成，共返回 " + (state.getRows() == null ? 0 : state.getRows().size()) + " 行数据。";
 		}

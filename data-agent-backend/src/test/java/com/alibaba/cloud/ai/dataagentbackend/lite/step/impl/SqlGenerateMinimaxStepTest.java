@@ -20,6 +20,9 @@ class SqlGenerateMinimaxStepTest {
 		assertTrue(prompt.contains("If evidence or documents are irrelevant to the current question, ignore them."));
 		assertTrue(prompt.contains("Use ONLY tables/columns that exist in the schema section."));
 		assertTrue(prompt.contains("Retry hints from previous SQL attempt"));
+		assertTrue(prompt.contains("Do NOT use SELECT *."));
+		assertTrue(prompt.contains("Prefer aggregated/statistical results over raw row-level detail"));
+		assertTrue(prompt.contains("Avoid directly selecting sensitive columns"));
 	}
 
 }

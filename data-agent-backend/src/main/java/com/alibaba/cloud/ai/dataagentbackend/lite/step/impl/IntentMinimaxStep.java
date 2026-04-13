@@ -49,27 +49,17 @@ public class IntentMinimaxStep implements SearchLiteStep {
 	@Override
 	public SearchLiteStepResult run(SearchLiteContext context, SearchLiteState state) {
 		String system = """
-				You are an intent classifier for a data analysis assistant.
-				Return ONLY valid JSON without markdown or extra text.
+				你是数据分析 Agent 最前置的轻量意图分类器。
+				你的唯一任务是判断“最新用户输入”应该被放行到后续数据分析链路，还是应当作为闲聊拦截。
+
+				遵循极端保守原则：宁放过，不杀错。
+				只要用户输入哪怕只有一丝可能是在查询、筛选、统计、比较、分析业务数据，就必须判为 DATA_ANALYSIS。
+				只有在输入明确、毫无歧义地属于闲聊、礼貌寒暄、元问题或完全无关内容时，才判为 CHITCHAT。
+
+				你必须只返回合法 JSON，不要输出 markdown、解释文本或代码块。
 				""".trim();
 
-		String user = """
-				Classify the user query into one of:
-				- DATA_ANALYSIS: requires SQL/data retrieval/analysis
-				- CHITCHAT: casual chat or unrelated
-
-				Use the multi-turn context only when the current query clearly refers to previous turns
-				(e.g. pronouns, follow-up constraints, "these", "continue", "change to", etc.).
-
-				Output JSON schema:
-				{"classification":"DATA_ANALYSIS|CHITCHAT","reason":"short reason"}
-
-				Multi-turn context:
-				%s
-
-				User query:
-				%s
-				""".formatted(resolveMultiTurnContext(state), state.getQuery()).trim();
+		String user = buildIntentPrompt(resolveMultiTurnContext(state), state.getQuery());
 
 		Flux<SearchLiteMessage> start = Flux
 			.just(SearchLiteMessages.message(context, stage(), SearchLiteMessageType.TEXT, "正在进行意图识别...", null))
@@ -102,11 +92,58 @@ public class IntentMinimaxStep implements SearchLiteStep {
 		String trimmed = raw.trim();
 		String json = extractJsonObject(trimmed);
 		try {
-			return objectMapper.readValue(json, IntentResult.class);
+			IntentResult parsed = objectMapper.readValue(json, IntentResult.class);
+			return new IntentResult(normalizeClassification(parsed.classification()), parsed.reason());
 		}
 		catch (Exception e) {
 			return new IntentResult("DATA_ANALYSIS", "parse failed: " + e.getMessage());
 		}
+	}
+
+	static String buildIntentPrompt(String multiTurnContext, String query) {
+		String multiTurn = multiTurnContext == null || multiTurnContext.isBlank() ? "(无)" : multiTurnContext.trim();
+		String latestQuery = query == null ? "" : query.trim();
+		return """
+				请将最新用户输入分类为以下两类之一：
+				- DATA_ANALYSIS：可能需要查询、筛选、统计、比较、分析、解释业务数据，或是对上一轮数据问题的追问/补充
+				- CHITCHAT：明确的闲聊、寒暄、感谢、无关常识问题、关于 AI 自身的元问题、无意义乱码
+
+				分类规则：
+				1. 只要输入与业务实体、指标、报表、查询动作、排序、时间范围、筛选条件、多轮追问有关，一律判为 DATA_ANALYSIS。
+				2. 多轮对话中，出现“这些/他们/那个/继续/改成/换成/再看一下/具体一点”等承接上文的表达时，只要上文涉及数据分析，一律判为 DATA_ANALYSIS。
+				3. 即使表达口语化、信息不完整、缺少分析关键词，只要可能是在问业务数据，也判为 DATA_ANALYSIS。
+				4. 只有当输入明确与业务数据无关时，才判为 CHITCHAT。
+
+				少量示例：
+				- 最新输入：你好呀 -> CHITCHAT
+				- 最新输入：你是谁 -> CHITCHAT
+				- 最新输入：给我看看销售部 -> DATA_ANALYSIS
+				- 最新输入：前10个里面最便宜的是谁 -> DATA_ANALYSIS
+				- 最新输入：他们呢？（若上文在查数据）-> DATA_ANALYSIS
+
+				输出格式：
+				{"classification":"DATA_ANALYSIS|CHITCHAT","reason":"一句简短原因"}
+
+				【多轮输入】
+				%s
+
+				<最新>用户输入：
+				%s
+				""".formatted(multiTurn, latestQuery).trim();
+	}
+
+	static String normalizeClassification(String rawClassification) {
+		if (rawClassification == null || rawClassification.isBlank()) {
+			return "DATA_ANALYSIS";
+		}
+		String normalized = rawClassification.trim().toUpperCase();
+		if (normalized.contains("CHITCHAT") || rawClassification.contains("闲聊") || rawClassification.contains("无关")) {
+			return "CHITCHAT";
+		}
+		if (normalized.contains("DATA_ANALYSIS") || rawClassification.contains("数据分析") || rawClassification.contains("可能的数据分析请求")) {
+			return "DATA_ANALYSIS";
+		}
+		return "DATA_ANALYSIS";
 	}
 
 	private static String extractJsonObject(String text) {

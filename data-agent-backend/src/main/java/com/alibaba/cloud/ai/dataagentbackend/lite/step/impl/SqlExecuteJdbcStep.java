@@ -7,6 +7,7 @@ import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteState;
 import com.alibaba.cloud.ai.dataagentbackend.lite.SearchLiteContext;
 import com.alibaba.cloud.ai.dataagentbackend.lite.SearchLiteMessages;
 import com.alibaba.cloud.ai.dataagentbackend.lite.sql.SqlGuards;
+import com.alibaba.cloud.ai.dataagentbackend.lite.sql.SqlPolicyChecker;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStep;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStepResult;
 import org.slf4j.Logger;
@@ -45,13 +46,17 @@ public class SqlExecuteJdbcStep implements SearchLiteStep {
 
 	private final JdbcTemplate jdbcTemplate;
 
+	private final SqlPolicyChecker sqlPolicyChecker;
+
 	private final int limit;
 
 	private final int queryTimeoutSeconds;
 
-	public SqlExecuteJdbcStep(JdbcTemplate jdbcTemplate, @Value("${search.lite.sql.execute.limit:200}") int limit,
+	public SqlExecuteJdbcStep(JdbcTemplate jdbcTemplate, SqlPolicyChecker sqlPolicyChecker,
+			@Value("${search.lite.sql.execute.limit:200}") int limit,
 			@Value("${search.lite.sql.execute.timeout-seconds:5}") int queryTimeoutSeconds) {
 		this.jdbcTemplate = Objects.requireNonNull(jdbcTemplate, "jdbcTemplate");
+		this.sqlPolicyChecker = Objects.requireNonNull(sqlPolicyChecker, "sqlPolicyChecker");
 		this.limit = Math.max(1, limit);
 		this.queryTimeoutSeconds = Math.max(1, queryTimeoutSeconds);
 	}
@@ -77,6 +82,9 @@ public class SqlExecuteJdbcStep implements SearchLiteStep {
 		Mono<ExecOutcome> exec = Mono.fromCallable(() -> {
 			try {
 				ExecutionResult r = execute(sql);
+				if (r.resultMode != null) {
+					return ExecOutcome.blocked(r.sql, r.error, r.resultMode);
+				}
 				return ExecOutcome.ok(r.sql, r.columns, r.rows);
 			}
 			catch (Exception e) {
@@ -92,7 +100,8 @@ public class SqlExecuteJdbcStep implements SearchLiteStep {
 			.cache();
 
 		Flux<SearchLiteMessage> sqlMsg = exec.map(r -> SearchLiteMessages.message(context, stage(),
-				SearchLiteMessageType.SQL, r.sql, Map.of("sql", r.sql, "guarded", true, "ok", r.ok))).flux();
+				SearchLiteMessageType.SQL, r.sql, Map.of("sql", r.sql, "guarded", true, "ok", r.ok,
+						"resultMode", r.resultMode == null ? "" : r.resultMode))).flux();
 
 		Flux<SearchLiteMessage> resultSet = exec.flatMapMany(r -> {
 			if (r.ok) {
@@ -105,6 +114,7 @@ public class SqlExecuteJdbcStep implements SearchLiteStep {
 		Mono<SearchLiteState> updated = exec.map(r -> {
 			state.setSql(r.sql);
 			state.setRows(r.rows == null ? List.of() : r.rows);
+			state.setResultMode(r.resultMode);
 			if (!r.ok) {
 				state.setLastFailedSql(r.sql);
 				state.setSqlRetryReason(r.error);
@@ -113,6 +123,7 @@ public class SqlExecuteJdbcStep implements SearchLiteStep {
 			else {
 				state.setError(null);
 				state.setSqlRetryReason(null);
+				state.setResultMode(null);
 			}
 			return state;
 		});
@@ -123,6 +134,10 @@ public class SqlExecuteJdbcStep implements SearchLiteStep {
 	private ExecutionResult execute(String rawSql) {
 		// 1) guardrails（精简版）
 		SqlGuards.validateSelectOnly(rawSql);
+		SqlPolicyChecker.PolicyDecision policyDecision = sqlPolicyChecker.inspect(rawSql);
+		if (policyDecision.blocked()) {
+			return ExecutionResult.blocked(rawSql, policyDecision.resultMode(), policyDecision.reason());
+		}
 		String guardedSql = SqlGuards.ensureLimit(rawSql, limit);
 
 		// 2) 超时（JdbcTemplate 级别设置，作用于本次线程内执行的 statement）
@@ -132,7 +147,7 @@ public class SqlExecuteJdbcStep implements SearchLiteStep {
 			List<Map<String, Object>> rows = jdbcTemplate.queryForList(guardedSql);
 			List<Map<String, Object>> safeRows = rows == null ? List.of() : rows;
 			List<String> columns = extractColumns(safeRows);
-			return new ExecutionResult(guardedSql, columns, safeRows);
+			return ExecutionResult.ok(guardedSql, columns, safeRows);
 		}
 		finally {
 			// 恢复默认值，避免影响其他请求
@@ -153,18 +168,30 @@ public class SqlExecuteJdbcStep implements SearchLiteStep {
 		return new ArrayList<>(cols);
 	}
 
-	private record ExecutionResult(String sql, List<String> columns, List<Map<String, Object>> rows) {
+	private record ExecutionResult(String sql, List<String> columns, List<Map<String, Object>> rows, String resultMode,
+			String error) {
+		static ExecutionResult ok(String sql, List<String> columns, List<Map<String, Object>> rows) {
+			return new ExecutionResult(sql, columns, rows, null, null);
+		}
+
+		static ExecutionResult blocked(String sql, String resultMode, String error) {
+			return new ExecutionResult(sql, List.of(), List.of(), resultMode, error);
+		}
 	}
 
-	private record ExecOutcome(boolean ok, String sql, List<String> columns, List<Map<String, Object>> rows,
-			String error) {
+	private record ExecOutcome(boolean ok, String sql, List<String> columns, List<Map<String, Object>> rows, String error,
+			String resultMode) {
 		static ExecOutcome ok(String sql, List<String> columns, List<Map<String, Object>> rows) {
-			return new ExecOutcome(true, sql, columns == null ? List.of() : columns, rows == null ? List.of() : rows,
+			return new ExecOutcome(true, sql, columns == null ? List.of() : columns, rows == null ? List.of() : rows, null,
 					null);
 		}
 
 		static ExecOutcome fail(String sql, String error) {
-			return new ExecOutcome(false, sql, List.of(), List.of(), error);
+			return new ExecOutcome(false, sql, List.of(), List.of(), error, null);
+		}
+
+		static ExecOutcome blocked(String sql, String error, String resultMode) {
+			return new ExecOutcome(false, sql, List.of(), List.of(), error, resultMode);
 		}
 	}
 

@@ -127,6 +127,8 @@ public class ResultMinimaxStep implements SearchLiteStep {
 			case "no_schema" -> "未找到与当前问题相关的数据表，请补充更明确的业务对象、指标名称或筛选条件后再试。";
 			case "no_sql" -> "当前问题暂未生成可执行 SQL，请换一种更明确的描述，或拆分问题后重试。";
 			case "execution_error" -> "执行失败：" + safe(state.getError());
+			case "blocked_sensitive_sql" -> "当前查询涉及敏感字段或敏感明细，已被安全策略拦截。建议改为统计类查询或去除敏感字段后重试。";
+			case "blocked_wide_export" -> "当前查询可能导致大范围明细导出，已被安全策略拦截。建议增加筛选条件、限制范围，或改为聚合统计后重试。";
 			default -> null;
 		};
 		if (!StringUtils.hasText(summary)) {

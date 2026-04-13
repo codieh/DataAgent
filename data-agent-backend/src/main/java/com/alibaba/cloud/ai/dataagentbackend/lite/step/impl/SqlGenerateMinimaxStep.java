@@ -174,8 +174,11 @@ public class SqlGenerateMinimaxStep implements SearchLiteStep {
 				Constraints:
 				- Output must be a single MySQL SELECT statement (no semicolons, no multiple statements).
 				- Prefer clear table aliases.
+				- Do NOT use SELECT *.
+				- Prefer aggregated/statistical results over raw row-level detail when the question does not explicitly ask for detail rows.
 				- Always add LIMIT %d unless the question explicitly asks for all rows.
 				- Do NOT add debug/system columns (e.g., CURRENT_USER(), USER(), VERSION(), @@variables).
+				- Avoid directly selecting sensitive columns such as phone, mobile, email, id_card, salary, wage, bank_card, address unless the question explicitly asks and policy allows it.
 				- Avoid reserved keywords as aliases.
 				- If the question is ambiguous or cannot be answered with the schema, still output the best-effort SELECT.
 				""".formatted(safe(question), safe(schema), safe(evidence), safe(documents), safe(retryHint),

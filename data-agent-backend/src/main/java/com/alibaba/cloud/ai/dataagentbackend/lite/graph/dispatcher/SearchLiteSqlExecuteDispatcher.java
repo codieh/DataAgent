@@ -44,8 +44,17 @@ public class SearchLiteSqlExecuteDispatcher implements EdgeAction {
 			.filter(String.class::isInstance)
 			.map(String.class::cast)
 			.orElse("");
+		String resultMode = state.value(SearchLiteGraphStateKeys.RESULT_MODE)
+			.filter(String.class::isInstance)
+			.map(String.class::cast)
+			.orElse("");
 
 		if (!error.isBlank()) {
+			if (resultMode.startsWith("blocked_")) {
+				log.info("graph sql-execute dispatcher: policy blocked, route to {}, mode={}", PREPARE_RESULT_NODE,
+						resultMode);
+				return PREPARE_RESULT_NODE;
+			}
 			if (shouldRetry(error, sql, retryCount)) {
 				log.info("graph sql-execute dispatcher: execution failed, retryCount={}, route to {}, error={}", retryCount,
 						SQL_RETRY_NODE, error);
