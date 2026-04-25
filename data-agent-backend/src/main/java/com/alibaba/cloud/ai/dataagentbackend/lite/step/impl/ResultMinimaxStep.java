@@ -2,6 +2,7 @@ package com.alibaba.cloud.ai.dataagentbackend.lite.step.impl;
 
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteMessage;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteMessageType;
+import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLitePlanStep;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteStage;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteState;
 import com.alibaba.cloud.ai.dataagentbackend.lite.SearchLiteContext;
@@ -157,6 +158,9 @@ public class ResultMinimaxStep implements SearchLiteStep {
 				User question:
 				%s
 
+				Execution plan and completed steps:
+				%s
+
 				SQL executed:
 				%s
 
@@ -169,8 +173,22 @@ public class ResultMinimaxStep implements SearchLiteStep {
 				Output requirements:
 				- Provide 3-6 bullet points.
 				- Mention row count and any obvious patterns.
+				- If multiple plan steps are available, summarize across all steps instead of only the last SQL.
 				- If result is empty, explain possible reasons and suggest a follow-up query.
-				""".formatted(safe(query), safe(sql), rowCount, rowsJson).trim();
+				""".formatted(safe(query), planJson(state), safe(sql), rowCount, rowsJson).trim();
+	}
+
+	private String planJson(SearchLiteState state) {
+		List<SearchLitePlanStep> steps = state.getPlanSteps();
+		if (steps == null || steps.isEmpty()) {
+			return "(无多步骤计划)";
+		}
+		try {
+			return objectMapper.writeValueAsString(steps);
+		}
+		catch (Exception e) {
+			return String.valueOf(steps);
+		}
 	}
 
 	private static String safe(String s) {

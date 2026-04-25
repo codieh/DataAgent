@@ -3131,3 +3131,136 @@ V1 会补成类似：
 推进到了：
 
 - “具备失败恢复和结果语义收口能力的 workflow”
+
+---
+
+## 37. SQL-only Planner V1：从单 SQL 链路走向多步骤调度
+
+### 37.1 为什么要加 Planner
+
+在没有 Planner 之前，`search-lite` 的主链路更像：
+
+- `一个 query -> 一次 SQL_GENERATE -> 一次 SQL_EXECUTE -> RESULT`
+
+这对简单单轮问题足够，但对多查询或多步骤分析不够自然。
+
+例如：
+
+- “查询销量最高的商品，然后统计这些商品近 6 个月趋势”
+- “列出高消费用户，再统计这些用户的订单数量”
+
+这些请求本质上不是一个单 SQL 任务，而是多个有顺序的分析步骤。
+
+### 37.2 和 management 的关系
+
+`management` 的做法是：
+
+- `PLANNER_NODE -> PLAN_EXECUTOR_NODE`
+- `PLAN_EXECUTOR_NODE -> SQL / PYTHON / REPORT`
+- SQL 或 Python 执行完成后再回到 `PLAN_EXECUTOR_NODE`
+
+这次 lite 没有直接引入完整 Python 链，而是先做 SQL-only 版本：
+
+- `PLANNER_NODE`
+- `PLAN_EXECUTOR_NODE`
+- 多个 SQL step 顺序执行
+- 所有 step 完成后再进入 `PREPARE_RESULT -> RESULT`
+
+也就是说，这一步学的是 management 的“循环调度”思想，而不是一次性照搬全量能力。
+
+### 37.3 当前 Graph 结构
+
+这次之后，SQL 主链路变成：
+
+- `ENHANCE -> PLANNER -> PLAN_EXECUTOR`
+- `PLAN_EXECUTOR -> SQL_GENERATE | PREPARE_RESULT`
+- `SQL_GENERATE -> SQL_EXECUTE | PREPARE_RESULT`
+- `SQL_EXECUTE -> SQL_RETRY | PLAN_EXECUTOR`
+- `SQL_RETRY -> SQL_GENERATE`
+- `PREPARE_RESULT -> RESULT`
+
+关键变化是：
+
+- SQL 执行成功后不再直接进入结果总结
+- 而是回到 `PLAN_EXECUTOR`
+- 由它判断是否还有下一步
+
+### 37.4 新增状态
+
+`SearchLiteState` 增加了 Planner 相关字段：
+
+- `planSteps`
+- `currentPlanStepIndex`
+- `plannerEnabled`
+- `planFinished`
+
+每个 `SearchLitePlanStep` 记录：
+
+- step 编号
+- instruction
+- tool
+- status
+- sql
+- rowCount
+- previewRows
+- error
+
+这些字段让后续 `RESULT` 可以看到完整执行轨迹，而不是只看到最后一次 SQL。
+
+同时，`SQL_GENERATE` 的 prompt 也会带入 plan context：
+
+- 当前 step index
+- 每个 step 的 instruction/status
+- 已完成 step 的 SQL
+- 已完成 step 的 rowCount 和 previewRows
+- 已失败 step 的 error
+
+这样后续 SQL step 可以在需要时参考前一步结果，例如“这些商品”“上述用户”这类依赖上一步输出的追问。
+
+### 37.5 LLM Planner + Plan Repair V1
+
+Planner 进一步升级后，lite 现在不再只做规则拆分，而是：
+
+- 用 LLM 生成结构化 SQL-only plan
+- 用 `PlanExecutor` 做执行前校验
+- 校验失败时通过 Graph 路由回到 `Planner` 做 repair
+
+当前实现学的是 management 的三个关键点：
+
+- **Planner 只负责产出结构化计划**
+- **PlanExecutor 负责校验与决定下一步**
+- **Plan repair 通过 Graph 回环完成，而不是写死在单个节点**
+
+当前 repair V1 的触发来源主要是：
+
+- plan 为空
+- step 编号不连续
+- instruction 为空
+- tool 非 `SQL`
+
+当 `PlanExecutor` 校验失败时，会写入：
+
+- `planValidationStatus=false`
+- `planValidationError`
+- `planRepairCount+1`
+
+随后 `PlanExecutorDispatcher` 会：
+
+- 未超过最大修复次数时 → 回到 `PLANNER_NODE`
+- 超过上限时 → 进入 `PREPARE_RESULT`
+
+### 37.6 当前 Planner V1 的边界
+
+这版仍然保持克制：
+
+- 只支持 `SQL` tool
+- 不接 Python
+- 不接独立 ReportGenerator
+- 不做复杂 plan dependency graph
+- 不做 human feedback
+
+所以它更准确地说是：
+
+- **LLM SQL-first Planner**
+
+而不是 management 的全量 planner 平台。

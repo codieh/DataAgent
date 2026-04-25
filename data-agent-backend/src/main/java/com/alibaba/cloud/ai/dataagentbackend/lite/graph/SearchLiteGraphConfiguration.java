@@ -1,6 +1,7 @@
 package com.alibaba.cloud.ai.dataagentbackend.lite.graph;
 
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.dispatcher.SearchLiteIntentDispatcher;
+import com.alibaba.cloud.ai.dataagentbackend.lite.graph.dispatcher.SearchLitePlanExecutorDispatcher;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.dispatcher.SearchLiteResultModeDispatcher;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.dispatcher.SearchLiteSchemaRecallDispatcher;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.dispatcher.SearchLiteSqlExecuteDispatcher;
@@ -8,6 +9,8 @@ import com.alibaba.cloud.ai.dataagentbackend.lite.graph.dispatcher.SearchLiteSql
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLiteEvidenceGraphNode;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLiteEnhanceGraphNode;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLiteIntentGraphNode;
+import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLitePlanExecutorGraphNode;
+import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLitePlannerGraphNode;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLitePrepareResultGraphNode;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLiteResultGraphNode;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLiteSchemaGraphNode;
@@ -47,6 +50,10 @@ public class SearchLiteGraphConfiguration {
 
 	public static final String ENHANCE_NODE = "enhanceNode";
 
+	public static final String PLANNER_NODE = "plannerNode";
+
+	public static final String PLAN_EXECUTOR_NODE = "planExecutorNode";
+
 	public static final String SQL_GENERATE_NODE = "sqlGenerateNode";
 
 	public static final String SQL_EXECUTE_NODE = "sqlExecuteNode";
@@ -61,9 +68,11 @@ public class SearchLiteGraphConfiguration {
 	public StateGraph searchLiteGraph(SearchLiteIntentGraphNode intentNode, SearchLiteEvidenceGraphNode evidenceNode,
 			SearchLiteSchemaGraphNode schemaNode,
 			SearchLiteSchemaRecallGraphNode schemaRecallNode, SearchLiteEnhanceGraphNode enhanceNode,
+			SearchLitePlannerGraphNode plannerNode, SearchLitePlanExecutorGraphNode planExecutorNode,
 			SearchLiteSqlGenerateGraphNode sqlGenerateNode, SearchLiteSqlExecuteGraphNode sqlExecuteNode,
 			SearchLiteSqlRetryGraphNode sqlRetryNode, SearchLitePrepareResultGraphNode prepareResultNode,
 			SearchLiteResultGraphNode resultNode, SearchLiteIntentDispatcher intentDispatcher,
+			SearchLitePlanExecutorDispatcher planExecutorDispatcher,
 			SearchLiteSchemaRecallDispatcher schemaRecallDispatcher, SearchLiteSqlGenerateDispatcher sqlGenerateDispatcher,
 			SearchLiteSqlExecuteDispatcher sqlExecuteDispatcher, SearchLiteResultModeDispatcher resultModeDispatcher)
 			throws GraphStateException {
@@ -86,6 +95,14 @@ public class SearchLiteGraphConfiguration {
 			strategies.put(SearchLiteGraphStateKeys.RECALLED_SCHEMA_TEXT, KeyStrategy.REPLACE);
 			strategies.put(SearchLiteGraphStateKeys.CANONICAL_QUERY, KeyStrategy.REPLACE);
 			strategies.put(SearchLiteGraphStateKeys.EXPANDED_QUERIES, KeyStrategy.REPLACE);
+			strategies.put(SearchLiteGraphStateKeys.PLAN_STEPS, KeyStrategy.REPLACE);
+			strategies.put(SearchLiteGraphStateKeys.CURRENT_PLAN_STEP_INDEX, KeyStrategy.REPLACE);
+			strategies.put(SearchLiteGraphStateKeys.PLANNER_ENABLED, KeyStrategy.REPLACE);
+			strategies.put(SearchLiteGraphStateKeys.PLAN_FINISHED, KeyStrategy.REPLACE);
+			strategies.put(SearchLiteGraphStateKeys.PLANNER_RAW_OUTPUT, KeyStrategy.REPLACE);
+			strategies.put(SearchLiteGraphStateKeys.PLAN_VALIDATION_STATUS, KeyStrategy.REPLACE);
+			strategies.put(SearchLiteGraphStateKeys.PLAN_VALIDATION_ERROR, KeyStrategy.REPLACE);
+			strategies.put(SearchLiteGraphStateKeys.PLAN_REPAIR_COUNT, KeyStrategy.REPLACE);
 			strategies.put(SearchLiteGraphStateKeys.SQL, KeyStrategy.REPLACE);
 			strategies.put(SearchLiteGraphStateKeys.SQL_RETRY_COUNT, KeyStrategy.REPLACE);
 			strategies.put(SearchLiteGraphStateKeys.LAST_FAILED_SQL, KeyStrategy.REPLACE);
@@ -105,6 +122,8 @@ public class SearchLiteGraphConfiguration {
 			.addNode(SCHEMA_NODE, node_async(schemaNode))
 			.addNode(SCHEMA_RECALL_NODE, node_async(schemaRecallNode))
 			.addNode(ENHANCE_NODE, node_async(enhanceNode))
+			.addNode(PLANNER_NODE, node_async(plannerNode))
+			.addNode(PLAN_EXECUTOR_NODE, node_async(planExecutorNode))
 			.addNode(SQL_GENERATE_NODE, node_async(sqlGenerateNode))
 			.addNode(SQL_EXECUTE_NODE, node_async(sqlExecuteNode))
 			.addNode(SQL_RETRY_NODE, node_async(sqlRetryNode))
@@ -118,11 +137,15 @@ public class SearchLiteGraphConfiguration {
 			.addEdge(SCHEMA_NODE, SCHEMA_RECALL_NODE)
 			.addConditionalEdges(SCHEMA_RECALL_NODE, edge_async(schemaRecallDispatcher),
 					Map.of(ENHANCE_NODE, ENHANCE_NODE, PREPARE_RESULT_NODE, PREPARE_RESULT_NODE))
-			.addEdge(ENHANCE_NODE, SQL_GENERATE_NODE)
+			.addEdge(ENHANCE_NODE, PLANNER_NODE)
+			.addEdge(PLANNER_NODE, PLAN_EXECUTOR_NODE)
+			.addConditionalEdges(PLAN_EXECUTOR_NODE, edge_async(planExecutorDispatcher),
+					Map.of(SQL_GENERATE_NODE, SQL_GENERATE_NODE, PREPARE_RESULT_NODE, PREPARE_RESULT_NODE))
 			.addConditionalEdges(SQL_GENERATE_NODE, edge_async(sqlGenerateDispatcher),
 					Map.of(SQL_EXECUTE_NODE, SQL_EXECUTE_NODE, PREPARE_RESULT_NODE, PREPARE_RESULT_NODE))
 			.addConditionalEdges(SQL_EXECUTE_NODE, edge_async(sqlExecuteDispatcher),
-					Map.of(PREPARE_RESULT_NODE, PREPARE_RESULT_NODE, SQL_RETRY_NODE, SQL_RETRY_NODE))
+					Map.of(PREPARE_RESULT_NODE, PREPARE_RESULT_NODE, SQL_RETRY_NODE, SQL_RETRY_NODE,
+							PLAN_EXECUTOR_NODE, PLAN_EXECUTOR_NODE))
 			.addEdge(SQL_RETRY_NODE, SQL_GENERATE_NODE)
 			.addConditionalEdges(PREPARE_RESULT_NODE, edge_async(resultModeDispatcher),
 					Map.of(RESULT_NODE, RESULT_NODE))

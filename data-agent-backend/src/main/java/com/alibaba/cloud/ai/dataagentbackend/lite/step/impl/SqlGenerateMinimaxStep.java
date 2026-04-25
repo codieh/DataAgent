@@ -74,6 +74,7 @@ public class SqlGenerateMinimaxStep implements SearchLiteStep {
 		String evidence = resolveEvidenceContext(state);
 		String documents = resolveDocumentContext(state);
 		String retryHint = resolveRetryHint(state);
+		String planContext = resolvePlanContext(state);
 
 		int schemaLen = schema == null ? 0 : schema.length();
 		int evidenceLen = evidence == null ? 0 : evidence.length();
@@ -87,7 +88,7 @@ public class SqlGenerateMinimaxStep implements SearchLiteStep {
 				Do NOT return markdown, code fences, explanations, or JSON.
 				""".trim();
 
-		String user = buildSqlGenerationPrompt(question, schema, evidence, documents, retryHint, defaultLimit);
+		String user = buildSqlGenerationPrompt(question, schema, evidence, documents, retryHint, planContext, defaultLimit);
 
 		Flux<SearchLiteMessage> start = Flux.just(SearchLiteMessages.message(context, stage(), SearchLiteMessageType.TEXT,
 				"正在生成 SQL...", null)).delayElements(Duration.ofMillis(50));
@@ -143,7 +144,7 @@ public class SqlGenerateMinimaxStep implements SearchLiteStep {
 	}
 
 	static String buildSqlGenerationPrompt(String question, String schema, String evidence, String documents, String retryHint,
-			int defaultLimit) {
+			String planContext, int defaultLimit) {
 		return """
 				User question:
 				%s
@@ -160,6 +161,9 @@ public class SqlGenerateMinimaxStep implements SearchLiteStep {
 				Retry hints from previous SQL attempt:
 				%s
 
+				Plan context and previous step outputs:
+				%s
+
 				How to use context:
 				- Treat schema as the hard constraint for tables, columns, joins, and SQL structure.
 				- Use ONLY tables/columns that exist in the schema section.
@@ -170,6 +174,7 @@ public class SqlGenerateMinimaxStep implements SearchLiteStep {
 				- If a document provides a definition that clearly matches the user question, prefer that definition over unrelated evidence.
 				- If evidence or documents are irrelevant to the current question, ignore them.
 				- If retry hints are present, fix the previous SQL mistake but keep the business intent unchanged.
+				- If plan context contains previous step outputs, use them only as constraints for the current step when the current instruction depends on previous results.
 
 				Constraints:
 				- Output must be a single MySQL SELECT statement (no semicolons, no multiple statements).
@@ -181,7 +186,7 @@ public class SqlGenerateMinimaxStep implements SearchLiteStep {
 				- Avoid directly selecting sensitive columns such as phone, mobile, email, id_card, salary, wage, bank_card, address unless the question explicitly asks and policy allows it.
 				- Avoid reserved keywords as aliases.
 				- If the question is ambiguous or cannot be answered with the schema, still output the best-effort SELECT.
-				""".formatted(safe(question), safe(schema), safe(evidence), safe(documents), safe(retryHint),
+				""".formatted(safe(question), safe(schema), safe(evidence), safe(documents), safe(retryHint), safe(planContext),
 					Math.max(1, defaultLimit)).trim();
 	}
 
@@ -227,6 +232,32 @@ public class SqlGenerateMinimaxStep implements SearchLiteStep {
 				Execution error:
 				%s
 				""".formatted(state.getSqlRetryCount(), failedSql, reason).trim();
+	}
+
+	private static String resolvePlanContext(SearchLiteState state) {
+		if (state == null || state.getPlanSteps() == null || state.getPlanSteps().isEmpty()) {
+			return "(无多步骤计划)";
+		}
+		StringBuilder builder = new StringBuilder();
+		builder.append("Current step index: ").append(state.getCurrentPlanStepIndex() + 1).append('\n');
+		for (var step : state.getPlanSteps()) {
+			if (step == null) {
+				continue;
+			}
+			builder.append("- Step ").append(step.getStep()).append(" [").append(safe(step.getStatus())).append("]: ")
+				.append(safe(step.getInstruction())).append('\n');
+			if (StringUtils.hasText(step.getSql())) {
+				builder.append("  SQL: ").append(step.getSql()).append('\n');
+			}
+			if (step.getRowCount() > 0) {
+				builder.append("  Row count: ").append(step.getRowCount()).append('\n');
+				builder.append("  Preview rows: ").append(step.getPreviewRows()).append('\n');
+			}
+			if (StringUtils.hasText(step.getError())) {
+				builder.append("  Error: ").append(step.getError()).append('\n');
+			}
+		}
+		return builder.toString().trim();
 	}
 
 	private static String safe(String s) {

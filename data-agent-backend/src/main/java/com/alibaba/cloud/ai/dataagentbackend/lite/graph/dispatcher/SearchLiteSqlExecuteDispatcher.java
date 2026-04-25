@@ -10,6 +10,7 @@ import org.springframework.stereotype.Component;
 
 import java.util.List;
 
+import static com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphConfiguration.PLAN_EXECUTOR_NODE;
 import static com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphConfiguration.PREPARE_RESULT_NODE;
 import static com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphConfiguration.SQL_RETRY_NODE;
 
@@ -51,9 +52,9 @@ public class SearchLiteSqlExecuteDispatcher implements EdgeAction {
 
 		if (!error.isBlank()) {
 			if (resultMode.startsWith("blocked_")) {
-				log.info("graph sql-execute dispatcher: policy blocked, route to {}, mode={}", PREPARE_RESULT_NODE,
+				log.info("graph sql-execute dispatcher: policy blocked, route to {}, mode={}", PLAN_EXECUTOR_NODE,
 						resultMode);
-				return PREPARE_RESULT_NODE;
+				return PLAN_EXECUTOR_NODE;
 			}
 			if (shouldRetry(error, sql, retryCount)) {
 				log.info("graph sql-execute dispatcher: execution failed, retryCount={}, route to {}, error={}", retryCount,
@@ -61,12 +62,12 @@ public class SearchLiteSqlExecuteDispatcher implements EdgeAction {
 				return SQL_RETRY_NODE;
 			}
 			log.info("graph sql-execute dispatcher: execution failed, retry exhausted or not retryable, route to {}, error={}",
-					PREPARE_RESULT_NODE, error);
-			return PREPARE_RESULT_NODE;
+					PLAN_EXECUTOR_NODE, error);
+			return PLAN_EXECUTOR_NODE;
 		}
 
-		log.info("graph sql-execute dispatcher: execution ok, rows={}, route to {}", rowCount, PREPARE_RESULT_NODE);
-		return PREPARE_RESULT_NODE;
+		log.info("graph sql-execute dispatcher: execution ok, rows={}, route to {}", rowCount, PLAN_EXECUTOR_NODE);
+		return PLAN_EXECUTOR_NODE;
 	}
 
 	private boolean shouldRetry(String error, String sql, int retryCount) {

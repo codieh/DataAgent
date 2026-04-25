@@ -47,6 +47,23 @@ public class SearchLiteState {
 
 	private List<String> expandedQueries = new ArrayList<>();
 
+	// planner
+	private List<SearchLitePlanStep> planSteps = new ArrayList<>();
+
+	private int currentPlanStepIndex;
+
+	private boolean plannerEnabled;
+
+	private boolean planFinished;
+
+	private String plannerRawOutput;
+
+	private boolean planValidationStatus = true;
+
+	private String planValidationError;
+
+	private int planRepairCount;
+
 	// sql
 	private String sql;
 
@@ -210,6 +227,10 @@ public class SearchLiteState {
 	}
 
 	public String getEffectiveQuery() {
+		String planInstruction = getCurrentPlanInstruction();
+		if (planInstruction != null && !planInstruction.isBlank()) {
+			return planInstruction.trim();
+		}
 		if (canonicalQuery != null && !canonicalQuery.isBlank()) {
 			return canonicalQuery.trim();
 		}
@@ -217,6 +238,85 @@ public class SearchLiteState {
 			return contextualizedQuery.trim();
 		}
 		return query == null ? "" : query.trim();
+	}
+
+	public List<SearchLitePlanStep> getPlanSteps() {
+		return planSteps;
+	}
+
+	public void setPlanSteps(List<SearchLitePlanStep> planSteps) {
+		this.planSteps = planSteps == null ? new ArrayList<>() : planSteps;
+	}
+
+	public int getCurrentPlanStepIndex() {
+		return currentPlanStepIndex;
+	}
+
+	public void setCurrentPlanStepIndex(int currentPlanStepIndex) {
+		this.currentPlanStepIndex = Math.max(0, currentPlanStepIndex);
+	}
+
+	public boolean isPlannerEnabled() {
+		return plannerEnabled;
+	}
+
+	public void setPlannerEnabled(boolean plannerEnabled) {
+		this.plannerEnabled = plannerEnabled;
+	}
+
+	public boolean isPlanFinished() {
+		return planFinished;
+	}
+
+	public void setPlanFinished(boolean planFinished) {
+		this.planFinished = planFinished;
+	}
+
+	public String getPlannerRawOutput() {
+		return plannerRawOutput;
+	}
+
+	public void setPlannerRawOutput(String plannerRawOutput) {
+		this.plannerRawOutput = plannerRawOutput;
+	}
+
+	public boolean isPlanValidationStatus() {
+		return planValidationStatus;
+	}
+
+	public void setPlanValidationStatus(boolean planValidationStatus) {
+		this.planValidationStatus = planValidationStatus;
+	}
+
+	public String getPlanValidationError() {
+		return planValidationError;
+	}
+
+	public void setPlanValidationError(String planValidationError) {
+		this.planValidationError = planValidationError;
+	}
+
+	public int getPlanRepairCount() {
+		return planRepairCount;
+	}
+
+	public void setPlanRepairCount(int planRepairCount) {
+		this.planRepairCount = Math.max(0, planRepairCount);
+	}
+
+	public SearchLitePlanStep getCurrentPlanStep() {
+		if (planSteps == null || planSteps.isEmpty()) {
+			return null;
+		}
+		if (currentPlanStepIndex < 0 || currentPlanStepIndex >= planSteps.size()) {
+			return null;
+		}
+		return planSteps.get(currentPlanStepIndex);
+	}
+
+	public String getCurrentPlanInstruction() {
+		SearchLitePlanStep current = getCurrentPlanStep();
+		return current == null ? null : current.getInstruction();
 	}
 
 	public String getRecallQuery() {

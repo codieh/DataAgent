@@ -39,6 +39,22 @@ public final class SearchLiteGraphStateKeys {
 
 	public static final String EXPANDED_QUERIES = "expandedQueries";
 
+	public static final String PLAN_STEPS = "planSteps";
+
+	public static final String CURRENT_PLAN_STEP_INDEX = "currentPlanStepIndex";
+
+	public static final String PLANNER_ENABLED = "plannerEnabled";
+
+	public static final String PLAN_FINISHED = "planFinished";
+
+	public static final String PLANNER_RAW_OUTPUT = "plannerRawOutput";
+
+	public static final String PLAN_VALIDATION_STATUS = "planValidationStatus";
+
+	public static final String PLAN_VALIDATION_ERROR = "planValidationError";
+
+	public static final String PLAN_REPAIR_COUNT = "planRepairCount";
+
 	public static final String SQL = "sql";
 
 	public static final String SQL_RETRY_COUNT = "sqlRetryCount";

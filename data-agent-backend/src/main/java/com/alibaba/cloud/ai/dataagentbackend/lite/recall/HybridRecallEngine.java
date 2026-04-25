@@ -1,6 +1,7 @@
 package com.alibaba.cloud.ai.dataagentbackend.lite.recall;
 
 import com.alibaba.cloud.ai.dataagentbackend.lite.recall.embedding.EmbeddingClient;
+import com.alibaba.cloud.ai.dataagentbackend.lite.recall.chroma.ChromaVectorSearchService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -28,6 +29,8 @@ public class HybridRecallEngine implements RecallEngine {
 
 	private final VectorRecallEngine vectorRecallEngine;
 
+	private final ChromaVectorSearchService chromaVectorSearchService;
+
 	private final String provider;
 
 	private final double vectorWeight;
@@ -42,7 +45,7 @@ public class HybridRecallEngine implements RecallEngine {
 
 	private final double exactMatchBonus;
 
-	public HybridRecallEngine(EmbeddingClient embeddingClient,
+	public HybridRecallEngine(EmbeddingClient embeddingClient, ChromaVectorSearchService chromaVectorSearchService,
 			@Value("${search.lite.recall.provider:hybrid}") String provider,
 			@Value("${search.lite.recall.vector.weight:0.7}") double vectorWeight,
 			@Value("${search.lite.recall.weight.schema-table:1.15}") double schemaTableWeight,
@@ -51,6 +54,7 @@ public class HybridRecallEngine implements RecallEngine {
 			@Value("${search.lite.recall.weight.document:0.9}") double documentWeight,
 			@Value("${search.lite.recall.weight.exact-match-bonus:0.15}") double exactMatchBonus) {
 		this.vectorRecallEngine = new VectorRecallEngine(embeddingClient);
+		this.chromaVectorSearchService = chromaVectorSearchService;
 		this.provider = provider == null ? "hybrid" : provider.trim().toLowerCase();
 		this.vectorWeight = Math.max(0, Math.min(1, vectorWeight));
 		this.schemaTableWeight = Math.max(0.1, schemaTableWeight);
@@ -65,13 +69,21 @@ public class HybridRecallEngine implements RecallEngine {
 		return switch (provider) {
 			case "keyword" -> keywordRecallEngine.search(query, documents, options);
 			case "vector" -> vectorRecallEngine.search(query, documents, options);
+			case "chroma" -> chromaSearch(query, documents, options);
+			case "hybrid-chroma" -> hybridSearch(query, documents, options, true);
 			default -> hybridSearch(query, documents, options);
 		};
 	}
 
 	private List<RecallHit> hybridSearch(String query, List<RecallDocument> documents, RecallOptions options) {
+		return hybridSearch(query, documents, options, false);
+	}
+
+	private List<RecallHit> hybridSearch(String query, List<RecallDocument> documents, RecallOptions options,
+			boolean preferChromaVector) {
 		List<RecallHit> keywordHits = keywordRecallEngine.search(query, documents, options);
-		List<RecallHit> vectorHits = vectorRecallEngine.search(query, documents, options);
+		List<RecallHit> vectorHits = preferChromaVector ? chromaSearch(query, documents, options)
+				: vectorRecallEngine.search(query, documents, options);
 		if (vectorHits.isEmpty()) {
 			return keywordHits;
 		}
@@ -94,6 +106,21 @@ public class HybridRecallEngine implements RecallEngine {
 			.toList();
 		logHybridScores(query, results);
 		return results;
+	}
+
+	private List<RecallHit> chromaSearch(String query, List<RecallDocument> documents, RecallOptions options) {
+		if (!chromaVectorSearchService.isEnabled()) {
+			log.warn("chroma recall provider is selected, but chroma is not enabled. Falling back to local vector recall.");
+			return vectorRecallEngine.search(query, documents, options);
+		}
+		try {
+			List<RecallHit> hits = chromaVectorSearchService.search(query, documents, options);
+			return hits.isEmpty() ? vectorRecallEngine.search(query, documents, options) : hits;
+		}
+		catch (Exception ex) {
+			log.warn("chroma recall failed, fallback to local vector recall: {}", ex.getMessage());
+			return vectorRecallEngine.search(query, documents, options);
+		}
 	}
 
 	private void logHybridScores(String query, List<RecallHit> hits) {

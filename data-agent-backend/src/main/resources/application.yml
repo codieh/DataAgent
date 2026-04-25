@@ -20,8 +20,8 @@ search:
       sql-retry:
         max-attempts: 3
     recall:
-      # keyword|vector|hybrid
-      provider: hybrid
+      # keyword|vector|hybrid|chroma|hybrid-chroma
+      provider: hybrid-chroma
       weight:
         schema-table: 1.15
         schema-column: 1.05
@@ -38,6 +38,14 @@ search:
           api-key: "${RECALL_EMBEDDING_API_KEY:}"
           model: "${RECALL_EMBEDDING_MODEL:bge-m3}"
           path: "${RECALL_EMBEDDING_PATH:/v1/embeddings}"
+      chroma:
+        enabled: ${RECALL_CHROMA_ENABLED:true}
+        base-url: "${RECALL_CHROMA_BASE_URL:http://localhost:8000}"
+        collection-name: "${RECALL_CHROMA_COLLECTION:data-agent-backend-recall}"
+        tenant: "${RECALL_CHROMA_TENANT:default_tenant}"
+        database: "${RECALL_CHROMA_DATABASE:default_database}"
+        token: "${RECALL_CHROMA_TOKEN:}"
+        sync-on-search: ${RECALL_CHROMA_SYNC_ON_SEARCH:true}
     intent:
       # mock|minimax
       provider: minimax

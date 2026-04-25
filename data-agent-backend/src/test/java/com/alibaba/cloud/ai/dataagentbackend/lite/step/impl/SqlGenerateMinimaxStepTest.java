@@ -9,7 +9,7 @@ class SqlGenerateMinimaxStepTest {
 	@Test
 	void prompt_should_make_schema_authoritative_and_split_evidence_from_documents() {
 		String prompt = SqlGenerateMinimaxStep.buildSqlGenerationPrompt("统计每个分类的销售额", "TABLE orders ...",
-				"[证据1] 销售额按订单明细汇总", "[定义1] GMV 默认按已支付订单汇总", "(无)", 200);
+				"[证据1] 销售额按订单明细汇总", "[定义1] GMV 默认按已支付订单汇总", "(无)", "(无多步骤计划)", 200);
 
 		assertTrue(prompt.contains("Authoritative database schema"));
 		assertTrue(prompt.contains("Supporting business rules and FAQ hints"));
@@ -20,6 +20,7 @@ class SqlGenerateMinimaxStepTest {
 		assertTrue(prompt.contains("If evidence or documents are irrelevant to the current question, ignore them."));
 		assertTrue(prompt.contains("Use ONLY tables/columns that exist in the schema section."));
 		assertTrue(prompt.contains("Retry hints from previous SQL attempt"));
+		assertTrue(prompt.contains("Plan context and previous step outputs"));
 		assertTrue(prompt.contains("Do NOT use SELECT *."));
 		assertTrue(prompt.contains("Prefer aggregated/statistical results over raw row-level detail"));
 		assertTrue(prompt.contains("Avoid directly selecting sensitive columns"));
