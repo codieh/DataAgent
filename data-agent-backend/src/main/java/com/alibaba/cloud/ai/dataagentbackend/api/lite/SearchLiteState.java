@@ -56,6 +56,8 @@ public class SearchLiteState {
 
 	private boolean planFinished;
 
+	private String planFinishedReason;
+
 	private String plannerRawOutput;
 
 	private boolean planValidationStatus = true;
@@ -270,6 +272,14 @@ public class SearchLiteState {
 
 	public void setPlanFinished(boolean planFinished) {
 		this.planFinished = planFinished;
+	}
+
+	public String getPlanFinishedReason() {
+		return planFinishedReason;
+	}
+
+	public void setPlanFinishedReason(String planFinishedReason) {
+		this.planFinishedReason = planFinishedReason;
 	}
 
 	public String getPlannerRawOutput() {

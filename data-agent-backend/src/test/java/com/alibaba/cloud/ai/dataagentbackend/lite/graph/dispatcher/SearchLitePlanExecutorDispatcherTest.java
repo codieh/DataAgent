@@ -50,4 +50,14 @@ class SearchLitePlanExecutorDispatcherTest {
 		assertEquals(PLANNER_NODE, dispatcher.apply(state));
 	}
 
+	@Test
+	void should_route_to_prepare_result_when_validation_failed_and_repair_exhausted() {
+		OverAllState state = mock(OverAllState.class);
+		when(state.value(anyString())).thenReturn(Optional.empty());
+		when(state.value(PLAN_VALIDATION_STATUS)).thenReturn(Optional.of(false));
+		when(state.value(PLAN_REPAIR_COUNT)).thenReturn(Optional.of(3));
+
+		assertEquals(PREPARE_RESULT_NODE, dispatcher.apply(state));
+	}
+
 }

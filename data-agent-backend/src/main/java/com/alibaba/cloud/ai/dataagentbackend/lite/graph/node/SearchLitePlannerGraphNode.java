@@ -74,6 +74,7 @@ public class SearchLitePlannerGraphNode implements NodeAction {
 		liteState.setCurrentPlanStepIndex(0);
 		liteState.setPlannerEnabled(plannerOutput.steps().size() > 1);
 		liteState.setPlanFinished(false);
+		liteState.setPlanFinishedReason(null);
 		liteState.setPlannerRawOutput(rawOutput);
 		liteState.setPlanValidationStatus(true);
 		liteState.setPlanValidationError(null);
@@ -82,8 +83,9 @@ public class SearchLitePlannerGraphNode implements NodeAction {
 				SearchLiteMessageType.JSON, null,
 				Map.of("steps", plannerOutput.steps(), "plannerEnabled", liteState.isPlannerEnabled(),
 						"rawPlanLen", rawOutput == null ? 0 : rawOutput.length())));
-		log.info("graph planner node invoked: steps={}, plannerEnabled={}, repairCount={}", plannerOutput.steps().size(),
-				liteState.isPlannerEnabled(), liteState.getPlanRepairCount());
+		log.info("graph planner node invoked: steps={}, plannerEnabled={}, repairCount={}, stepInstructions={}",
+				plannerOutput.steps().size(), liteState.isPlannerEnabled(), liteState.getPlanRepairCount(),
+				plannerOutput.steps().stream().map(SearchLitePlanStep::getInstruction).toList());
 		return SearchLiteGraphStateMapper.fromSearchLiteState(liteState);
 	}
 

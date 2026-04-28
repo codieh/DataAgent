@@ -113,6 +113,9 @@ public class ResultMinimaxStep implements SearchLiteStep {
 			payload.put("ok", true);
 			payload.put("summary", s.getResultSummary());
 			payload.put("rowCount", rowCount);
+			if (state.isPlannerEnabled()) {
+				payload.put("planSummary", buildPlanSummaryPayload(state));
+			}
 			return SearchLiteMessages.done(context, stage(), SearchLiteMessageType.JSON, null, payload);
 		}).flux();
 
@@ -135,12 +138,21 @@ public class ResultMinimaxStep implements SearchLiteStep {
 		if (!StringUtils.hasText(summary)) {
 			return null;
 		}
+		if (state.isPlannerEnabled()) {
+			summary = buildPlannerAwarePredefinedSummary(state, summary);
+		}
 		state.setResultSummary(summary);
 		boolean ok = "success".equalsIgnoreCase(mode);
+		Map<String, Object> payload = new LinkedHashMap<>();
+		payload.put("summary", summary);
+		payload.put("ok", ok);
+		payload.put("resultMode", mode);
+		if (state.isPlannerEnabled()) {
+			payload.put("planSummary", buildPlanSummaryPayload(state));
+		}
 		Flux<SearchLiteMessage> messages = Flux.just(
 				SearchLiteMessages.message(context, stage(), SearchLiteMessageType.TEXT, "正在整理结果...", null),
-				SearchLiteMessages.done(context, stage(), SearchLiteMessageType.JSON, null,
-						Map.of("summary", summary, "ok", ok, "resultMode", mode)))
+				SearchLiteMessages.done(context, stage(), SearchLiteMessageType.JSON, null, payload))
 			.delayElements(Duration.ofMillis(80));
 		return new SearchLiteStepResult(messages, Mono.just(state));
 	}
@@ -170,12 +182,16 @@ public class ResultMinimaxStep implements SearchLiteStep {
 				Top rows (JSON preview):
 				%s
 
+				Completed plan step summary:
+				%s
+
 				Output requirements:
 				- Provide 3-6 bullet points.
 				- Mention row count and any obvious patterns.
 				- If multiple plan steps are available, summarize across all steps instead of only the last SQL.
+				- Explicitly mention how many steps were planned, which steps succeeded or failed, and what each step found.
 				- If result is empty, explain possible reasons and suggest a follow-up query.
-				""".formatted(safe(query), planJson(state), safe(sql), rowCount, rowsJson).trim();
+				""".formatted(safe(query), planJson(state), safe(sql), rowCount, rowsJson, planSummaryText(state)).trim();
 	}
 
 	private String planJson(SearchLiteState state) {
@@ -189,6 +205,53 @@ public class ResultMinimaxStep implements SearchLiteStep {
 		catch (Exception e) {
 			return String.valueOf(steps);
 		}
+	}
+
+	private String planSummaryText(SearchLiteState state) {
+		List<SearchLitePlanStep> steps = state.getPlanSteps();
+		if (!state.isPlannerEnabled() || steps == null || steps.isEmpty()) {
+			return "(单步执行)";
+		}
+		StringBuilder builder = new StringBuilder();
+		builder.append("Total steps: ").append(steps.size()).append('\n');
+		for (SearchLitePlanStep step : steps) {
+			if (step == null) {
+				continue;
+			}
+			builder.append("- Step ").append(step.getStep()).append(" [").append(safe(step.getStatus())).append("] ")
+				.append(safe(step.getInstruction())).append('\n');
+			builder.append("  Row count: ").append(step.getRowCount()).append('\n');
+			if (StringUtils.hasText(step.getSummarySnippet())) {
+				builder.append("  Summary: ").append(step.getSummarySnippet()).append('\n');
+			}
+			if (StringUtils.hasText(step.getError())) {
+				builder.append("  Error: ").append(step.getError()).append('\n');
+			}
+		}
+		return builder.toString().trim();
+	}
+
+	private Map<String, Object> buildPlanSummaryPayload(SearchLiteState state) {
+		List<SearchLitePlanStep> steps = state.getPlanSteps();
+		Map<String, Object> payload = new LinkedHashMap<>();
+		payload.put("plannerEnabled", state.isPlannerEnabled());
+		payload.put("planFinishedReason", safe(state.getPlanFinishedReason()));
+		payload.put("totalSteps", steps == null ? 0 : steps.size());
+		payload.put("steps", steps == null ? List.of() : steps);
+		return payload;
+	}
+
+	private String buildPlannerAwarePredefinedSummary(SearchLiteState state, String fallbackSummary) {
+		List<SearchLitePlanStep> steps = state.getPlanSteps();
+		if (steps == null || steps.isEmpty()) {
+			return fallbackSummary;
+		}
+		return """
+				%s
+
+				计划执行概览：
+				%s
+				""".formatted(fallbackSummary, planSummaryText(state)).trim();
 	}
 
 	private static String safe(String s) {

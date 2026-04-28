@@ -2,6 +2,7 @@ package com.alibaba.cloud.ai.dataagentbackend.lite.step.impl;
 
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteMessage;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteMessageType;
+import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLitePlanStep;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteStage;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteState;
 import com.alibaba.cloud.ai.dataagentbackend.lite.SearchLiteContext;
@@ -15,6 +16,9 @@ import org.springframework.stereotype.Component;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+
+import java.util.LinkedHashMap;
+import java.util.List;
 
 @Component
 @Order(60)
@@ -48,16 +52,46 @@ public class ResultMockStep implements SearchLiteStep {
 		else {
 			summary = "执行完成，共返回 " + (state.getRows() == null ? 0 : state.getRows().size()) + " 行数据。";
 		}
+		if (state.isPlannerEnabled()) {
+			summary = buildPlannerSummary(state, summary);
+		}
 		state.setResultSummary(summary);
+
+		Map<String, Object> payload = new LinkedHashMap<>();
+		payload.put("summary", summary);
+		payload.put("resultMode", state.getResultMode() == null ? "success" : state.getResultMode());
+		if (state.isPlannerEnabled()) {
+			payload.put("planFinishedReason", state.getPlanFinishedReason() == null ? "" : state.getPlanFinishedReason());
+			payload.put("steps", state.getPlanSteps() == null ? List.of() : state.getPlanSteps());
+		}
 
 		Flux<SearchLiteMessage> messages = Flux
 			.just(SearchLiteMessages.message(context, stage(), SearchLiteMessageType.TEXT, "正在整理结果...", null),
-					SearchLiteMessages.done(context, stage(), SearchLiteMessageType.JSON, null,
-							Map.of("summary", summary, "resultMode",
-									state.getResultMode() == null ? "success" : state.getResultMode())))
+					SearchLiteMessages.done(context, stage(), SearchLiteMessageType.JSON, null, payload))
 			.delayElements(Duration.ofMillis(150));
 
 		return new SearchLiteStepResult(messages, Mono.just(state));
+	}
+
+	private String buildPlannerSummary(SearchLiteState state, String fallbackSummary) {
+		List<SearchLitePlanStep> steps = state.getPlanSteps();
+		if (steps == null || steps.isEmpty()) {
+			return fallbackSummary;
+		}
+		StringBuilder summary = new StringBuilder();
+		summary.append("多步骤计划共 ").append(steps.size()).append(" 步。");
+		for (SearchLitePlanStep step : steps) {
+			if (step == null) {
+				continue;
+			}
+			summary.append(" Step ").append(step.getStep()).append('[').append(step.getStatus()).append("] ")
+				.append(step.getInstruction());
+			if (step.getSummarySnippet() != null && !step.getSummarySnippet().isBlank()) {
+				summary.append("：").append(step.getSummarySnippet());
+			}
+			summary.append('。');
+		}
+		return summary.toString();
 	}
 
 }

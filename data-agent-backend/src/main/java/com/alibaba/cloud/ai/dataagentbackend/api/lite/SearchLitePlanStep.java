@@ -22,6 +22,8 @@ public class SearchLitePlanStep {
 
 	private String error;
 
+	private String summarySnippet;
+
 	public SearchLitePlanStep() {
 	}
 
@@ -92,6 +94,14 @@ public class SearchLitePlanStep {
 
 	public void setError(String error) {
 		this.error = error;
+	}
+
+	public String getSummarySnippet() {
+		return summarySnippet;
+	}
+
+	public void setSummarySnippet(String summarySnippet) {
+		this.summarySnippet = summarySnippet;
 	}
 
 }

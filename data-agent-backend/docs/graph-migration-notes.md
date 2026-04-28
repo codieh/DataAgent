@@ -3264,3 +3264,48 @@ Planner 进一步升级后，lite 现在不再只做规则拆分，而是：
 - **LLM SQL-first Planner**
 
 而不是 management 的全量 planner 平台。
+
+### 37.7 Planner 收口 V2：多 step 汇总、执行边界与可观测性
+
+在 V1 基础上，Planner 又往“可真正用于多步骤 SQL 分析”的方向收了一步，重点是三件事：
+
+- **多 step 结果不再只靠最后一步 SQL**
+- **PlanExecutor 对什么算成功、什么算失败、什么时候结束，边界更清楚**
+- **Planner / PlanExecutor 的过程对 SSE 和日志更可见**
+
+这次主要补充了：
+
+- `SearchLitePlanStep` 新增 `summarySnippet`
+- `SearchLiteState` 新增 `planFinishedReason`
+- `Result` 在 `plannerEnabled=true` 时，会按全部 step 汇总而不是只总结最后一次 SQL
+- `PlanExecutor` 会为每个已完成 step 记录：
+  - `sql`
+  - `rowCount`
+  - `previewRows`
+  - `error`
+  - `summarySnippet`
+- `PlanExecutor` 会显式记录：
+  - 当前推进到第几步
+  - 校验是否通过
+  - repair 次数
+  - plan 为什么结束
+
+同时，`SQL_GENERATE` 的 plan context 也变得更稳定：
+
+- 每个 step 都固定展示：
+  - step 编号
+  - instruction
+  - status
+  - sql
+  - rowCount
+  - previewRows
+  - summarySnippet
+  - error
+
+这样后续 step 在引用“这些商品”“这些用户”“上一步的分类集合”时，上下文格式更统一，不再只依赖零散字段。
+
+这一版仍然保持现有范围：
+
+- 只支持 SQL-only Planner
+- 只在 **计划校验失败** 时触发 Planner repair
+- 不新增独立 Report 节点，而是继续复用 `RESULT`

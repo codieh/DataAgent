@@ -240,18 +240,21 @@ public class SqlGenerateMinimaxStep implements SearchLiteStep {
 		}
 		StringBuilder builder = new StringBuilder();
 		builder.append("Current step index: ").append(state.getCurrentPlanStepIndex() + 1).append('\n');
+		builder.append("Use previous completed steps only as structured constraints for the current step.\n");
 		for (var step : state.getPlanSteps()) {
 			if (step == null) {
 				continue;
 			}
-			builder.append("- Step ").append(step.getStep()).append(" [").append(safe(step.getStatus())).append("]: ")
-				.append(safe(step.getInstruction())).append('\n');
+			builder.append("- Step ").append(step.getStep()).append('\n');
+			builder.append("  Instruction: ").append(safe(step.getInstruction())).append('\n');
+			builder.append("  Status: ").append(safe(step.getStatus())).append('\n');
 			if (StringUtils.hasText(step.getSql())) {
 				builder.append("  SQL: ").append(step.getSql()).append('\n');
 			}
-			if (step.getRowCount() > 0) {
-				builder.append("  Row count: ").append(step.getRowCount()).append('\n');
-				builder.append("  Preview rows: ").append(step.getPreviewRows()).append('\n');
+			builder.append("  Row count: ").append(step.getRowCount()).append('\n');
+			builder.append("  Preview rows: ").append(step.getPreviewRows() == null ? "[]" : step.getPreviewRows()).append('\n');
+			if (StringUtils.hasText(step.getSummarySnippet())) {
+				builder.append("  Summary: ").append(step.getSummarySnippet()).append('\n');
 			}
 			if (StringUtils.hasText(step.getError())) {
 				builder.append("  Error: ").append(step.getError()).append('\n');

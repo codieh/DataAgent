@@ -99,6 +99,7 @@ public class SearchLiteGraphConfiguration {
 			strategies.put(SearchLiteGraphStateKeys.CURRENT_PLAN_STEP_INDEX, KeyStrategy.REPLACE);
 			strategies.put(SearchLiteGraphStateKeys.PLANNER_ENABLED, KeyStrategy.REPLACE);
 			strategies.put(SearchLiteGraphStateKeys.PLAN_FINISHED, KeyStrategy.REPLACE);
+			strategies.put(SearchLiteGraphStateKeys.PLAN_FINISHED_REASON, KeyStrategy.REPLACE);
 			strategies.put(SearchLiteGraphStateKeys.PLANNER_RAW_OUTPUT, KeyStrategy.REPLACE);
 			strategies.put(SearchLiteGraphStateKeys.PLAN_VALIDATION_STATUS, KeyStrategy.REPLACE);
 			strategies.put(SearchLiteGraphStateKeys.PLAN_VALIDATION_ERROR, KeyStrategy.REPLACE);
