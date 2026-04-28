@@ -47,6 +47,15 @@ public class SearchLiteState {
 
 	private List<String> expandedQueries = new ArrayList<>();
 
+	// human review
+	private boolean humanReviewEnabled;
+
+	private String humanFeedbackStatus;
+
+	private String humanFeedbackComment;
+
+	private boolean awaitingHumanFeedback;
+
 	// planner
 	private List<SearchLitePlanStep> planSteps = new ArrayList<>();
 
@@ -89,6 +98,11 @@ public class SearchLiteState {
 		state.agentId = request.agentId();
 		state.threadId = request.threadId();
 		state.query = request.query();
+		state.humanReviewEnabled = request.humanReviewEnabled();
+		if (request.humanFeedbackApproved() != null) {
+			state.humanFeedbackStatus = request.humanFeedbackApproved() ? "APPROVED" : "REJECTED";
+		}
+		state.humanFeedbackComment = request.humanFeedbackComment();
 		return state;
 	}
 
@@ -226,6 +240,38 @@ public class SearchLiteState {
 
 	public void setExpandedQueries(List<String> expandedQueries) {
 		this.expandedQueries = expandedQueries == null ? new ArrayList<>() : expandedQueries;
+	}
+
+	public boolean isHumanReviewEnabled() {
+		return humanReviewEnabled;
+	}
+
+	public void setHumanReviewEnabled(boolean humanReviewEnabled) {
+		this.humanReviewEnabled = humanReviewEnabled;
+	}
+
+	public String getHumanFeedbackStatus() {
+		return humanFeedbackStatus;
+	}
+
+	public void setHumanFeedbackStatus(String humanFeedbackStatus) {
+		this.humanFeedbackStatus = humanFeedbackStatus;
+	}
+
+	public String getHumanFeedbackComment() {
+		return humanFeedbackComment;
+	}
+
+	public void setHumanFeedbackComment(String humanFeedbackComment) {
+		this.humanFeedbackComment = humanFeedbackComment;
+	}
+
+	public boolean isAwaitingHumanFeedback() {
+		return awaitingHumanFeedback;
+	}
+
+	public void setAwaitingHumanFeedback(boolean awaitingHumanFeedback) {
+		this.awaitingHumanFeedback = awaitingHumanFeedback;
 	}
 
 	public String getEffectiveQuery() {

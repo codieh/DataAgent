@@ -28,10 +28,18 @@ public class SearchLitePrepareResultGraphNode implements NodeAction {
 
 	public static final String MODE_BLOCKED_WIDE_EXPORT = "blocked_wide_export";
 
+	public static final String MODE_WAITING_HUMAN_FEEDBACK = "waiting_human_feedback";
+
 	@Override
 	public Map<String, Object> apply(OverAllState state) {
 		SearchLiteState liteState = SearchLiteGraphStateMapper.toSearchLiteState(state);
-		if (StringUtils.hasText(liteState.getResultMode()) && liteState.getResultMode().startsWith("blocked_")) {
+		if (liteState.isAwaitingHumanFeedback() || MODE_WAITING_HUMAN_FEEDBACK.equalsIgnoreCase(liteState.getResultMode())) {
+			liteState.setResultMode(MODE_WAITING_HUMAN_FEEDBACK);
+			if (!StringUtils.hasText(liteState.getResultSummary())) {
+				liteState.setResultSummary("计划已生成，等待人工审核后继续执行。");
+			}
+		}
+		else if (StringUtils.hasText(liteState.getResultMode()) && liteState.getResultMode().startsWith("blocked_")) {
 			if (!StringUtils.hasText(liteState.getResultSummary())) {
 				liteState.setResultSummary(resolveBlockedSummary(liteState));
 			}

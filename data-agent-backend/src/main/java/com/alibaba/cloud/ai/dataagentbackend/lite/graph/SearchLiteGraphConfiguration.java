@@ -1,6 +1,7 @@
 package com.alibaba.cloud.ai.dataagentbackend.lite.graph;
 
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.dispatcher.SearchLiteIntentDispatcher;
+import com.alibaba.cloud.ai.dataagentbackend.lite.graph.dispatcher.SearchLiteHumanFeedbackDispatcher;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.dispatcher.SearchLitePlanExecutorDispatcher;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.dispatcher.SearchLiteResultModeDispatcher;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.dispatcher.SearchLiteSchemaRecallDispatcher;
@@ -9,6 +10,7 @@ import com.alibaba.cloud.ai.dataagentbackend.lite.graph.dispatcher.SearchLiteSql
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLiteEvidenceGraphNode;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLiteEnhanceGraphNode;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLiteIntentGraphNode;
+import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLiteHumanFeedbackGraphNode;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLitePlanExecutorGraphNode;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLitePlannerGraphNode;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.node.SearchLitePrepareResultGraphNode;
@@ -54,6 +56,8 @@ public class SearchLiteGraphConfiguration {
 
 	public static final String PLAN_EXECUTOR_NODE = "planExecutorNode";
 
+	public static final String HUMAN_FEEDBACK_NODE = "humanFeedbackNode";
+
 	public static final String SQL_GENERATE_NODE = "sqlGenerateNode";
 
 	public static final String SQL_EXECUTE_NODE = "sqlExecuteNode";
@@ -69,10 +73,11 @@ public class SearchLiteGraphConfiguration {
 			SearchLiteSchemaGraphNode schemaNode,
 			SearchLiteSchemaRecallGraphNode schemaRecallNode, SearchLiteEnhanceGraphNode enhanceNode,
 			SearchLitePlannerGraphNode plannerNode, SearchLitePlanExecutorGraphNode planExecutorNode,
+			SearchLiteHumanFeedbackGraphNode humanFeedbackNode,
 			SearchLiteSqlGenerateGraphNode sqlGenerateNode, SearchLiteSqlExecuteGraphNode sqlExecuteNode,
 			SearchLiteSqlRetryGraphNode sqlRetryNode, SearchLitePrepareResultGraphNode prepareResultNode,
 			SearchLiteResultGraphNode resultNode, SearchLiteIntentDispatcher intentDispatcher,
-			SearchLitePlanExecutorDispatcher planExecutorDispatcher,
+			SearchLitePlanExecutorDispatcher planExecutorDispatcher, SearchLiteHumanFeedbackDispatcher humanFeedbackDispatcher,
 			SearchLiteSchemaRecallDispatcher schemaRecallDispatcher, SearchLiteSqlGenerateDispatcher sqlGenerateDispatcher,
 			SearchLiteSqlExecuteDispatcher sqlExecuteDispatcher, SearchLiteResultModeDispatcher resultModeDispatcher)
 			throws GraphStateException {
@@ -95,6 +100,10 @@ public class SearchLiteGraphConfiguration {
 			strategies.put(SearchLiteGraphStateKeys.RECALLED_SCHEMA_TEXT, KeyStrategy.REPLACE);
 			strategies.put(SearchLiteGraphStateKeys.CANONICAL_QUERY, KeyStrategy.REPLACE);
 			strategies.put(SearchLiteGraphStateKeys.EXPANDED_QUERIES, KeyStrategy.REPLACE);
+			strategies.put(SearchLiteGraphStateKeys.HUMAN_REVIEW_ENABLED, KeyStrategy.REPLACE);
+			strategies.put(SearchLiteGraphStateKeys.HUMAN_FEEDBACK_STATUS, KeyStrategy.REPLACE);
+			strategies.put(SearchLiteGraphStateKeys.HUMAN_FEEDBACK_COMMENT, KeyStrategy.REPLACE);
+			strategies.put(SearchLiteGraphStateKeys.AWAITING_HUMAN_FEEDBACK, KeyStrategy.REPLACE);
 			strategies.put(SearchLiteGraphStateKeys.PLAN_STEPS, KeyStrategy.REPLACE);
 			strategies.put(SearchLiteGraphStateKeys.CURRENT_PLAN_STEP_INDEX, KeyStrategy.REPLACE);
 			strategies.put(SearchLiteGraphStateKeys.PLANNER_ENABLED, KeyStrategy.REPLACE);
@@ -125,6 +134,7 @@ public class SearchLiteGraphConfiguration {
 			.addNode(ENHANCE_NODE, node_async(enhanceNode))
 			.addNode(PLANNER_NODE, node_async(plannerNode))
 			.addNode(PLAN_EXECUTOR_NODE, node_async(planExecutorNode))
+			.addNode(HUMAN_FEEDBACK_NODE, node_async(humanFeedbackNode))
 			.addNode(SQL_GENERATE_NODE, node_async(sqlGenerateNode))
 			.addNode(SQL_EXECUTE_NODE, node_async(sqlExecuteNode))
 			.addNode(SQL_RETRY_NODE, node_async(sqlRetryNode))
@@ -141,7 +151,11 @@ public class SearchLiteGraphConfiguration {
 			.addEdge(ENHANCE_NODE, PLANNER_NODE)
 			.addEdge(PLANNER_NODE, PLAN_EXECUTOR_NODE)
 			.addConditionalEdges(PLAN_EXECUTOR_NODE, edge_async(planExecutorDispatcher),
-					Map.of(SQL_GENERATE_NODE, SQL_GENERATE_NODE, PREPARE_RESULT_NODE, PREPARE_RESULT_NODE))
+					Map.of(SQL_GENERATE_NODE, SQL_GENERATE_NODE, PREPARE_RESULT_NODE, PREPARE_RESULT_NODE,
+							HUMAN_FEEDBACK_NODE, HUMAN_FEEDBACK_NODE))
+			.addConditionalEdges(HUMAN_FEEDBACK_NODE, edge_async(humanFeedbackDispatcher),
+					Map.of(SQL_GENERATE_NODE, SQL_GENERATE_NODE, PLANNER_NODE, PLANNER_NODE,
+							PREPARE_RESULT_NODE, PREPARE_RESULT_NODE))
 			.addConditionalEdges(SQL_GENERATE_NODE, edge_async(sqlGenerateDispatcher),
 					Map.of(SQL_EXECUTE_NODE, SQL_EXECUTE_NODE, PREPARE_RESULT_NODE, PREPARE_RESULT_NODE))
 			.addConditionalEdges(SQL_EXECUTE_NODE, edge_async(sqlExecuteDispatcher),

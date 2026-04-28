@@ -33,6 +33,10 @@ public final class SearchLiteGraphStateMapper {
 		values.put(SearchLiteGraphStateKeys.RECALLED_SCHEMA_TEXT, state.getRecalledSchemaText());
 		values.put(SearchLiteGraphStateKeys.CANONICAL_QUERY, state.getCanonicalQuery());
 		values.put(SearchLiteGraphStateKeys.EXPANDED_QUERIES, state.getExpandedQueries());
+		values.put(SearchLiteGraphStateKeys.HUMAN_REVIEW_ENABLED, state.isHumanReviewEnabled());
+		values.put(SearchLiteGraphStateKeys.HUMAN_FEEDBACK_STATUS, state.getHumanFeedbackStatus());
+		values.put(SearchLiteGraphStateKeys.HUMAN_FEEDBACK_COMMENT, state.getHumanFeedbackComment());
+		values.put(SearchLiteGraphStateKeys.AWAITING_HUMAN_FEEDBACK, state.isAwaitingHumanFeedback());
 		values.put(SearchLiteGraphStateKeys.PLAN_STEPS, state.getPlanSteps());
 		values.put(SearchLiteGraphStateKeys.CURRENT_PLAN_STEP_INDEX, state.getCurrentPlanStepIndex());
 		values.put(SearchLiteGraphStateKeys.PLANNER_ENABLED, state.isPlannerEnabled());
@@ -75,6 +79,12 @@ public final class SearchLiteGraphStateMapper {
 		state.setRecalledSchemaText(get(graphState, SearchLiteGraphStateKeys.RECALLED_SCHEMA_TEXT, String.class));
 		state.setCanonicalQuery(get(graphState, SearchLiteGraphStateKeys.CANONICAL_QUERY, String.class));
 		state.setExpandedQueries(get(graphState, SearchLiteGraphStateKeys.EXPANDED_QUERIES, java.util.List.class));
+		Boolean humanReviewEnabled = get(graphState, SearchLiteGraphStateKeys.HUMAN_REVIEW_ENABLED, Boolean.class);
+		state.setHumanReviewEnabled(Boolean.TRUE.equals(humanReviewEnabled));
+		state.setHumanFeedbackStatus(get(graphState, SearchLiteGraphStateKeys.HUMAN_FEEDBACK_STATUS, String.class));
+		state.setHumanFeedbackComment(get(graphState, SearchLiteGraphStateKeys.HUMAN_FEEDBACK_COMMENT, String.class));
+		Boolean awaitingHumanFeedback = get(graphState, SearchLiteGraphStateKeys.AWAITING_HUMAN_FEEDBACK, Boolean.class);
+		state.setAwaitingHumanFeedback(Boolean.TRUE.equals(awaitingHumanFeedback));
 		state.setPlanSteps(get(graphState, SearchLiteGraphStateKeys.PLAN_STEPS, java.util.List.class));
 		Integer stepIndex = get(graphState, SearchLiteGraphStateKeys.CURRENT_PLAN_STEP_INDEX, Integer.class);
 		state.setCurrentPlanStepIndex(stepIndex == null ? 0 : stepIndex);

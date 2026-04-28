@@ -10,6 +10,7 @@ import org.springframework.stereotype.Component;
 
 import static com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphConfiguration.PLANNER_NODE;
 import static com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphConfiguration.PREPARE_RESULT_NODE;
+import static com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphConfiguration.HUMAN_FEEDBACK_NODE;
 import static com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphConfiguration.SQL_GENERATE_NODE;
 
 @Component
@@ -50,6 +51,18 @@ public class SearchLitePlanExecutorDispatcher implements EdgeAction {
 		if (finished) {
 			log.info("graph plan-executor dispatcher: plan finished, route to {}", PREPARE_RESULT_NODE);
 			return PREPARE_RESULT_NODE;
+		}
+		boolean humanReviewEnabled = state.value(SearchLiteGraphStateKeys.HUMAN_REVIEW_ENABLED)
+			.filter(Boolean.class::isInstance)
+			.map(Boolean.class::cast)
+			.orElse(false);
+		String humanFeedbackStatus = state.value(SearchLiteGraphStateKeys.HUMAN_FEEDBACK_STATUS)
+			.filter(String.class::isInstance)
+			.map(String.class::cast)
+			.orElse("");
+		if (humanReviewEnabled && humanFeedbackStatus.isBlank()) {
+			log.info("graph plan-executor dispatcher: route to {} for human review", HUMAN_FEEDBACK_NODE);
+			return HUMAN_FEEDBACK_NODE;
 		}
 		log.info("graph plan-executor dispatcher: route to {}", SQL_GENERATE_NODE);
 		return SQL_GENERATE_NODE;

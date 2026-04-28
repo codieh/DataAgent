@@ -31,15 +31,20 @@ public class SearchLiteController {
 	@GetMapping(value = "/search-lite", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
 	public Flux<ServerSentEvent<SearchLiteMessage>> searchLite(@RequestParam("agentId") String agentId,
 			@RequestParam(value = "threadId", required = false) String threadId, @RequestParam("query") String query,
+			@RequestParam(value = "humanReview", defaultValue = "false") boolean humanReview,
+			@RequestParam(value = "humanFeedbackApproved", required = false) Boolean humanFeedbackApproved,
+			@RequestParam(value = "humanFeedbackComment", required = false) String humanFeedbackComment,
 			ServerHttpResponse response) {
 		response.getHeaders().add("Cache-Control", "no-cache");
 		response.getHeaders().add("Connection", "keep-alive");
 		response.getHeaders().add("Access-Control-Allow-Origin", "*");
 
 		int queryLen = query == null ? 0 : query.length();
-		log.info("SSE 请求：/api/stream/search-lite agentId={}, threadId={}, queryLen={}", agentId, threadId, queryLen);
+		log.info("SSE 请求：/api/stream/search-lite agentId={}, threadId={}, queryLen={}, humanReview={}, hasFeedback={}",
+				agentId, threadId, queryLen, humanReview, humanFeedbackApproved != null);
 
-		return orchestrator.stream(new SearchLiteRequest(agentId, threadId, query))
+		return orchestrator.stream(
+				new SearchLiteRequest(agentId, threadId, query, humanReview, humanFeedbackApproved, humanFeedbackComment))
 			.map(this::toSse)
 			.doOnSubscribe(s -> log.info("SSE 已订阅：agentId={}, threadId={}", agentId, threadId))
 			.doOnCancel(() -> log.info("SSE 已取消：agentId={}, threadId={}", agentId, threadId))

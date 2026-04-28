@@ -19,8 +19,10 @@ import reactor.core.publisher.Sinks;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.Optional;
 
 @Service
 public class SearchLiteGraphService {
@@ -34,6 +36,8 @@ public class SearchLiteGraphService {
 	private final SearchLiteGraphMessageNormalizer messageNormalizer;
 
 	private final MultiTurnContextManager multiTurnContextManager;
+
+	private final ConcurrentHashMap<String, SearchLiteState> pendingHumanFeedbackStates = new ConcurrentHashMap<>();
 
 	public SearchLiteGraphService(StateGraph searchLiteGraph, ExecutorService searchLiteGraphExecutor,
 			SearchLiteGraphMessageEmitter messageEmitter, SearchLiteGraphMessageNormalizer messageNormalizer,
@@ -66,10 +70,17 @@ public class SearchLiteGraphService {
 							Map.of("ok", true, "classification", updatedState.getIntentClassification(),
 									"message", "当前问题不进入数据分析主链路")));
 				}
-				multiTurnContextManager.finishTurn(updatedState);
+				if (updatedState.isAwaitingHumanFeedback()) {
+					pendingHumanFeedbackStates.put(context.threadId(), updatedState);
+				}
+				else {
+					pendingHumanFeedbackStates.remove(context.threadId());
+					multiTurnContextManager.finishTurn(updatedState);
+				}
 				sink.tryEmitComplete();
 			}
 			catch (Exception e) {
+				pendingHumanFeedbackStates.remove(context.threadId());
 				multiTurnContextManager.discardPending(context.threadId());
 				emitError(sink, context, e);
 			}
@@ -77,6 +88,13 @@ public class SearchLiteGraphService {
 				messageEmitter.unregister(context.threadId());
 			}
 		}, executor);
+	}
+
+	public Optional<SearchLiteState> takePendingHumanFeedbackState(String threadId) {
+		if (threadId == null || threadId.isBlank()) {
+			return Optional.empty();
+		}
+		return Optional.ofNullable(pendingHumanFeedbackStates.remove(threadId));
 	}
 
 	private OverAllState invokeFinalState(SearchLiteState state) throws GraphRunnerException {

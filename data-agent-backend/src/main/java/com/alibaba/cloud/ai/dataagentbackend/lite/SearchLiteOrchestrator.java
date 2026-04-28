@@ -134,14 +134,30 @@ public class SearchLiteOrchestrator {
 	private PreparedRun prepareRun(SearchLiteRequest request) {
 		String threadId = StringUtils.hasText(request.threadId()) ? request.threadId() : UUID.randomUUID().toString();
 		SearchLiteContext ctx = new SearchLiteContext(threadId);
-		SearchLiteState state = SearchLiteState
-			.fromRequest(new SearchLiteRequest(request.agentId(), threadId, request.query()));
-		PreparedConversationContext preparedConversationContext = multiTurnContextManager.prepareTurn(threadId, request.query());
-		state.setMultiTurnContext(preparedConversationContext.multiTurnContext());
-		state.setContextualizedQuery(preparedConversationContext.contextualizedQuery());
+		boolean feedbackResume = request.hasHumanFeedback() && graphService != null;
+		SearchLiteState state = feedbackResume ? graphService.takePendingHumanFeedbackState(threadId).orElse(null) : null;
+		boolean manageConversation = !feedbackResume;
+		if (state == null) {
+			state = SearchLiteState.fromRequest(
+					new SearchLiteRequest(request.agentId(), threadId, request.query(), request.humanReviewEnabled(),
+							request.humanFeedbackApproved(), request.humanFeedbackComment()));
+			PreparedConversationContext preparedConversationContext = multiTurnContextManager.prepareTurn(threadId,
+					request.query());
+			state.setMultiTurnContext(preparedConversationContext.multiTurnContext());
+			state.setContextualizedQuery(preparedConversationContext.contextualizedQuery());
+		}
+		else {
+			String feedbackStatus = request.humanFeedbackApproved() == null ? null
+					: request.humanFeedbackApproved() ? "APPROVED" : "REJECTED";
+			state.setHumanReviewEnabled("APPROVED".equalsIgnoreCase(feedbackStatus) ? false
+					: request.humanReviewEnabled() || state.isHumanReviewEnabled());
+			state.setHumanFeedbackStatus(feedbackStatus);
+			state.setHumanFeedbackComment(request.humanFeedbackComment());
+			state.setAwaitingHumanFeedback(false);
+		}
 		AtomicReference<SearchLiteState> latestState = new AtomicReference<>(state);
 		AtomicBoolean completed = new AtomicBoolean(false);
-		return new PreparedRun(request, threadId, ctx, state, latestState, completed);
+		return new PreparedRun(request, threadId, ctx, state, latestState, completed, manageConversation);
 	}
 
 	private Flux<SearchLiteMessage> buildExecutionFlux(PreparedRun preparedRun) {
@@ -161,12 +177,15 @@ public class SearchLiteOrchestrator {
 		return runWithSelectedMode(preparedRun.context(), preparedRun.state(), preparedRun.latestState())
 			.doOnComplete(() -> {
 				preparedRun.completed().set(true);
-				multiTurnContextManager.finishTurn(preparedRun.latestState().get());
+				SearchLiteState latest = preparedRun.latestState().get();
+				if (preparedRun.manageConversation() && (latest == null || !latest.isAwaitingHumanFeedback())) {
+					multiTurnContextManager.finishTurn(latest);
+				}
 			})
 			.doFinally(signal -> log.info("search-lite 结束：agentId={}, threadId={}, signal={}",
 					preparedRun.request().agentId(), preparedRun.threadId(), signal))
 			.doFinally(signal -> {
-				if (!preparedRun.completed().get()) {
+				if (!preparedRun.completed().get() && preparedRun.manageConversation()) {
 					multiTurnContextManager.discardPending(preparedRun.threadId());
 				}
 			})
@@ -183,7 +202,7 @@ public class SearchLiteOrchestrator {
 	}
 
 	private record PreparedRun(SearchLiteRequest request, String threadId, SearchLiteContext context, SearchLiteState state,
-			AtomicReference<SearchLiteState> latestState, AtomicBoolean completed) {
+			AtomicReference<SearchLiteState> latestState, AtomicBoolean completed, boolean manageConversation) {
 	}
 
 }

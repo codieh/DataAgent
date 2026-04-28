@@ -3309,3 +3309,33 @@ Planner 进一步升级后，lite 现在不再只做规则拆分，而是：
 - 只支持 SQL-only Planner
 - 只在 **计划校验失败** 时触发 Planner repair
 - 不新增独立 Report 节点，而是继续复用 `RESULT`
+
+### 37.8 HumanFeedback V1：先做人审计划，不做人审执行
+
+为了贴近 management 的人机协同思路，但又不把 lite 做得过重，当前先补了一版 **HumanFeedback V1**：
+
+- 只审核 **Planner 产出的计划**
+- 不审核每一步 SQL 执行
+- 不做复杂 UI 流程
+
+当前行为是：
+
+- 当请求显式开启 `humanReview=true` 时，`PLAN_EXECUTOR` 在计划校验通过后不会直接去 `SQL_GENERATE`
+- 而是先路由到 `HUMAN_FEEDBACK_NODE`
+- 如果还没有提交人工反馈：
+  - Graph 会把 `resultMode` 设为 `waiting_human_feedback`
+  - 返回当前 plan 摘要
+  - 等待用户基于同一个 `threadId` 提交审批结果
+- 如果人工 **APPROVED**：
+  - 复用当前已生成的 plan 继续执行
+- 如果人工 **REJECTED**：
+  - 把反馈意见写入 `planValidationError`
+  - `planRepairCount + 1`
+  - 回到 `PLANNER_NODE` 重新规划
+
+这版的重点不是“做完整的人机协同平台”，而是先把下面这条闭环跑通：
+
+- LLM 生成计划
+- 人工可以审阅
+- 不满意可以驳回并触发 repair
+- 满意则继续执行

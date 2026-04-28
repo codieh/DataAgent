@@ -43,6 +43,9 @@ public class ResultMockStep implements SearchLiteStep {
 				&& !state.getError().isBlank()) {
 			summary = "执行失败：" + state.getError();
 		}
+		else if ("waiting_human_feedback".equalsIgnoreCase(state.getResultMode())) {
+			summary = "计划已生成，等待人工审核。请基于当前 threadId 提交审核结果后继续执行。";
+		}
 		else if ("blocked_sensitive_sql".equalsIgnoreCase(state.getResultMode())) {
 			summary = "当前查询涉及敏感字段或敏感明细，已被安全策略拦截。建议改为统计类查询或去除敏感字段后重试。";
 		}

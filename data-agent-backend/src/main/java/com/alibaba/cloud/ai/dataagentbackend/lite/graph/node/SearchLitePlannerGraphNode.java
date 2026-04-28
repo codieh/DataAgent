@@ -51,6 +51,18 @@ public class SearchLitePlannerGraphNode implements NodeAction {
 	public Map<String, Object> apply(OverAllState state) {
 		SearchLiteState liteState = SearchLiteGraphStateMapper.toSearchLiteState(state);
 		SearchLiteContext context = new SearchLiteContext(resolveThreadId(liteState));
+		if (shouldReuseApprovedPlan(liteState)) {
+			liteState.setHumanFeedbackStatus(null);
+			liteState.setHumanFeedbackComment(null);
+			liteState.setAwaitingHumanFeedback(false);
+			messageEmitter.emitOne(context.threadId(), SearchLiteMessages.done(context, SearchLiteStage.PLANNER,
+					SearchLiteMessageType.JSON, null,
+					Map.of("steps", liteState.getPlanSteps(), "plannerEnabled", liteState.isPlannerEnabled(),
+							"rawPlanLen", liteState.getPlannerRawOutput() == null ? 0 : liteState.getPlannerRawOutput().length(),
+							"reusedApprovedPlan", true)));
+			log.info("graph planner node reused approved plan: steps={}", liteState.getPlanSteps().size());
+			return SearchLiteGraphStateMapper.fromSearchLiteState(liteState);
+		}
 		messageEmitter.emitOne(context.threadId(), SearchLiteMessages.message(context, SearchLiteStage.PLANNER,
 				SearchLiteMessageType.TEXT, "正在规划分析步骤...", null));
 
@@ -78,6 +90,9 @@ public class SearchLitePlannerGraphNode implements NodeAction {
 		liteState.setPlannerRawOutput(rawOutput);
 		liteState.setPlanValidationStatus(true);
 		liteState.setPlanValidationError(null);
+		liteState.setHumanFeedbackStatus(null);
+		liteState.setHumanFeedbackComment(null);
+		liteState.setAwaitingHumanFeedback(false);
 
 		messageEmitter.emitOne(context.threadId(), SearchLiteMessages.done(context, SearchLiteStage.PLANNER,
 				SearchLiteMessageType.JSON, null,
@@ -87,6 +102,11 @@ public class SearchLitePlannerGraphNode implements NodeAction {
 				plannerOutput.steps().size(), liteState.isPlannerEnabled(), liteState.getPlanRepairCount(),
 				plannerOutput.steps().stream().map(SearchLitePlanStep::getInstruction).toList());
 		return SearchLiteGraphStateMapper.fromSearchLiteState(liteState);
+	}
+
+	private boolean shouldReuseApprovedPlan(SearchLiteState state) {
+		return "APPROVED".equalsIgnoreCase(safe(state.getHumanFeedbackStatus())) && state.getPlanSteps() != null
+				&& !state.getPlanSteps().isEmpty() && state.isPlanValidationStatus();
 	}
 
 	private String buildPlannerPrompt(SearchLiteState state) {
