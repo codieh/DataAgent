@@ -501,6 +501,8 @@ Schema 侧：
 核心类：
 
 - `D:\GitHub\DataAgent\data-agent-backend\src\main\java\com\alibaba\cloud\ai\dataagentbackend\lite\recall\embedding\LocalEmbeddingClient.java`
+- `D:\GitHub\DataAgent\data-agent-backend\src\main\java\com\alibaba\cloud\ai\dataagentbackend\lite\recall\HybridRecallEngine.java`
+- `D:\GitHub\DataAgent\data-agent-backend\src\main\java\com\alibaba\cloud\ai\dataagentbackend\lite\recall\pgvector\PgVectorSearchService.java`
 
 当前方式：
 
@@ -508,12 +510,15 @@ Schema 侧：
   - `http://localhost:11434/v1/embeddings`
 - model:
   - `bge-m3`
+- recall provider：
+  - `hybrid-pgvector`
 
 实现细节：
 
 - 使用 JDK `HttpClient`
 - 返回 embedding 向量
 - 写入 recall 文档 metadata
+- 将关键词召回与 `pgvector` 召回做分数融合
 
 配合：
 
@@ -523,6 +528,79 @@ Schema 侧：
 
 - 确保索引文档有 embedding
 - 没有就补齐
+
+### 6.1 `pgvector` 是怎么接进来的
+
+当前项目不是把业务 SQL 数据源改成 PostgreSQL，而是只把 **recall 向量检索层** 切到了 `pgvector`。
+
+也就是说，当前有两套数据库职责：
+
+- **MySQL**
+  - 业务 SQL 查询
+  - `users / products / orders / order_items ...`
+- **PostgreSQL + pgvector**
+  - recall 向量检索
+  - evidence / document / schema table / schema column 的向量召回
+
+当前 recall provider 支持：
+
+- `keyword`
+- `vector`
+- `hybrid`
+- `pgvector`
+- `hybrid-pgvector`
+
+默认已经切到：
+
+- `hybrid-pgvector`
+
+### 6.2 当前 `pgvector` 的工作方式
+
+`PgVectorSearchService` 的策略尽量保持和原有向量召回层一致：
+
+1. 先用 `RecallEmbeddingService` 为 `RecallDocument` 补 embedding
+2. 查询时如果开启 `sync-on-search`
+   - 把带 embedding 的 recall 文档 upsert 到 PostgreSQL
+3. 使用：
+   - `embedding <=> queryVector`
+   做余弦距离检索
+4. 返回候选命中后，再和关键词召回一起进入 `HybridRecallEngine` 融合
+
+这次切换的重点是：
+
+- **替换向量库**
+- **不推翻现有 recall 主结构**
+
+所以这不是一次“大改 recall”，而是：
+
+> **在保留 RecallDocument / RecallService / HybridRecallEngine 主结构的前提下，将向量检索后端统一收敛为 pgvector。**
+
+### 6.3 当前配置入口
+
+配置位置：
+
+- `D:\GitHub\DataAgent\data-agent-backend\src\main\resources\application.yml`
+
+当前关键配置：
+
+- `search.lite.recall.provider: hybrid-pgvector`
+- `search.lite.recall.pgvector.url`
+- `search.lite.recall.pgvector.username`
+- `search.lite.recall.pgvector.password`
+- `search.lite.recall.pgvector.table-name`
+- `search.lite.recall.pgvector.dimensions`
+
+### 6.4 当前边界
+
+当前这版 pgvector 接入仍然有明确边界：
+
+- 如果 pgvector 不可用，会回退到本地 `VectorRecallEngine`
+- `RecallDocumentStore` 仍然是本地文件持久化
+- 当前还没有把：
+  - 会话
+  - 评测结果
+  - recall 索引元数据
+  全部统一落到 PostgreSQL
 
 ---
 

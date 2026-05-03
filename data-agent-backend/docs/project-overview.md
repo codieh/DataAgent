@@ -599,8 +599,36 @@ INTENT
 
 - 多轮会话
 - 多数据源
-- PostgreSQL / pgvector
 - 更完整的平台能力
+
+### 13.6 向量库现状更新（记录时间：2026-04-29）
+
+此前这里把 `PostgreSQL / pgvector` 记成“后续再考虑”，但当前 backend 已经开始接入并切换向量检索后端。
+
+当前状态：
+
+- 主业务 SQL 数据源仍然是：
+  - `MySQL`
+- Recall 向量检索后端已经支持：
+  - `pgvector`
+- 默认 recall provider 已切到：
+  - `hybrid-pgvector`
+
+这意味着当前项目已经进入：
+
+- **业务查询用 MySQL**
+- **向量召回用 PostgreSQL + pgvector**
+
+的双库职责模式。
+
+但也要注意：
+
+- 这次切换的是**向量检索层**
+- 不是把整套后端主数据源都迁到 PostgreSQL
+- 当前 `RecallDocumentStore` 仍然保留本地 JSON 文件持久化
+- 因此它更准确地属于：
+  - **Recall 基础设施工程化升级**
+  - 而不是完整的存储层统一改造
 
 ---
 

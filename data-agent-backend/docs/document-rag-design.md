@@ -458,6 +458,89 @@ Document RAG V1 完成时，至少应满足：
 - 更细 metadata 过滤
 - 文档类型分层（FAQ / 指标定义 / 业务规则）
 - 基于 PostgreSQL / pgvector 的持久化
+
+## 18.1 pgvector 接入现状（记录时间：2026-04-29）
+
+当前 lite-backend 已新增 `pgvector` 向量检索实现，并把默认 recall provider 切到了：
+
+- `hybrid-pgvector`
+
+实现方式保持和当前 recall 主结构一致的分层思路：
+
+- 文档索引仍由 `RecallDocumentStore` 负责本地 JSON 持久化
+- 向量检索层新增：
+  - `PgVectorProperties`
+  - `PgVectorSearchService`
+- `HybridRecallEngine` 现在支持：
+  - `pgvector`
+  - `hybrid-pgvector`
+
+也就是说，这次切换的重点是：
+
+- **把向量库统一收敛到 pgvector**
+- **不改 RecallDocument / RecallService / KeywordRecallEngine 的主结构**
+
+### 当前 pgvector 的工作方式
+
+1. `RecallEmbeddingService` 先为 `RecallDocument` 补 embedding
+2. `PgVectorSearchService` 在查询时可选同步文档到 PostgreSQL
+3. 使用 `embedding <=> queryVector` 做余弦距离检索
+4. `HybridRecallEngine` 再把：
+   - 关键词召回
+   - pgvector 召回
+   做分数融合
+
+### 当前边界
+
+- 如果 pgvector 不可用，会自动回退到本地 `VectorRecallEngine`
+- 当前主业务 SQL 数据源依旧是 MySQL
+- pgvector 只用于 recall 向量检索，不用于业务查询
+
+### 18.1.1 推荐的本地运行方式
+
+如果要在本地真正启用 pgvector，建议准备一套独立 PostgreSQL 实例，并安装 `pgvector` 扩展。
+
+当前配置项在：
+
+- `D:\GitHub\DataAgent\data-agent-backend\src\main\resources\application.yml`
+
+关键环境变量：
+
+- `RECALL_PGVECTOR_ENABLED`
+- `RECALL_PGVECTOR_URL`
+- `RECALL_PGVECTOR_USERNAME`
+- `RECALL_PGVECTOR_PASSWORD`
+- `RECALL_PGVECTOR_TABLE`
+- `RECALL_PGVECTOR_DIMENSIONS`
+
+默认配置思路是：
+
+- URL：
+  - `jdbc:postgresql://127.0.0.1:5432/data_agent_recall`
+- 表名：
+  - `recall_vectors`
+- 维度：
+  - `1024`
+
+### 18.1.2 当前迁移策略为什么是“渐进式”
+
+这次没有直接把整个 recall 系统彻底改成 PostgreSQL-only，而是采用了渐进式迁移：
+
+- `RecallDocumentStore`
+  - 继续负责本地 JSON 持久化
+- `PgVectorSearchService`
+  - 负责向量检索
+- `HybridRecallEngine`
+  - 继续负责关键词 + 向量融合
+
+这样做的好处是：
+
+- 主链业务代码改动小
+- 即使 pgvector 临时不可用，也不至于让 recall 整体失效
+
+所以这次接入更准确的定位是：
+
+> **把向量检索后端统一收敛到 pgvector，而不是一次性重写整个 recall 基础设施。**
 - 文档召回独立评测
 
 ---
