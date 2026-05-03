@@ -3,6 +3,7 @@ package com.alibaba.cloud.ai.dataagentbackend.lite.graph.node;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteStage;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphStepOutputAdapter;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStep;
+import com.alibaba.cloud.ai.dataagentbackend.lite.trace.SearchLiteTraceRecorder;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.action.NodeAction;
 import org.slf4j.Logger;
@@ -21,7 +22,9 @@ public class SearchLiteResultGraphNode extends SearchLiteStepGraphNodeSupport im
 
 	private final SearchLiteGraphStepOutputAdapter outputAdapter;
 
-	public SearchLiteResultGraphNode(List<SearchLiteStep> steps, SearchLiteGraphStepOutputAdapter outputAdapter) {
+	public SearchLiteResultGraphNode(List<SearchLiteStep> steps, SearchLiteGraphStepOutputAdapter outputAdapter,
+			SearchLiteTraceRecorder traceRecorder) {
+		super(traceRecorder);
 		this.resultStep = steps.stream()
 			.filter(step -> step.stage() == SearchLiteStage.RESULT)
 			.findFirst()

@@ -16,6 +16,9 @@ search:
     context:
       max-turn-history: 5
       max-field-length: 1000
+    trace:
+      enabled: true
+      dir: D:\GitHub\DataAgent\data-agent-backend\data\traces
     graph:
       sql-retry:
         max-attempts: 3

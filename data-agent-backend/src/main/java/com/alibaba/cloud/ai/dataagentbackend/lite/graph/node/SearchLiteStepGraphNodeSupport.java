@@ -1,6 +1,7 @@
 package com.alibaba.cloud.ai.dataagentbackend.lite.graph.node;
 
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteMessage;
+import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteStage;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteState;
 import com.alibaba.cloud.ai.dataagentbackend.lite.SearchLiteContext;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphStepOutputAdapter;
@@ -8,6 +9,7 @@ import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphStateKeys
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphStateMapper;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStep;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStepResult;
+import com.alibaba.cloud.ai.dataagentbackend.lite.trace.SearchLiteTraceRecorder;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import org.springframework.util.StringUtils;
 
@@ -18,16 +20,27 @@ import java.util.UUID;
 
 abstract class SearchLiteStepGraphNodeSupport {
 
+	private final SearchLiteTraceRecorder traceRecorder;
+
+	protected SearchLiteStepGraphNodeSupport(SearchLiteTraceRecorder traceRecorder) {
+		this.traceRecorder = traceRecorder;
+	}
+
 	protected Map<String, Object> executeStep(OverAllState graphState, SearchLiteStep step,
 			SearchLiteGraphStepOutputAdapter outputAdapter) {
 		SearchLiteState liteState = SearchLiteGraphStateMapper.toSearchLiteState(graphState);
 		String threadId = resolveThreadId(liteState);
 		SearchLiteContext context = new SearchLiteContext(threadId);
+		long startedAt = System.nanoTime();
 		SearchLiteStepResult stepResult = step.run(context, liteState);
 		List<SearchLiteMessage> existingMessages = shouldReadFallbackMessages(outputAdapter, threadId) ? readMessages(graphState)
 				: List.of();
-		return outputAdapter.adapt(new SearchLiteGraphStepOutputAdapter.OverAllStateSnapshot(threadId, liteState, existingMessages),
-				stepResult);
+		SearchLiteGraphStepOutputAdapter.AdaptedOutput adaptedOutput = outputAdapter
+			.adaptWithState(new SearchLiteGraphStepOutputAdapter.OverAllStateSnapshot(threadId, liteState, existingMessages),
+					stepResult);
+		long tookMs = (System.nanoTime() - startedAt) / 1_000_000;
+		traceRecorder.recordStage(threadId, step.stage(), "graph-step", tookMs, liteState, adaptedOutput.updatedState(), null);
+		return adaptedOutput.mappedState();
 	}
 
 	private boolean shouldReadFallbackMessages(SearchLiteGraphStepOutputAdapter outputAdapter, String threadId) {

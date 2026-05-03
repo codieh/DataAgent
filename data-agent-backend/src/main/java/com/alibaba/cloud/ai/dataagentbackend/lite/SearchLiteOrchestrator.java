@@ -9,6 +9,7 @@ import com.alibaba.cloud.ai.dataagentbackend.lite.conversation.PreparedConversat
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphService;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStep;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStepResult;
+import com.alibaba.cloud.ai.dataagentbackend.lite.trace.SearchLiteTraceRecorder;
 import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
@@ -43,18 +44,21 @@ public class SearchLiteOrchestrator {
 
 	private final MultiTurnContextManager multiTurnContextManager;
 
+	private final SearchLiteTraceRecorder traceRecorder;
+
 	public SearchLiteOrchestrator(List<SearchLiteStep> steps) {
-		this(steps, "pipeline", null, new MultiTurnContextManager(5, 240));
+		this(steps, "pipeline", null, new MultiTurnContextManager(5, 240), null);
 	}
 
 	@Autowired
 	public SearchLiteOrchestrator(List<SearchLiteStep> steps,
 			@Value("${search.lite.orchestrator.mode:pipeline}") String mode, SearchLiteGraphService graphService,
-			MultiTurnContextManager multiTurnContextManager) {
+			MultiTurnContextManager multiTurnContextManager, SearchLiteTraceRecorder traceRecorder) {
 		this.steps = steps;
 		this.mode = mode == null ? "pipeline" : mode.trim().toLowerCase();
 		this.graphService = graphService;
 		this.multiTurnContextManager = multiTurnContextManager;
+		this.traceRecorder = traceRecorder;
 	}
 
 	public Flux<SearchLiteMessage> stream(SearchLiteRequest request) {
@@ -114,16 +118,29 @@ public class SearchLiteOrchestrator {
 				result = step.run(ctx, currentState);
 			}
 			catch (Exception e) {
+				if (traceRecorder != null) {
+					traceRecorder.recordStage(ctx.threadId(), step.stage(), "pipeline-step",
+							(System.nanoTime() - startedAt) / 1_000_000, currentState, currentState,
+							e == null ? null : e.getMessage());
+				}
 				return Flux.error(e);
 			}
 
 			return result.messages().concatWith(result.updatedState().doOnNext(updatedState -> {
 				latestState.set(updatedState);
 				long tookMs = (System.nanoTime() - startedAt) / 1_000_000;
+				if (traceRecorder != null) {
+					traceRecorder.recordStage(ctx.threadId(), step.stage(), "pipeline-step", tookMs, currentState, updatedState,
+							null);
+				}
 				log.debug("step 完成：threadId={}, index={}, stage={}, impl={}, tookMs={}", ctx.threadId(), index,
 						step.stage(), step.getClass().getSimpleName(), tookMs);
 			}).doOnError(e -> {
 				long tookMs = (System.nanoTime() - startedAt) / 1_000_000;
+				if (traceRecorder != null) {
+					traceRecorder.recordStage(ctx.threadId(), step.stage(), "pipeline-step", tookMs, currentState, currentState,
+							e == null ? null : e.getMessage());
+				}
 				log.warn("step 失败：threadId={}, index={}, stage={}, impl={}, tookMs={}, error={}", ctx.threadId(), index,
 						step.stage(), step.getClass().getSimpleName(), tookMs, e == null ? null : e.getMessage(), e);
 			}).defaultIfEmpty(currentState)
@@ -157,6 +174,9 @@ public class SearchLiteOrchestrator {
 		}
 		AtomicReference<SearchLiteState> latestState = new AtomicReference<>(state);
 		AtomicBoolean completed = new AtomicBoolean(false);
+		if (traceRecorder != null) {
+			traceRecorder.startRun(threadId, request.agentId(), request.query(), mode, feedbackResume);
+		}
 		return new PreparedRun(request, threadId, ctx, state, latestState, completed, manageConversation);
 	}
 
@@ -174,7 +194,8 @@ public class SearchLiteOrchestrator {
 		log.info("search-lite 开始：agentId={}, threadId={}, queryLen={}, steps=[{}]", preparedRun.request().agentId(),
 				preparedRun.threadId(), queryLen, stepsDesc);
 
-		return runWithSelectedMode(preparedRun.context(), preparedRun.state(), preparedRun.latestState())
+		Flux<SearchLiteMessage> execution = runWithSelectedMode(preparedRun.context(), preparedRun.state(),
+				preparedRun.latestState())
 			.doOnComplete(() -> {
 				preparedRun.completed().set(true);
 				SearchLiteState latest = preparedRun.latestState().get();
@@ -199,6 +220,11 @@ public class SearchLiteOrchestrator {
 						preparedRun.threadId(), msg, error);
 				return Flux.just(SearchLiteMessages.error(preparedRun.context(), SearchLiteStage.RESULT, msg));
 			});
+		return execution.doFinally(signal -> {
+			if (traceRecorder != null) {
+				traceRecorder.finishRun(preparedRun.threadId(), preparedRun.latestState().get(), String.valueOf(signal));
+			}
+		});
 	}
 
 	private record PreparedRun(SearchLiteRequest request, String threadId, SearchLiteContext context, SearchLiteState state,

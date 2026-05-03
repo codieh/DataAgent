@@ -2,6 +2,7 @@ package com.alibaba.cloud.ai.dataagentbackend.lite.graph.node;
 
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteState;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphStateMapper;
+import com.alibaba.cloud.ai.dataagentbackend.lite.trace.SearchLiteTraceRecorder;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.action.NodeAction;
 import org.slf4j.Logger;
@@ -15,6 +16,12 @@ import java.util.Map;
 public class SearchLitePrepareResultGraphNode implements NodeAction {
 
 	private static final Logger log = LoggerFactory.getLogger(SearchLitePrepareResultGraphNode.class);
+
+	private final SearchLiteTraceRecorder traceRecorder;
+
+	public SearchLitePrepareResultGraphNode(SearchLiteTraceRecorder traceRecorder) {
+		this.traceRecorder = traceRecorder;
+	}
 
 	public static final String MODE_SUCCESS = "success";
 
@@ -33,6 +40,8 @@ public class SearchLitePrepareResultGraphNode implements NodeAction {
 	@Override
 	public Map<String, Object> apply(OverAllState state) {
 		SearchLiteState liteState = SearchLiteGraphStateMapper.toSearchLiteState(state);
+		SearchLiteState beforeState = SearchLiteGraphStateMapper.toSearchLiteState(state);
+		long startedAt = System.nanoTime();
 		if (liteState.isAwaitingHumanFeedback() || MODE_WAITING_HUMAN_FEEDBACK.equalsIgnoreCase(liteState.getResultMode())) {
 			liteState.setResultMode(MODE_WAITING_HUMAN_FEEDBACK);
 			if (!StringUtils.hasText(liteState.getResultSummary())) {
@@ -63,6 +72,8 @@ public class SearchLitePrepareResultGraphNode implements NodeAction {
 			liteState.setError(null);
 		}
 		log.info("graph prepare-result node invoked: mode={}", liteState.getResultMode());
+		traceRecorder.recordStage(liteState.getThreadId(), com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteStage.RESULT,
+				"prepare-result", (System.nanoTime() - startedAt) / 1_000_000, beforeState, liteState, liteState.getError());
 		return SearchLiteGraphStateMapper.fromSearchLiteState(liteState);
 	}
 

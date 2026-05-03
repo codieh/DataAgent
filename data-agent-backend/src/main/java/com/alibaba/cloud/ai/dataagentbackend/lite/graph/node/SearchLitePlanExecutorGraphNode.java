@@ -8,6 +8,7 @@ import com.alibaba.cloud.ai.dataagentbackend.lite.SearchLiteContext;
 import com.alibaba.cloud.ai.dataagentbackend.lite.SearchLiteMessages;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphMessageEmitter;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphStateMapper;
+import com.alibaba.cloud.ai.dataagentbackend.lite.trace.SearchLiteTraceRecorder;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.action.NodeAction;
 import org.slf4j.Logger;
@@ -33,16 +34,22 @@ public class SearchLitePlanExecutorGraphNode implements NodeAction {
 
 	private final int maxRepairAttempts;
 
+	private final SearchLiteTraceRecorder traceRecorder;
+
 	public SearchLitePlanExecutorGraphNode(SearchLiteGraphMessageEmitter messageEmitter,
+			SearchLiteTraceRecorder traceRecorder,
 			@Value("${search.lite.graph.planner.max-repair-attempts:2}") int maxRepairAttempts) {
 		this.messageEmitter = Objects.requireNonNull(messageEmitter, "messageEmitter");
+		this.traceRecorder = Objects.requireNonNull(traceRecorder, "traceRecorder");
 		this.maxRepairAttempts = Math.max(0, maxRepairAttempts);
 	}
 
 	@Override
 	public Map<String, Object> apply(OverAllState state) {
 		SearchLiteState liteState = SearchLiteGraphStateMapper.toSearchLiteState(state);
+		SearchLiteState beforeState = SearchLiteGraphStateMapper.toSearchLiteState(state);
 		SearchLiteContext context = new SearchLiteContext(resolveThreadId(liteState));
+		long startedAt = System.nanoTime();
 		ensurePlan(liteState);
 		String validationError = validatePlan(liteState);
 		if (validationError != null) {
@@ -55,6 +62,8 @@ public class SearchLitePlanExecutorGraphNode implements NodeAction {
 				liteState.setError("计划生成失败：" + validationError);
 			}
 			emitPlanExecutorState(context, liteState, "计划校验失败，准备修复。");
+			traceRecorder.recordStage(context.threadId(), SearchLiteStage.PLAN_EXECUTOR, "validation-failed",
+					(System.nanoTime() - startedAt) / 1_000_000, beforeState, liteState, validationError);
 			log.warn("graph plan-executor validation failed: repairCount={}, error={}", liteState.getPlanRepairCount(),
 					validationError);
 			return SearchLiteGraphStateMapper.fromSearchLiteState(liteState);
@@ -68,6 +77,9 @@ public class SearchLitePlanExecutorGraphNode implements NodeAction {
 		completeRunningStepIfNeeded(liteState);
 		prepareNextStepIfNeeded(liteState);
 		emitPlanExecutorState(context, liteState, resolveProgressMessage(liteState));
+		traceRecorder.recordStage(context.threadId(), SearchLiteStage.PLAN_EXECUTOR,
+				liteState.isPlanFinished() ? "plan-finished" : "advance-step",
+				(System.nanoTime() - startedAt) / 1_000_000, beforeState, liteState, null);
 		log.info("graph plan-executor node invoked: index={}, total={}, finished={}",
 				liteState.getCurrentPlanStepIndex(), liteState.getPlanSteps().size(), liteState.isPlanFinished());
 		return SearchLiteGraphStateMapper.fromSearchLiteState(liteState);

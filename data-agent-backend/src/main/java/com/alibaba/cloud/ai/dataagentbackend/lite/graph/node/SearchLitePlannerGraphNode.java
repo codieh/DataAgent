@@ -8,6 +8,7 @@ import com.alibaba.cloud.ai.dataagentbackend.lite.SearchLiteContext;
 import com.alibaba.cloud.ai.dataagentbackend.lite.SearchLiteMessages;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphMessageEmitter;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphStateMapper;
+import com.alibaba.cloud.ai.dataagentbackend.lite.trace.SearchLiteTraceRecorder;
 import com.alibaba.cloud.ai.dataagentbackend.llm.anthropic.AnthropicClient;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.action.NodeAction;
@@ -36,21 +37,26 @@ public class SearchLitePlannerGraphNode implements NodeAction {
 
 	private final SearchLiteGraphMessageEmitter messageEmitter;
 
+	private final SearchLiteTraceRecorder traceRecorder;
+
 	private final int maxSteps;
 
 	public SearchLitePlannerGraphNode(AnthropicClient anthropicClient, ObjectMapper objectMapper,
-			SearchLiteGraphMessageEmitter messageEmitter,
+			SearchLiteGraphMessageEmitter messageEmitter, SearchLiteTraceRecorder traceRecorder,
 			@Value("${search.lite.graph.planner.max-steps:5}") int maxSteps) {
 		this.anthropicClient = Objects.requireNonNull(anthropicClient, "anthropicClient");
 		this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper");
 		this.messageEmitter = Objects.requireNonNull(messageEmitter, "messageEmitter");
+		this.traceRecorder = Objects.requireNonNull(traceRecorder, "traceRecorder");
 		this.maxSteps = Math.max(1, maxSteps);
 	}
 
 	@Override
 	public Map<String, Object> apply(OverAllState state) {
 		SearchLiteState liteState = SearchLiteGraphStateMapper.toSearchLiteState(state);
+		SearchLiteState beforeState = SearchLiteGraphStateMapper.toSearchLiteState(state);
 		SearchLiteContext context = new SearchLiteContext(resolveThreadId(liteState));
+		long startedAt = System.nanoTime();
 		if (shouldReuseApprovedPlan(liteState)) {
 			liteState.setHumanFeedbackStatus(null);
 			liteState.setHumanFeedbackComment(null);
@@ -60,6 +66,8 @@ public class SearchLitePlannerGraphNode implements NodeAction {
 					Map.of("steps", liteState.getPlanSteps(), "plannerEnabled", liteState.isPlannerEnabled(),
 							"rawPlanLen", liteState.getPlannerRawOutput() == null ? 0 : liteState.getPlannerRawOutput().length(),
 							"reusedApprovedPlan", true)));
+			traceRecorder.recordStage(context.threadId(), SearchLiteStage.PLANNER, "reuse-approved-plan",
+					(System.nanoTime() - startedAt) / 1_000_000, beforeState, liteState, null);
 			log.info("graph planner node reused approved plan: steps={}", liteState.getPlanSteps().size());
 			return SearchLiteGraphStateMapper.fromSearchLiteState(liteState);
 		}
@@ -98,6 +106,8 @@ public class SearchLitePlannerGraphNode implements NodeAction {
 				SearchLiteMessageType.JSON, null,
 				Map.of("steps", plannerOutput.steps(), "plannerEnabled", liteState.isPlannerEnabled(),
 						"rawPlanLen", rawOutput == null ? 0 : rawOutput.length())));
+		traceRecorder.recordStage(context.threadId(), SearchLiteStage.PLANNER, "generate-plan",
+				(System.nanoTime() - startedAt) / 1_000_000, beforeState, liteState, null);
 		log.info("graph planner node invoked: steps={}, plannerEnabled={}, repairCount={}, stepInstructions={}",
 				plannerOutput.steps().size(), liteState.isPlannerEnabled(), liteState.getPlanRepairCount(),
 				plannerOutput.steps().stream().map(SearchLitePlanStep::getInstruction).toList());

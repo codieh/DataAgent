@@ -3339,3 +3339,127 @@ Planner 进一步升级后，lite 现在不再只做规则拆分，而是：
 - 人工可以审阅
 - 不满意可以驳回并触发 repair
 - 满意则继续执行
+## 38. Observability V1（记录时间：2026-05-04）
+
+为了让当前 lite-backend 不只是“能跑”，而是“出了问题能看清”，本轮补了一个轻量但够用的结构化 trace 方案。
+
+### 38.1 设计目标
+
+当前项目已经同时具备：
+
+- Graph 编排
+- 多知识源 RAG
+- SQL 重试
+- SQL Guard
+- Planner
+- HumanFeedback
+
+这意味着仅靠零散日志已经不够，很难快速回答下面这些问题：
+
+- 这次请求到底走了哪条链路？
+- 哪个节点最慢？
+- `SchemaRecall` 命中了哪些表？
+- `Planner` 拆成了几步？
+- 为什么触发了 repair / human feedback / blocked result？
+
+所以本轮目标是先做一个 **Observability V1**：
+
+- 不上重型监控平台
+- 先做本地结构化 trace
+- 先覆盖请求级和节点级
+
+### 38.2 当前实现内容
+
+新增 trace 模型：
+
+- `SearchLiteTrace`
+- `SearchLiteTraceStep`
+
+新增 recorder：
+
+- `SearchLiteTraceRecorder`
+
+新增摘要器：
+
+- `SearchLiteTraceSummarizer`
+
+当前会记录：
+
+- `threadId`
+- `agentId`
+- `query`
+- `mode`
+- 是否是 human feedback 恢复执行
+- 总耗时
+- 最终：
+  - `intentClassification`
+  - `resultMode`
+  - `planFinishedReason`
+  - `error`
+  - `finishSignal`
+
+每个 step 还会记录：
+
+- `stage`
+- `route`
+- `durationMs`
+- `inputSummary`
+- `outputSummary`
+- `error`
+
+### 38.3 当前接入的主要节点
+
+当前已接入：
+
+- pipeline step 执行边界
+- graph step bridge（`SearchLiteStepGraphNodeSupport`）
+- `Planner`
+- `PlanExecutor`
+- `HumanFeedback`
+- `PrepareResult`
+
+这意味着现在至少这些链路已经能被结构化看到：
+
+- `INTENT`
+- `EVIDENCE`
+- `SCHEMA`
+- `SCHEMA_RECALL`
+- `ENHANCE`
+- `SQL_GENERATE`
+- `SQL_EXECUTE`
+- `RESULT`
+- `PLANNER`
+- `PLAN_EXECUTOR`
+- `HUMAN_FEEDBACK`
+
+### 38.4 输出方式
+
+当前 V1 先不接 OpenTelemetry / Prometheus / Jaeger。
+
+输出方式是：
+
+- 请求结束后写一份 JSON trace
+- 默认目录：
+  - `D:\GitHub\DataAgent\data-agent-backend\data\traces`
+
+对应配置：
+
+- `search.lite.trace.enabled`
+- `search.lite.trace.dir`
+
+### 38.5 这版的价值
+
+这一版最直接的价值不是“可视化面板”，而是：
+
+- 更容易诊断 Recall 问题
+- 更容易诊断 Planner / PlanExecutor 问题
+- 更容易复盘 SQL retry 和 blocked result
+- 后续评测系统可以直接复用 trace 信息
+
+这也让当前项目更像一个：
+
+- **可调试**
+- **可复盘**
+- **可治理**
+
+的 Agent 系统，而不是单纯的模型调用链。
