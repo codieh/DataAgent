@@ -1,0 +1,867 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Search Lite Debug UI</title>
+    <style>
+        :root {
+            color-scheme: light dark;
+            --bg: #0b1020;
+            --panel: #121931;
+            --panel-soft: #1a2342;
+            --border: #2c3968;
+            --text: #e8ecff;
+            --muted: #a9b4de;
+            --primary: #6aa7ff;
+            --success: #3ecf8e;
+            --warn: #ffb84d;
+            --danger: #ff6b6b;
+            --code: #0a0f1d;
+        }
+
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+            background: linear-gradient(180deg, #0a1020, #111a31);
+            color: var(--text);
+        }
+
+        .page {
+            max-width: 1500px;
+            margin: 0 auto;
+            padding: 24px;
+        }
+
+        h1, h2, h3, p { margin-top: 0; }
+
+        .hero {
+            margin-bottom: 20px;
+            padding: 18px 20px;
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            background: rgba(18, 25, 49, 0.9);
+        }
+
+        .hero p {
+            color: var(--muted);
+            line-height: 1.6;
+            margin-bottom: 0;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: 400px 1fr;
+            gap: 16px;
+            align-items: start;
+        }
+
+        .card {
+            background: rgba(18, 25, 49, 0.92);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 16px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.16);
+        }
+
+        .card + .card {
+            margin-top: 16px;
+        }
+
+        .field {
+            margin-bottom: 14px;
+        }
+
+        .field label {
+            display: block;
+            margin-bottom: 6px;
+            font-size: 13px;
+            color: var(--muted);
+        }
+
+        input[type="text"], textarea, select {
+            width: 100%;
+            padding: 10px 12px;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            background: var(--panel-soft);
+            color: var(--text);
+            font: inherit;
+        }
+
+        textarea {
+            min-height: 110px;
+            resize: vertical;
+        }
+
+        .inline {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+
+        .checks {
+            display: flex;
+            gap: 14px;
+            flex-wrap: wrap;
+            margin: 12px 0 6px;
+        }
+
+        .checks label {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            color: var(--muted);
+            font-size: 14px;
+        }
+
+        .button-row {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        button {
+            border: 0;
+            border-radius: 10px;
+            padding: 10px 14px;
+            cursor: pointer;
+            font: inherit;
+            font-weight: 600;
+            transition: transform .12s ease, opacity .12s ease;
+        }
+
+        button:hover { transform: translateY(-1px); }
+        button:disabled { opacity: .5; cursor: not-allowed; transform: none; }
+        .primary { background: var(--primary); color: #081222; }
+        .secondary { background: #24315a; color: var(--text); }
+        .success { background: var(--success); color: #05170e; }
+        .danger { background: var(--danger); color: #2b0606; }
+
+        .status-bar {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 10px;
+            margin-bottom: 16px;
+        }
+
+        .status-item {
+            background: rgba(26, 35, 66, 0.9);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 12px;
+        }
+
+        .status-item .label {
+            font-size: 12px;
+            color: var(--muted);
+            margin-bottom: 6px;
+        }
+
+        .status-item .value {
+            font-size: 14px;
+            word-break: break-word;
+        }
+
+        .timeline {
+            display: grid;
+            grid-template-columns: repeat(11, minmax(0, 1fr));
+            gap: 8px;
+        }
+
+        .stage {
+            min-height: 82px;
+            padding: 10px 8px;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            background: #11182f;
+            font-size: 12px;
+        }
+
+        .stage.active { border-color: var(--primary); box-shadow: inset 0 0 0 1px rgba(106, 167, 255, 0.35); }
+        .stage.done { border-color: var(--success); }
+        .stage.error { border-color: var(--danger); }
+
+        .stage .name {
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+
+        .stage .meta {
+            color: var(--muted);
+            line-height: 1.45;
+            white-space: pre-wrap;
+        }
+
+        .cols {
+            display: grid;
+            grid-template-columns: 1.05fr .95fr;
+            gap: 16px;
+            margin-top: 16px;
+        }
+
+        .section-title {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 12px;
+        }
+
+        pre {
+            margin: 0;
+            padding: 12px;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            background: var(--code);
+            color: #dbe6ff;
+            overflow: auto;
+            white-space: pre-wrap;
+            word-break: break-word;
+            font-family: Consolas, "Courier New", monospace;
+            font-size: 12px;
+            line-height: 1.55;
+        }
+
+        .table-wrap {
+            overflow: auto;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+
+        th, td {
+            padding: 8px 10px;
+            border-bottom: 1px solid rgba(44, 57, 104, 0.8);
+            text-align: left;
+            vertical-align: top;
+            max-width: 280px;
+            word-break: break-word;
+        }
+
+        th {
+            position: sticky;
+            top: 0;
+            background: #182344;
+            color: var(--text);
+        }
+
+        .pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 10px;
+            border-radius: 999px;
+            font-size: 12px;
+            border: 1px solid var(--border);
+            background: rgba(36, 49, 90, 0.9);
+            color: var(--muted);
+        }
+
+        .log-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            max-height: 420px;
+            overflow: auto;
+        }
+
+        .log-item {
+            padding: 10px;
+            border-radius: 12px;
+            background: #10172b;
+            border: 1px solid #233158;
+        }
+
+        .log-item .head {
+            display: flex;
+            justify-content: space-between;
+            gap: 8px;
+            font-size: 12px;
+            color: var(--muted);
+            margin-bottom: 6px;
+        }
+
+        .log-item .body {
+            font-size: 12px;
+            white-space: pre-wrap;
+            word-break: break-word;
+            line-height: 1.55;
+        }
+
+        .muted { color: var(--muted); }
+        .hidden { display: none !important; }
+
+        @media (max-width: 1180px) {
+            .grid, .cols { grid-template-columns: 1fr; }
+            .timeline { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+            .status-bar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        }
+    </style>
+</head>
+<body>
+<div class="page">
+    <div class="hero">
+        <h1>Search Lite Debug UI</h1>
+        <p>
+            这是一个专门给 <code>lite-backend</code> 用的调试页。我们可以在这里实时看 SSE、Graph 阶段、Planner 步骤、
+            HumanFeedback 挂起/恢复、SQL、结果集和最终收口模式，拿它来替代 Postman 做联调会顺手很多。
+        </p>
+    </div>
+
+    <div class="grid">
+        <div>
+            <div class="card">
+                <h2>请求面板</h2>
+                <div class="inline">
+                    <div class="field">
+                        <label for="agentId">agentId</label>
+                        <input id="agentId" type="text" value="1">
+                    </div>
+                    <div class="field">
+                        <label for="threadId">threadId（可留空）</label>
+                        <input id="threadId" type="text" placeholder="自动回填最近一次 threadId">
+                    </div>
+                </div>
+                <div class="field">
+                    <label for="query">query</label>
+                    <textarea id="query" placeholder="例如：列出高消费用户，再按地区统计人数"></textarea>
+                </div>
+                <div class="checks">
+                    <label><input id="humanReview" type="checkbox"> 首次请求启用人工审核</label>
+                    <label><input id="autoScroll" type="checkbox" checked> SSE 自动滚动</label>
+                </div>
+                <div class="button-row">
+                    <button class="primary" id="startBtn">开始调试</button>
+                    <button class="secondary" id="stopBtn">停止 SSE</button>
+                    <button class="secondary" id="clearBtn">清空面板</button>
+                </div>
+            </div>
+
+            <div class="card" id="feedbackCard">
+                <div class="section-title">
+                    <h2>HumanFeedback</h2>
+                    <span class="pill" id="feedbackStatus">WAITING: false</span>
+                </div>
+                <div class="field">
+                    <label for="feedbackComment">驳回意见 / 审核备注</label>
+                    <textarea id="feedbackComment" placeholder="例如：请先限定时间范围，再执行计划。"></textarea>
+                </div>
+                <div class="button-row">
+                    <button class="success" id="approveBtn" disabled>Approve</button>
+                    <button class="danger" id="rejectBtn" disabled>Reject</button>
+                </div>
+                <p class="muted" style="margin-top:12px;">
+                    当结果进入 <code>waiting_human_feedback</code> 时，这里会启用。按钮会基于当前 threadId 发起继续请求。
+                </p>
+            </div>
+
+            <div class="card">
+                <div class="section-title">
+                    <h2>状态摘要</h2>
+                    <span class="pill" id="streamStatus">IDLE</span>
+                </div>
+                <div class="status-bar">
+                    <div class="status-item">
+                        <div class="label">threadId</div>
+                        <div class="value" id="statusThreadId">-</div>
+                    </div>
+                    <div class="status-item">
+                        <div class="label">resultMode</div>
+                        <div class="value" id="statusResultMode">-</div>
+                    </div>
+                    <div class="status-item">
+                        <div class="label">recalledTables</div>
+                        <div class="value" id="statusTables">-</div>
+                    </div>
+                    <div class="status-item">
+                        <div class="label">sqlRetryCount</div>
+                        <div class="value" id="statusRetry">0</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div>
+            <div class="card">
+                <div class="section-title">
+                    <h2>Stage 时间线</h2>
+                    <span class="pill" id="currentStagePill">当前阶段：-</span>
+                </div>
+                <div class="timeline" id="timeline"></div>
+            </div>
+
+            <div class="cols">
+                <div>
+                    <div class="card">
+                        <div class="section-title">
+                            <h2>Planner / PlanExecutor</h2>
+                            <span class="pill" id="plannerMeta">steps: 0</span>
+                        </div>
+                        <div id="planStepsWrap" class="table-wrap hidden">
+                            <table id="planStepsTable"></table>
+                        </div>
+                        <pre id="plannerDetails">还没有 plan 数据。</pre>
+                    </div>
+
+                    <div class="card">
+                        <div class="section-title">
+                            <h2>SQL</h2>
+                            <span class="pill" id="sqlMeta">未生成</span>
+                        </div>
+                        <pre id="sqlOutput">还没有 SQL。</pre>
+                    </div>
+
+                    <div class="card">
+                        <div class="section-title">
+                            <h2>结果总结</h2>
+                        </div>
+                        <pre id="summaryOutput">还没有 summary。</pre>
+                    </div>
+                </div>
+
+                <div>
+                    <div class="card">
+                        <div class="section-title">
+                            <h2>结果集预览</h2>
+                            <span class="pill" id="resultMeta">0 rows</span>
+                        </div>
+                        <div class="table-wrap hidden" id="resultTableWrap">
+                            <table id="resultTable"></table>
+                        </div>
+                        <pre id="resultPlaceholder">还没有 rows。</pre>
+                    </div>
+
+                    <div class="card">
+                        <div class="section-title">
+                            <h2>SSE 原始日志</h2>
+                            <span class="pill" id="eventCount">0 events</span>
+                        </div>
+                        <div class="log-list" id="eventLog"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    const STAGES = [
+        "INTENT", "EVIDENCE", "SCHEMA", "SCHEMA_RECALL", "ENHANCE",
+        "PLANNER", "PLAN_EXECUTOR", "HUMAN_FEEDBACK", "SQL_GENERATE", "SQL_EXECUTE", "RESULT"
+    ];
+
+    const state = {
+        eventSource: null,
+        lastThreadId: "",
+        currentQuery: "",
+        currentAgentId: "1",
+        currentResultMode: "",
+        currentStage: "",
+        recalledTables: [],
+        sqlRetryCount: 0,
+        planSteps: [],
+        plannerDetails: {},
+        sql: "",
+        rows: [],
+        columns: [],
+        summary: "",
+        waitingHumanFeedback: false,
+        eventCount: 0
+    };
+
+    const els = {
+        agentId: document.getElementById("agentId"),
+        threadId: document.getElementById("threadId"),
+        query: document.getElementById("query"),
+        humanReview: document.getElementById("humanReview"),
+        autoScroll: document.getElementById("autoScroll"),
+        startBtn: document.getElementById("startBtn"),
+        stopBtn: document.getElementById("stopBtn"),
+        clearBtn: document.getElementById("clearBtn"),
+        approveBtn: document.getElementById("approveBtn"),
+        rejectBtn: document.getElementById("rejectBtn"),
+        feedbackComment: document.getElementById("feedbackComment"),
+        feedbackStatus: document.getElementById("feedbackStatus"),
+        streamStatus: document.getElementById("streamStatus"),
+        statusThreadId: document.getElementById("statusThreadId"),
+        statusResultMode: document.getElementById("statusResultMode"),
+        statusTables: document.getElementById("statusTables"),
+        statusRetry: document.getElementById("statusRetry"),
+        currentStagePill: document.getElementById("currentStagePill"),
+        timeline: document.getElementById("timeline"),
+        plannerMeta: document.getElementById("plannerMeta"),
+        planStepsWrap: document.getElementById("planStepsWrap"),
+        planStepsTable: document.getElementById("planStepsTable"),
+        plannerDetails: document.getElementById("plannerDetails"),
+        sqlMeta: document.getElementById("sqlMeta"),
+        sqlOutput: document.getElementById("sqlOutput"),
+        summaryOutput: document.getElementById("summaryOutput"),
+        resultMeta: document.getElementById("resultMeta"),
+        resultTableWrap: document.getElementById("resultTableWrap"),
+        resultTable: document.getElementById("resultTable"),
+        resultPlaceholder: document.getElementById("resultPlaceholder"),
+        eventLog: document.getElementById("eventLog"),
+        eventCount: document.getElementById("eventCount")
+    };
+
+    function initTimeline() {
+        els.timeline.innerHTML = "";
+        STAGES.forEach(stage => {
+            const card = document.createElement("div");
+            card.className = "stage";
+            card.dataset.stage = stage;
+            card.innerHTML = `
+                <div class="name">${stage}</div>
+                <div class="meta" id="meta-${stage}">未触发</div>
+            `;
+            els.timeline.appendChild(card);
+        });
+    }
+
+    function setStageState(stage, kind, meta) {
+        const node = els.timeline.querySelector(`[data-stage="${stage}"]`);
+        const metaNode = document.getElementById(`meta-${stage}`);
+        if (!node || !metaNode) return;
+        node.classList.remove("active", "done", "error");
+        if (kind) node.classList.add(kind);
+        metaNode.textContent = meta || "已触发";
+    }
+
+    function updateStatus() {
+        els.statusThreadId.textContent = state.lastThreadId || "-";
+        els.statusResultMode.textContent = state.currentResultMode || "-";
+        els.statusTables.textContent = state.recalledTables.length ? state.recalledTables.join(", ") : "-";
+        els.statusRetry.textContent = String(state.sqlRetryCount || 0);
+        els.currentStagePill.textContent = `当前阶段：${state.currentStage || "-"}`;
+        els.feedbackStatus.textContent = `WAITING: ${state.waitingHumanFeedback ? "true" : "false"}`;
+        els.approveBtn.disabled = !state.waitingHumanFeedback;
+        els.rejectBtn.disabled = !state.waitingHumanFeedback;
+    }
+
+    function setStreamStatus(text) {
+        els.streamStatus.textContent = text;
+    }
+
+    function appendEventLog(kind, payload) {
+        state.eventCount += 1;
+        els.eventCount.textContent = `${state.eventCount} events`;
+        const item = document.createElement("div");
+        item.className = "log-item";
+        item.innerHTML = `
+            <div class="head">
+                <span>${new Date().toLocaleTimeString()}</span>
+                <span>${kind}</span>
+            </div>
+            <div class="body"></div>
+        `;
+        item.querySelector(".body").textContent = typeof payload === "string" ? payload : JSON.stringify(payload, null, 2);
+        els.eventLog.prepend(item);
+    }
+
+    function parseEventData(raw) {
+        try {
+            return JSON.parse(raw);
+        } catch (e) {
+            return { raw };
+        }
+    }
+
+    function buildUrl(params) {
+        const search = new URLSearchParams();
+        Object.entries(params).forEach(([key, value]) => {
+            if (value === null || value === undefined || value === "") return;
+            search.set(key, String(value));
+        });
+        return `/api/stream/search-lite?${search.toString()}`;
+    }
+
+    function resetPanels({ keepQuery = true } = {}) {
+        stopStream();
+        state.currentResultMode = "";
+        state.currentStage = "";
+        state.recalledTables = [];
+        state.sqlRetryCount = 0;
+        state.planSteps = [];
+        state.plannerDetails = {};
+        state.sql = "";
+        state.rows = [];
+        state.columns = [];
+        state.summary = "";
+        state.waitingHumanFeedback = false;
+        state.eventCount = 0;
+        if (!keepQuery) {
+            state.lastThreadId = "";
+            els.threadId.value = "";
+        }
+        initTimeline();
+        els.planStepsWrap.classList.add("hidden");
+        els.planStepsTable.innerHTML = "";
+        els.plannerDetails.textContent = "还没有 plan 数据。";
+        els.sqlOutput.textContent = "还没有 SQL。";
+        els.summaryOutput.textContent = "还没有 summary。";
+        els.sqlMeta.textContent = "未生成";
+        els.resultTableWrap.classList.add("hidden");
+        els.resultTable.innerHTML = "";
+        els.resultPlaceholder.classList.remove("hidden");
+        els.resultPlaceholder.textContent = "还没有 rows。";
+        els.resultMeta.textContent = "0 rows";
+        els.eventLog.innerHTML = "";
+        els.eventCount.textContent = "0 events";
+        els.plannerMeta.textContent = "steps: 0";
+        setStreamStatus("IDLE");
+        updateStatus();
+    }
+
+    function stopStream() {
+        if (state.eventSource) {
+            state.eventSource.close();
+            state.eventSource = null;
+        }
+    }
+
+    function renderPlanSteps() {
+        if (!state.planSteps || !state.planSteps.length) {
+            els.planStepsWrap.classList.add("hidden");
+            els.planStepsTable.innerHTML = "";
+            els.plannerMeta.textContent = "steps: 0";
+            return;
+        }
+        els.planStepsWrap.classList.remove("hidden");
+        els.plannerMeta.textContent = `steps: ${state.planSteps.length}`;
+        const headers = ["step", "instruction", "status", "rowCount", "error"];
+        const thead = `<thead><tr>${headers.map(h => `<th>${h}</th>`).join("")}</tr></thead>`;
+        const body = state.planSteps.map(step => `
+            <tr>
+                <td>${escapeHtml(step.step ?? "")}</td>
+                <td>${escapeHtml(step.instruction ?? "")}</td>
+                <td>${escapeHtml(step.status ?? "")}</td>
+                <td>${escapeHtml(step.rowCount ?? 0)}</td>
+                <td>${escapeHtml(step.error ?? "")}</td>
+            </tr>
+        `).join("");
+        els.planStepsTable.innerHTML = `${thead}<tbody>${body}</tbody>`;
+    }
+
+    function renderRows() {
+        const rows = state.rows || [];
+        const columns = state.columns && state.columns.length ? state.columns : deriveColumns(rows);
+        els.resultMeta.textContent = `${rows.length} rows`;
+        if (!rows.length || !columns.length) {
+            els.resultTableWrap.classList.add("hidden");
+            els.resultPlaceholder.classList.remove("hidden");
+            els.resultPlaceholder.textContent = "还没有 rows。";
+            els.resultTable.innerHTML = "";
+            return;
+        }
+        els.resultPlaceholder.classList.add("hidden");
+        els.resultTableWrap.classList.remove("hidden");
+        const thead = `<thead><tr>${columns.map(col => `<th>${escapeHtml(col)}</th>`).join("")}</tr></thead>`;
+        const body = rows.slice(0, 20).map(row => `
+            <tr>${columns.map(col => `<td>${escapeHtml(formatCell(row?.[col]))}</td>`).join("")}</tr>
+        `).join("");
+        els.resultTable.innerHTML = `${thead}<tbody>${body}</tbody>`;
+    }
+
+    function deriveColumns(rows) {
+        if (!rows || !rows.length) return [];
+        const keys = new Set();
+        rows.forEach(row => Object.keys(row || {}).forEach(key => keys.add(key)));
+        return [...keys];
+    }
+
+    function formatCell(value) {
+        if (value === null || value === undefined) return "";
+        if (typeof value === "object") return JSON.stringify(value);
+        return String(value);
+    }
+
+    function escapeHtml(value) {
+        return String(value ?? "")
+            .replaceAll("&", "&amp;")
+            .replaceAll("<", "&lt;")
+            .replaceAll(">", "&gt;")
+            .replaceAll("\"", "&quot;")
+            .replaceAll("'", "&#39;");
+    }
+
+    function updatePlannerDetails(payload) {
+        if (!payload || typeof payload !== "object") return;
+        state.plannerDetails = { ...state.plannerDetails, ...payload };
+        if (Array.isArray(payload.steps)) {
+            state.planSteps = payload.steps;
+        }
+        renderPlanSteps();
+        els.plannerDetails.textContent = JSON.stringify(state.plannerDetails, null, 2);
+    }
+
+    function handlePayload(message) {
+        const { stage, type, payload, chunk, error, done } = message;
+        if (message.threadId) {
+            state.lastThreadId = message.threadId;
+            els.threadId.value = message.threadId;
+        }
+        if (stage) {
+            state.currentStage = stage;
+        }
+        if (stage === "SCHEMA_RECALL" && payload?.recalledTables) {
+            state.recalledTables = payload.recalledTables;
+        }
+        if (stage === "SQL_EXECUTE") {
+            if (type === "SQL" && payload?.sql) {
+                state.sql = payload.sql;
+                state.sqlMeta.textContent = payload.resultMode ? `SQL / ${payload.resultMode}` : "SQL ready";
+                els.sqlOutput.textContent = state.sql;
+            }
+            if (type === "RESULT_SET" && payload) {
+                state.columns = payload.columns || [];
+                state.rows = payload.rows || [];
+                renderRows();
+            }
+            if (payload?.resultMode) {
+                state.currentResultMode = payload.resultMode;
+            }
+        }
+        if (stage === "RESULT" && payload?.summary) {
+            state.summary = payload.summary;
+            els.summaryOutput.textContent = state.summary;
+            if (payload.resultMode) {
+                state.currentResultMode = payload.resultMode;
+            }
+            if (payload.planSummary?.steps) {
+                state.planSteps = payload.planSummary.steps;
+                renderPlanSteps();
+            }
+        }
+        if (stage === "PLANNER" && payload) {
+            updatePlannerDetails(payload);
+        }
+        if (stage === "PLAN_EXECUTOR" && payload) {
+            state.sqlRetryCount = payload.sqlRetryCount ?? state.sqlRetryCount;
+            updatePlannerDetails(payload);
+        }
+        if (stage === "HUMAN_FEEDBACK" && payload) {
+            updatePlannerDetails(payload);
+            state.waitingHumanFeedback = payload.status === "WAITING";
+        }
+        if (error) {
+            state.currentResultMode = state.currentResultMode || "error";
+        }
+        if (done && stage) {
+            const meta = payload?.message || payload?.resultMode || payload?.status || (error ? error : "完成");
+            setStageState(stage, error ? "error" : "done", meta);
+        } else if (stage) {
+            setStageState(stage, error ? "error" : "active", chunk || "处理中");
+        }
+        updateStatus();
+    }
+
+    function connect(params) {
+        stopStream();
+        const url = buildUrl(params);
+        appendEventLog("request", url);
+        setStreamStatus("CONNECTING");
+        const source = new EventSource(url);
+        state.eventSource = source;
+
+        source.onopen = () => {
+            setStreamStatus("STREAMING");
+            appendEventLog("system", "SSE connected");
+        };
+
+        source.onmessage = event => {
+            const message = parseEventData(event.data);
+            appendEventLog("message", message);
+            handlePayload(message);
+            if (els.autoScroll.checked) {
+                window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
+            }
+        };
+
+        source.addEventListener("complete", event => {
+            const message = parseEventData(event.data);
+            appendEventLog("complete", message);
+            handlePayload(message);
+            state.waitingHumanFeedback = message?.payload?.status === "WAITING" || state.currentResultMode === "waiting_human_feedback";
+            setStreamStatus(state.waitingHumanFeedback ? "WAITING_HUMAN_FEEDBACK" : "COMPLETED");
+            updateStatus();
+            source.close();
+            state.eventSource = null;
+        });
+
+        source.addEventListener("error", event => {
+            const raw = event?.data ? parseEventData(event.data) : "SSE error / connection closed";
+            appendEventLog("error", raw);
+            if (raw && raw.threadId) {
+                handlePayload(raw);
+            }
+            setStreamStatus("ERROR");
+            updateStatus();
+            source.close();
+            state.eventSource = null;
+        });
+    }
+
+    function startRequest(extra = {}) {
+        const agentId = els.agentId.value.trim() || "1";
+        const query = els.query.value.trim();
+        const threadId = els.threadId.value.trim();
+        if (!query) {
+            alert("请先输入 query。");
+            return;
+        }
+        state.currentAgentId = agentId;
+        state.currentQuery = query;
+        if (!extra.keepPanels) {
+            resetPanels({ keepQuery: true });
+        }
+        const params = {
+            agentId,
+            threadId,
+            query,
+            humanReview: els.humanReview.checked,
+            ...extra.params
+        };
+        connect(params);
+    }
+
+    function submitHumanFeedback(approved) {
+        if (!state.lastThreadId) {
+            alert("当前没有可用的 threadId。");
+            return;
+        }
+        if (!state.currentQuery) {
+            alert("当前没有原始 query，无法继续。");
+            return;
+        }
+        startRequest({
+            keepPanels: true,
+            params: {
+                threadId: state.lastThreadId,
+                humanFeedbackApproved: approved,
+                humanFeedbackComment: els.feedbackComment.value.trim()
+            }
+        });
+    }
+
+    els.startBtn.addEventListener("click", () => startRequest());
+    els.stopBtn.addEventListener("click", () => {
+        stopStream();
+        setStreamStatus("STOPPED");
+    });
+    els.clearBtn.addEventListener("click", () => resetPanels({ keepQuery: false }));
+    els.approveBtn.addEventListener("click", () => submitHumanFeedback(true));
+    els.rejectBtn.addEventListener("click", () => submitHumanFeedback(false));
+
+    initTimeline();
+    updateStatus();
+    setStreamStatus("IDLE");
+</script>
+</body>
+</html>

@@ -649,6 +649,30 @@ Schema 侧：
 - table -> column 两段式 schema recall
 - keyword / vector / hybrid recall
 
+---
+
+## 9. Lite Debug UI（记录时间：2026-05-04）
+
+为了更顺手地联调 `lite-backend` 的 SSE、Graph、Planner、HumanFeedback 和结果收口，当前项目新增了一个轻量调试页：
+
+- `D:\GitHub\DataAgent\data-agent-backend\src\main\resources\static\lite-debug.html`
+
+本地启动 backend 后可直接访问：
+
+- `http://localhost:8080/lite-debug.html`
+
+这个页面当前重点承接的是“测试体验”，不是正式产品前端。它支持：
+
+- 发起 `/api/stream/search-lite` SSE 请求
+- 实时查看 stage 时间线
+- 查看 Planner / PlanExecutor 的 step 信息
+- 查看 SQL、结果集、summary、`resultMode`
+- 在 `waiting_human_feedback` 时直接 approve / reject 继续联调
+
+所以它更准确的定位是：
+
+> **lite-backend 的调试与联调 playground**
+
 还没完全达到的部分：
 
 - agentId 级知识范围控制
