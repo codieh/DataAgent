@@ -40,8 +40,8 @@ import reactor.core.scheduler.Schedulers;
  * <p>
  * 注意：
  * <ul>
- *   <li>这不是生产级检索（无 BM25/无向量相似度）。</li>
- *   <li>当前 tokenize/score 对中文效果较弱；后续要升级检索时，可替换 {@link #tokenize(String)} 与 {@link #score(EvidenceItem, Set)}。</li>
+ *   <li>当前已经接入统一 recall 子系统（BM25 / pgvector / reranker），但整体仍是轻量工程化实现。</li>
+ *   <li>后续 recall 优化优先收敛到 RecallService / RecallEngine 层，而不是在 step 内重复堆检索逻辑。</li>
  * </ul>
  */
 @Component

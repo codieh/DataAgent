@@ -27,13 +27,19 @@ public class HybridRecallEngine implements RecallEngine {
 
 	private final KeywordRecallEngine keywordRecallEngine = new KeywordRecallEngine();
 
+	private final Bm25RecallEngine bm25RecallEngine;
+
 	private final VectorRecallEngine vectorRecallEngine;
 
 	private final PgVectorSearchService pgVectorSearchService;
 
+	private final RecallReranker recallReranker;
+
 	private final String provider;
 
 	private final double vectorWeight;
+
+	private final int candidateMultiplier;
 
 	private final double schemaTableWeight;
 
@@ -46,17 +52,22 @@ public class HybridRecallEngine implements RecallEngine {
 	private final double exactMatchBonus;
 
 	public HybridRecallEngine(EmbeddingClient embeddingClient, PgVectorSearchService pgVectorSearchService,
+			Bm25RecallEngine bm25RecallEngine, RecallReranker recallReranker,
 			@Value("${search.lite.recall.provider:hybrid}") String provider,
 			@Value("${search.lite.recall.vector.weight:0.7}") double vectorWeight,
+			@Value("${search.lite.recall.candidate-multiplier:4}") int candidateMultiplier,
 			@Value("${search.lite.recall.weight.schema-table:1.15}") double schemaTableWeight,
 			@Value("${search.lite.recall.weight.schema-column:1.05}") double schemaColumnWeight,
 			@Value("${search.lite.recall.weight.evidence:0.95}") double evidenceWeight,
 			@Value("${search.lite.recall.weight.document:0.9}") double documentWeight,
 			@Value("${search.lite.recall.weight.exact-match-bonus:0.15}") double exactMatchBonus) {
+		this.bm25RecallEngine = bm25RecallEngine;
 		this.vectorRecallEngine = new VectorRecallEngine(embeddingClient);
 		this.pgVectorSearchService = pgVectorSearchService;
+		this.recallReranker = recallReranker;
 		this.provider = provider == null ? "hybrid" : provider.trim().toLowerCase();
 		this.vectorWeight = Math.max(0, Math.min(1, vectorWeight));
+		this.candidateMultiplier = Math.max(1, candidateMultiplier);
 		this.schemaTableWeight = Math.max(0.1, schemaTableWeight);
 		this.schemaColumnWeight = Math.max(0.1, schemaColumnWeight);
 		this.evidenceWeight = Math.max(0.1, evidenceWeight);
@@ -64,15 +75,34 @@ public class HybridRecallEngine implements RecallEngine {
 		this.exactMatchBonus = Math.max(0, exactMatchBonus);
 	}
 
+	HybridRecallEngine(EmbeddingClient embeddingClient, String provider, double vectorWeight, int candidateMultiplier,
+			double schemaTableWeight, double schemaColumnWeight, double evidenceWeight, double documentWeight,
+			double exactMatchBonus) {
+		this(embeddingClient, disabledPgVector(), new Bm25RecallEngine(1.2, 0.75, 2.0), new LightweightRecallReranker(0.7, 0.3, 0.12),
+				provider, vectorWeight, candidateMultiplier, schemaTableWeight, schemaColumnWeight, evidenceWeight, documentWeight,
+				exactMatchBonus);
+	}
+
 	@Override
 	public List<RecallHit> search(String query, List<RecallDocument> documents, RecallOptions options) {
 		return switch (provider) {
 			case "keyword" -> keywordRecallEngine.search(query, documents, options);
+			case "bm25" -> bm25RecallEngine.search(query, documents, options);
 			case "vector" -> vectorRecallEngine.search(query, documents, options);
 			case "pgvector" -> pgVectorSearch(query, documents, options);
 			case "hybrid-pgvector" -> hybridSearch(query, documents, options, VectorProvider.PGVECTOR);
+			case "bm25-pgvector-rerank" -> rerankedHybridSearch(query, documents, options, VectorProvider.PGVECTOR);
 			default -> hybridSearch(query, documents, options);
 		};
+	}
+
+	private List<RecallHit> rerankedHybridSearch(String query, List<RecallDocument> documents, RecallOptions options,
+			VectorProvider vectorProvider) {
+		RecallOptions effectiveOptions = options == null ? RecallOptions.defaults() : options;
+		RecallOptions candidateOptions = new RecallOptions(Math.max(effectiveOptions.topK() * candidateMultiplier, effectiveOptions.topK()),
+				effectiveOptions.types(), effectiveOptions.requiredMetadata());
+		List<RecallHit> candidates = hybridSearch(query, documents, candidateOptions, vectorProvider);
+		return recallReranker.rerank(query, candidates, effectiveOptions.topK());
 	}
 
 	private List<RecallHit> hybridSearch(String query, List<RecallDocument> documents, RecallOptions options) {
@@ -81,10 +111,11 @@ public class HybridRecallEngine implements RecallEngine {
 
 	private List<RecallHit> hybridSearch(String query, List<RecallDocument> documents, RecallOptions options,
 			VectorProvider vectorProvider) {
-		List<RecallHit> keywordHits = keywordRecallEngine.search(query, documents, options);
+		RecallOptions effectiveOptions = options == null ? RecallOptions.defaults() : options;
+		List<RecallHit> keywordHits = bm25RecallEngine.search(query, documents, effectiveOptions);
 		List<RecallHit> vectorHits = switch (vectorProvider) {
-			case PGVECTOR -> pgVectorSearch(query, documents, options);
-			case LOCAL -> vectorRecallEngine.search(query, documents, options);
+			case PGVECTOR -> pgVectorSearch(query, documents, effectiveOptions);
+			case LOCAL -> vectorRecallEngine.search(query, documents, effectiveOptions);
 		};
 		if (vectorHits.isEmpty()) {
 			return keywordHits;
@@ -100,7 +131,7 @@ public class HybridRecallEngine implements RecallEngine {
 			fused.computeIfAbsent(hit.document().id(), id -> new FusedHit(hit.document()))
 				.vectorScore = hit.score();
 		}
-		int topK = options == null ? RecallOptions.defaults().topK() : options.topK();
+		int topK = effectiveOptions.topK();
 		List<RecallHit> results = fused.values().stream()
 			.map(fusedHit -> fusedHit.toRecallHit(vectorWeight, maxKeywordScore, query, queryTokens))
 			.sorted(Comparator.comparingDouble(RecallHit::score).reversed())
@@ -150,6 +181,12 @@ public class HybridRecallEngine implements RecallEngine {
 				evidenceWeight, documentWeight, summary);
 	}
 
+	private static PgVectorSearchService disabledPgVector() {
+		return new PgVectorSearchService(new com.alibaba.cloud.ai.dataagentbackend.lite.recall.pgvector.PgVectorProperties(false,
+				"jdbc:postgresql://127.0.0.1:5432/data_agent_recall", "postgres", "postgres", "recall_vectors", 1024, false),
+				text -> List.of(0.5, 0.5), new com.fasterxml.jackson.databind.ObjectMapper());
+	}
+
 	private final class FusedHit {
 
 		private final RecallDocument document;
@@ -181,6 +218,7 @@ public class HybridRecallEngine implements RecallEngine {
 			Map<String, Object> metadata = new LinkedHashMap<>(document.metadata());
 			metadata.put("_keywordScore", keywordScore);
 			metadata.put("_keywordNormalized", keywordNormalized);
+			metadata.put("_bm25Score", keywordScore);
 			metadata.put("_vectorScore", vectorScore);
 			metadata.put("_typeWeight", typeWeight);
 			metadata.put("_exactMatchBonus", exactBonus);

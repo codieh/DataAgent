@@ -511,14 +511,15 @@ Schema 侧：
 - model:
   - `bge-m3`
 - recall provider：
-  - `hybrid-pgvector`
+  - `bm25-pgvector-rerank`
 
 实现细节：
 
 - 使用 JDK `HttpClient`
 - 返回 embedding 向量
 - 写入 recall 文档 metadata
-- 将关键词召回与 `pgvector` 召回做分数融合
+- 将 BM25 召回与 `pgvector` 召回做候选融合
+- 再通过 lightweight reranker 做最终排序收敛
 
 配合：
 
@@ -545,14 +546,16 @@ Schema 侧：
 当前 recall provider 支持：
 
 - `keyword`
+- `bm25`
 - `vector`
 - `hybrid`
 - `pgvector`
 - `hybrid-pgvector`
+ - `bm25-pgvector-rerank`
 
 默认已经切到：
 
-- `hybrid-pgvector`
+- `bm25-pgvector-rerank`
 
 ### 6.2 当前 `pgvector` 的工作方式
 
@@ -564,11 +567,13 @@ Schema 侧：
 3. 使用：
    - `embedding <=> queryVector`
    做余弦距离检索
-4. 返回候选命中后，再和关键词召回一起进入 `HybridRecallEngine` 融合
+4. 返回候选命中后，再和 BM25 候选一起进入 `HybridRecallEngine` 融合
+5. 候选融合后，再交给 lightweight reranker 做最后排序
 
-这次切换的重点是：
+这次这轮 recall 升级的重点是：
 
 - **替换向量库**
+- **把 lexical / dense / rerank 三层结构拆清楚**
 - **不推翻现有 recall 主结构**
 
 所以这不是一次“大改 recall”，而是：
@@ -583,7 +588,13 @@ Schema 侧：
 
 当前关键配置：
 
-- `search.lite.recall.provider: hybrid-pgvector`
+- `search.lite.recall.provider: bm25-pgvector-rerank`
+- `search.lite.recall.bm25.k1`
+- `search.lite.recall.bm25.b`
+- `search.lite.recall.bm25.title-boost`
+- `search.lite.recall.rerank.base-score-weight`
+- `search.lite.recall.rerank.coverage-weight`
+- `search.lite.recall.rerank.exact-match-boost`
 - `search.lite.recall.pgvector.url`
 - `search.lite.recall.pgvector.username`
 - `search.lite.recall.pgvector.password`

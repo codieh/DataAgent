@@ -23,8 +23,17 @@ search:
       sql-retry:
         max-attempts: 3
     recall:
-      # keyword|vector|hybrid|pgvector|hybrid-pgvector
-      provider: hybrid-pgvector
+      # keyword|bm25|vector|hybrid|pgvector|hybrid-pgvector|bm25-pgvector-rerank
+      provider: bm25-pgvector-rerank
+      candidate-multiplier: 4
+      bm25:
+        k1: 1.2
+        b: 0.75
+        title-boost: 2.0
+      rerank:
+        base-score-weight: 0.7
+        coverage-weight: 0.3
+        exact-match-boost: 0.12
       weight:
         schema-table: 1.15
         schema-column: 1.05

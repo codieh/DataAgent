@@ -461,9 +461,9 @@ Document RAG V1 完成时，至少应满足：
 
 ## 18.1 pgvector 接入现状（记录时间：2026-04-29）
 
-当前 lite-backend 已新增 `pgvector` 向量检索实现，并把默认 recall provider 切到了：
+当前 lite-backend 已新增 `pgvector` 向量检索实现，并且默认 recall provider 已继续升级到：
 
-- `hybrid-pgvector`
+- `bm25-pgvector-rerank`
 
 实现方式保持和当前 recall 主结构一致的分层思路：
 
@@ -474,6 +474,7 @@ Document RAG V1 完成时，至少应满足：
 - `HybridRecallEngine` 现在支持：
   - `pgvector`
   - `hybrid-pgvector`
+  - `bm25-pgvector-rerank`
 
 也就是说，这次切换的重点是：
 
@@ -485,10 +486,11 @@ Document RAG V1 完成时，至少应满足：
 1. `RecallEmbeddingService` 先为 `RecallDocument` 补 embedding
 2. `PgVectorSearchService` 在查询时可选同步文档到 PostgreSQL
 3. 使用 `embedding <=> queryVector` 做余弦距离检索
-4. `HybridRecallEngine` 再把：
-   - 关键词召回
+4. `HybridRecallEngine` 先把：
+   - BM25 召回
    - pgvector 召回
-   做分数融合
+   做候选融合
+5. 再通过 lightweight reranker 做最终排序收敛
 
 ### 当前边界
 
@@ -562,16 +564,284 @@ Document RAG V1 完成时，至少应满足：
 
 ---
 
-## 18. `bge-m3` 对当前 Recall 设计的启发（记录时间：2026-04-01 10:00）
+## 18.2 BM25 + pgvector + reranker（记录时间：2026-05-04）
 
-**TODO**：思考为什么不能将bge-m3直接用于keywordRecall和vectorRecall。
+当前 recall 已开始按三段式实现：
+
+1. **BM25**
+   - 强化表名、列名、指标词、业务术语等 lexical 命中
+2. **pgvector**
+   - 负责 dense semantic recall
+3. **reranker**
+   - 在融合候选后做 query-aware 最终排序收敛
+
+当前这版 reranker 还是轻量实现：
+
+- 不是额外的 cross-encoder 服务
+- 而是先基于 query token 覆盖率、标题/表列精确命中、融合分数做最终重排
+
+这一步的价值是先把 recall 清晰拆成：
+
+- lexical
+- semantic
+- final ranking
+
+后面如果评测证明值得升级，再继续替换成更强的模型型 reranker。
+
+---
+
+## 18. BM25 与 `bge-m3` 的理论补充（记录时间：2026-05-04）
 
 当前项目使用本地 embedding 模型：
 
 - `bge-m3`
 - `http://localhost:11434/v1/embeddings`
 
-虽然当前代码里的 hybrid recall 仍是“关键词 + 向量分数融合”的轻量实现，但 `bge-m3` 本身强调的多粒度、多能力检索思路，对当前项目后续演进有很强启发。
+虽然当前代码里的 hybrid recall 仍是“关键词 + 向量分数融合”的轻量实现，但如果要进一步判断：
+
+- 为什么 `BM25 + vector` 往往比“简易关键词命中 + vector”更稳
+- 为什么不能把 `bge-m3` 简单理解成“一个向量模型就能替代全部 recall”
+
+就需要先补一点检索理论背景。
+
+### 18.1 BM25 是什么
+
+BM25 可以理解为：
+
+> **在传统词项检索里，对“这个词在本文里出现得够不够多、够不够稀有、文档会不会太长”做综合平衡的一种排序函数。**
+
+它不是 embedding，也不依赖语义空间，而是典型的 lexical retrieval。
+
+BM25 最常见的打分形式可以写成：
+
+```text
+score(D, Q) = Σ IDF(qi) * ( tf(qi, D) * (k1 + 1) )
+                         / ( tf(qi, D) + k1 * (1 - b + b * |D| / avgdl) )
+```
+
+其中：
+
+- `D`
+  - 文档
+- `Q`
+  - 查询
+- `qi`
+  - 查询里的某个词项
+- `tf(qi, D)`
+  - 词项 `qi` 在文档 `D` 中出现的次数
+- `|D|`
+  - 文档长度
+- `avgdl`
+  - 语料平均文档长度
+- `IDF(qi)`
+  - 逆文档频率，衡量这个词是否稀有
+- `k1`
+  - 控制词频饱和速度
+- `b`
+  - 控制文档长度归一化强度
+
+### 18.2 BM25 的三个核心思想
+
+#### 1）词频有用，但收益递减
+
+一个词在文档里出现 3 次，通常比出现 1 次更相关；
+但出现 30 次未必比 3 次强很多。
+
+BM25 用 `k1` 控制这种“边际收益递减”，避免高频词把分数无限拉高。
+
+#### 2）稀有词更有区分力
+
+如果一个词在几乎所有文档里都出现，那它对排序帮助很小；
+如果一个词只出现在很少数文档里，它往往更能区分相关性。
+
+这就是 `IDF` 的作用。
+
+在当前项目场景里，像下面这些词通常就更像高价值词项：
+
+- 指标缩写：`GMV`
+- 表名：`order_items`
+- 列名：`unit_price`
+- 业务短语：`高消费用户`
+
+#### 3）长文档不能天然占便宜
+
+长文本因为包含词更多，天然更容易“碰巧命中” query。
+
+BM25 用文档长度归一化削弱这种偏差，避免长 chunk 因为字多而虚高。
+
+### 18.3 BM25 为什么比当前简易 `KeywordRecallEngine` 更强
+
+当前 lite backend 的关键词召回本质上是：
+
+- token 命中 title：加较高分
+- token 命中 content：加较低分
+- 最后累加排序
+
+它的优点是简单、好调试，但和 BM25 相比，少了三类关键能力：
+
+- **没有 IDF**
+  - 分不清“高价值稀有词”和“普通常见词”
+- **没有词频饱和**
+  - 重复出现的词容易被简单累加放大
+- **没有长度归一化**
+  - 长文档 chunk 更容易天然得高分
+
+所以在以下场景中，BM25 通常会更稳：
+
+- schema 表名/列名精确召回
+- FAQ / evidence 中的规则短语检索
+- query 很短，但关键词特别强
+- 文档 chunk 很多，需要控制长文本偏置
+
+### 18.4 BM25 的边界
+
+BM25 强在词面，不强在语义。
+
+它不擅长：
+
+- 同义改写
+- 自然语言绕写
+- 跨语言匹配
+- “字面不重合但语义相近”的问题
+
+例如：
+
+- query：`高价值客户`
+- 文档只写：`核心用户`
+
+如果没有共享词项，BM25 很可能召不出来，或者排序靠后。
+
+这也是为什么 RAG 里常见的是：
+
+> **BM25 负责 lexical precision，vector retrieval 负责 semantic recall。**
+
+### 18.5 `bge-m3` 是什么
+
+`bge-m3` 可以理解为一个面向检索任务的统一表示模型，名称里的 `M3` 常被概括为：
+
+- **Multi-Function**
+- **Multi-Lingual**
+- **Multi-Granularity**
+
+它的重要特点不是“只有一个 dense embedding 很强”，而是：
+
+> **同一个模型家族，既考虑 dense retrieval，也考虑 sparse retrieval，还考虑 multi-vector retrieval。**
+
+从检索系统视角看，它提供的不是单一能力，而是一种“统一检索表示”的思路。
+
+### 18.6 `bge-m3` 的架构直觉
+
+从工程理解上，可以把 `bge-m3` 的能力拆成三层：
+
+#### 1）Dense representation
+
+把 query / document 编码成一个稠密向量。
+
+优点：
+
+- 适合语义相似
+- 对改写、同义表达更稳
+- 适合一般性自然语言问题
+
+这也是当前项目现在真正接入并使用的部分：
+
+- `RecallEmbeddingService`
+- `VectorRecallEngine`
+- `PgVectorSearchService`
+
+#### 2）Sparse / lexical-aware representation
+
+`bge-m3` 并不只会给出 dense 向量，它的设计目标之一就是让模型保留 lexical 信号，
+即：
+
+- 哪些 token 很关键
+- 哪些词项需要更大权重
+
+这一层能力的目标，不是完全复制 BM25，
+而是让模型学到“更智能的稀疏检索信号”。
+
+#### 3）Multi-vector representation
+
+单向量会把整段文本压缩成一个向量，信息密度有限；
+多向量表示则允许 query 与 document 在更细粒度上匹配。
+
+它更适合：
+
+- 长文本
+- 多约束 query
+- 局部证据匹配
+
+这对 document RAG 很重要，因为一个 chunk 里常常混有：
+
+- 定义
+- 例外条件
+- 公式
+- 补充说明
+
+如果只用单向量，容易把这些局部信号压平。
+
+### 18.7 为什么不能把 `bge-m3` 直接等同于当前 `keywordRecall`
+
+这是之前留下的一个关键 TODO，这里直接给出结论：
+
+> **不能把 `bge-m3` 直接当成当前 `KeywordRecallEngine` 的无缝替代品，因为两者优化目标和输出形式并不一样。**
+
+原因主要有四个：
+
+#### 1）当前接入方式只暴露了 dense embedding
+
+当前项目里调用的是：
+
+- `/v1/embeddings`
+
+这条链路拿到的是 dense vector，不是 `bge-m3` 的完整 sparse / multi-vector 检索信号。
+
+所以当前代码实际上只用了它的 dense 能力，并没有真正把它当成“统一 hybrid 检索模型”来用。
+
+#### 2）keyword recall 需要倒排式词项可解释性
+
+当前 `KeywordRecallEngine` 的行为非常直接：
+
+- 哪个 token 命中
+- 命中了 title 还是 content
+- 为什么这个文档排前面
+
+都很容易解释。
+
+而 dense embedding 的分数是语义相似度，不天然具备：
+
+- token 级命中可解释性
+- 稀有词精确控制
+- 表名列名这类结构词的硬匹配偏好
+
+#### 3）schema recall 特别依赖精确词面命中
+
+在当前项目里：
+
+- `SCHEMA_TABLE`
+- `SCHEMA_COLUMN`
+
+很多时候要求的不是“语义差不多”，而是：
+
+- 表名尽量准
+- 列名尽量准
+- 业务短语和字段别名尽量准
+
+这类任务天然更需要 BM25 / sparse / exact match 一侧的能力。
+
+#### 4）模型能力和系统能力不是一回事
+
+即使 `bge-m3` 模型本身支持更丰富的检索表示，
+系统如果没有把这些表示以：
+
+- sparse field
+- multi-vector field
+- hybrid ranker
+
+的形式真正接进索引和搜索引擎，
+那么它在工程上仍然只是“一个 dense embedding 模型”。
+
+### 18.8 为什么 `bge-m3` 仍然对当前 Recall 很重要
 
 ### 18.1 启发一：不要把 keyword recall 和 vector recall 完全割裂
 
@@ -589,7 +859,7 @@ Document RAG V1 完成时，至少应满足：
 - `evidence recall` 需要保留术语、规则短语的关键词能力
 - `document recall` 需要利用语义召回补齐同义表达和自然语言问法
 
-### 18.2 启发二：metadata 与 chunk 质量会直接决定 hybrid 是否有效
+### 18.9 启发二：metadata 与 chunk 质量会直接决定 hybrid 是否有效
 
 `bge-m3` 可以提供更强的语义检索能力，但前提仍然是：
 
@@ -609,7 +879,7 @@ Document RAG V1 完成时，至少应满足：
 - metadata 质量
 - source/type 边界
 
-### 18.3 启发三：更适合采用“先筛后排”的检索链路
+### 18.10 启发三：更适合采用“先筛后排”的检索链路
 
 基于 `bge-m3` 的特点，当前项目的 recall 更适合继续演进为：
 
@@ -623,7 +893,7 @@ Document RAG V1 完成时，至少应满足：
 
 这比当前“一次 search 直接决定最终 topK”更稳，也更符合多知识源 recall 的实际需求。
 
-### 18.4 启发四：不同知识源应该有不同的融合策略
+### 18.11 启发四：不同知识源应该有不同的融合策略
 
 即使都使用 `bge-m3` 做 embedding，以下几类知识也不应完全等权：
 
@@ -640,7 +910,7 @@ Document RAG V1 完成时，至少应满足：
 
 也就是说，模型可以统一，但召回策略不能统一为“一套简单权重打天下”。
 
-### 18.5 对当前代码的直接落地建议
+### 18.12 对当前代码的直接落地建议
 
 基于 `bge-m3` 的启发，后续代码层最值得做的不是“换模型”，而是以下演进：
 
@@ -659,7 +929,30 @@ Document RAG V1 完成时，至少应满足：
     - metadata filter 命中
     - rerank/fused score
 
-### 18.6 一句话总结
+### 18.13 对当前项目的最终理论结论
+
+结合 BM25 和 `bge-m3`，当前项目可以得出一个比较明确的理论判断：
+
+- **BM25**
+  - 负责词面精确命中
+  - 适合 schema / 术语 / 规则短语
+- **Dense vector**
+  - 负责语义召回
+  - 适合定义改写、自然语言问法、背景说明
+- **`bge-m3`**
+  - 提醒我们不要把检索能力只理解成“单向量相似度”
+  - 更合理的方向是统一 dense / sparse / 多粒度检索思路
+
+所以当前 backend lite 后续最合理的 recall 演进方向不是：
+
+- 只加强关键词命中
+- 或只更换 embedding 模型
+
+而是：
+
+> **在 metadata 粗筛的基础上，用更正规的 sparse/BM25 能力补强 lexical recall，再与 dense retrieval 结合，并逐步引入更细粒度的排序策略。**
+
+### 18.14 一句话总结
 
 `bge-m3` 对当前项目最大的启发不是“模型更强”，而是：
 
