@@ -3,6 +3,7 @@ package com.alibaba.cloud.ai.dataagentbackend.lite.graph.node;
 import com.alibaba.cloud.ai.dataagentbackend.llm.anthropic.AnthropicClient;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphMessageEmitter;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphMessageNormalizer;
+import com.alibaba.cloud.ai.dataagentbackend.lite.trace.SearchLiteTraceRecorder;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import org.junit.jupiter.api.Test;
@@ -37,7 +38,8 @@ class SearchLitePlannerGraphNodeTest {
 				]}
 				"""));
 
-		SearchLitePlannerGraphNode node = new SearchLitePlannerGraphNode(anthropicClient, objectMapper, emitter, 5);
+		SearchLitePlannerGraphNode node = new SearchLitePlannerGraphNode(anthropicClient, objectMapper, emitter,
+				mock(SearchLiteTraceRecorder.class), 5);
 		var result = node.apply(state);
 
 		assertTrue((Boolean) result.get(PLANNER_ENABLED));

@@ -1,6 +1,7 @@
 package com.alibaba.cloud.ai.dataagentbackend.lite.graph.node;
 
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphStateKeys;
+import com.alibaba.cloud.ai.dataagentbackend.lite.trace.SearchLiteTraceRecorder;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import org.junit.jupiter.api.Test;
 
@@ -15,7 +16,8 @@ import static org.mockito.Mockito.when;
 
 class SearchLitePrepareResultGraphNodeTest {
 
-	private final SearchLitePrepareResultGraphNode node = new SearchLitePrepareResultGraphNode();
+	private final SearchLitePrepareResultGraphNode node = new SearchLitePrepareResultGraphNode(
+			mock(SearchLiteTraceRecorder.class));
 
 	@Test
 	void should_mark_no_schema_mode_when_no_recalled_tables() {

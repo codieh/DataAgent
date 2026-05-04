@@ -3,6 +3,7 @@ package com.alibaba.cloud.ai.dataagentbackend.lite.graph.node;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLitePlanStep;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphMessageEmitter;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphMessageNormalizer;
+import com.alibaba.cloud.ai.dataagentbackend.lite.trace.SearchLiteTraceRecorder;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
@@ -47,7 +48,7 @@ class SearchLitePlanExecutorGraphNodeTest {
 		when(state.value(ERROR)).thenReturn(Optional.of(""));
 		when(state.value(RESULT_MODE)).thenReturn(Optional.of(""));
 
-		SearchLitePlanExecutorGraphNode node = new SearchLitePlanExecutorGraphNode(emitter(), 2);
+		SearchLitePlanExecutorGraphNode node = new SearchLitePlanExecutorGraphNode(emitter(), traceRecorder(), 2);
 		Map<String, Object> result = node.apply(state);
 
 		@SuppressWarnings("unchecked")
@@ -73,7 +74,7 @@ class SearchLitePlanExecutorGraphNodeTest {
 		when(state.value(CURRENT_PLAN_STEP_INDEX)).thenReturn(Optional.of(0));
 		when(state.value(PLAN_REPAIR_COUNT)).thenReturn(Optional.of(0));
 
-		SearchLitePlanExecutorGraphNode node = new SearchLitePlanExecutorGraphNode(emitter(), 0);
+		SearchLitePlanExecutorGraphNode node = new SearchLitePlanExecutorGraphNode(emitter(), traceRecorder(), 0);
 		Map<String, Object> result = node.apply(state);
 
 		assertEquals(Boolean.FALSE, result.get(PLAN_VALIDATION_STATUS));
@@ -84,6 +85,10 @@ class SearchLitePlanExecutorGraphNodeTest {
 
 	private SearchLiteGraphMessageEmitter emitter() {
 		return new SearchLiteGraphMessageEmitter(new SearchLiteGraphMessageNormalizer(new ObjectMapper()));
+	}
+
+	private SearchLiteTraceRecorder traceRecorder() {
+		return mock(SearchLiteTraceRecorder.class);
 	}
 
 }

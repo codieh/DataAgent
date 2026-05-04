@@ -3,6 +3,7 @@ package com.alibaba.cloud.ai.dataagentbackend.lite.graph.node;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLitePlanStep;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphMessageEmitter;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphMessageNormalizer;
+import com.alibaba.cloud.ai.dataagentbackend.lite.trace.SearchLiteTraceRecorder;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
@@ -66,7 +67,8 @@ class SearchLiteHumanFeedbackGraphNodeTest {
 
 	private SearchLiteHumanFeedbackGraphNode node() {
 		return new SearchLiteHumanFeedbackGraphNode(
-				new SearchLiteGraphMessageEmitter(new SearchLiteGraphMessageNormalizer(new ObjectMapper())), 2);
+				new SearchLiteGraphMessageEmitter(new SearchLiteGraphMessageNormalizer(new ObjectMapper())),
+				mock(SearchLiteTraceRecorder.class), 2);
 	}
 
 }

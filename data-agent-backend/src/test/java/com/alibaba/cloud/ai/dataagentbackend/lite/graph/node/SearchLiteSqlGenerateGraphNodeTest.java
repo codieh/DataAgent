@@ -5,6 +5,7 @@ import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteState;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphStepOutputAdapter;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStep;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStepResult;
+import com.alibaba.cloud.ai.dataagentbackend.lite.trace.SearchLiteTraceRecorder;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Flux;
@@ -44,7 +45,8 @@ class SearchLiteSqlGenerateGraphNodeTest {
 		when(outputAdapter.adapt(any(), any())).thenReturn(Map.of(THREAD_ID, "thread-7", QUERY, "列出高消费用户",
 				SQL, "SELECT u.id, SUM(o.total_amount) AS total_spending FROM users u JOIN orders o ON u.id = o.user_id GROUP BY u.id"));
 
-		SearchLiteSqlGenerateGraphNode node = new SearchLiteSqlGenerateGraphNode(java.util.List.of(sqlGenerateStep), outputAdapter);
+		SearchLiteSqlGenerateGraphNode node = new SearchLiteSqlGenerateGraphNode(java.util.List.of(sqlGenerateStep),
+				outputAdapter, traceRecorder());
 
 		Map<String, Object> result = node.apply(graphState);
 
@@ -52,6 +54,10 @@ class SearchLiteSqlGenerateGraphNodeTest {
 		assertEquals("列出高消费用户", result.get(QUERY));
 		assertEquals("SELECT u.id, SUM(o.total_amount) AS total_spending FROM users u JOIN orders o ON u.id = o.user_id GROUP BY u.id",
 				result.get(SQL));
+	}
+
+	private SearchLiteTraceRecorder traceRecorder() {
+		return mock(SearchLiteTraceRecorder.class);
 	}
 
 }

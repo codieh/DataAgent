@@ -4,6 +4,7 @@ import com.alibaba.cloud.ai.dataagentbackend.lite.recall.embedding.EmbeddingClie
 import com.alibaba.cloud.ai.dataagentbackend.lite.recall.pgvector.PgVectorSearchService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Component;
@@ -51,6 +52,7 @@ public class HybridRecallEngine implements RecallEngine {
 
 	private final double exactMatchBonus;
 
+	@Autowired
 	public HybridRecallEngine(EmbeddingClient embeddingClient, PgVectorSearchService pgVectorSearchService,
 			Bm25RecallEngine bm25RecallEngine, RecallReranker recallReranker,
 			@Value("${search.lite.recall.provider:hybrid}") String provider,
