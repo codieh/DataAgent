@@ -18,13 +18,13 @@ search:
       max-field-length: 1000
     trace:
       enabled: true
-      dir: D:\GitHub\DataAgent\data-agent-backend\data\traces
+      dir: data/traces
     graph:
       sql-retry:
         max-attempts: 3
     recall:
       # keyword|bm25|vector|hybrid|pgvector|hybrid-pgvector|bm25-pgvector-rerank
-      provider: bm25-pgvector-rerank
+      provider: hybrid-pgvector
       candidate-multiplier: 4
       bm25:
         k1: 1.2
@@ -41,14 +41,14 @@ search:
         document: 0.9
         exact-match-bonus: 0.15
       store:
-        dir: D:\GitHub\DataAgent\data-agent-backend\data\recall
+        dir: data/recall
       vector:
         top-k: 5
         weight: 0.7
         embedding:
-          base-url: "${RECALL_EMBEDDING_BASE_URL:http://localhost:11434}"
+          base-url: "${RECALL_EMBEDDING_BASE_URL:http://127.0.0.1:1234}"
           api-key: "${RECALL_EMBEDDING_API_KEY:}"
-          model: "${RECALL_EMBEDDING_MODEL:bge-m3}"
+          model: "${RECALL_EMBEDDING_MODEL:text-embedding-bge-m3}"
           path: "${RECALL_EMBEDDING_PATH:/v1/embeddings}"
       pgvector:
         enabled: ${RECALL_PGVECTOR_ENABLED:true}
@@ -69,7 +69,7 @@ search:
         # none|minimax
         provider: minimax
     document:
-      dir: D:\GitHub\DataAgent\data-agent-backend\data\documents
+      dir: data/documents
       top-k: 3
       chunk:
         max-chars: 400
@@ -101,7 +101,7 @@ llm:
     base-url: https://api.minimaxi.com/anthropic
     # 推荐用环境变量注入，不要把 key 写进仓库
     # export LLM_ANTHROPIC_API_KEY=...
-    api-key: "${LLM_ANTHROPIC_API_KEY:}"
+    api-key: "${LLM_MINIMAX_API_KEY:}"
     model: MiniMax-M2.7
     temperature: 0.8
     max-tokens: 8192

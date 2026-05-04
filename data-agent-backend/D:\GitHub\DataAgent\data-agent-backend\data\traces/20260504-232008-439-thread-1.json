@@ -1,0 +1,74 @@
+{
+  "traceId" : "39d584f5-376b-4c00-b94c-957fd3617e2e",
+  "threadId" : "thread-1",
+  "agentId" : "agent-1",
+  "query" : "查询订单信息",
+  "mode" : "graph",
+  "resumed" : false,
+  "startedAt" : "2026-05-04T15:20:08.439632Z",
+  "endedAt" : "2026-05-04T15:20:18.450704Z",
+  "durationMs" : 10011,
+  "finalIntentClassification" : null,
+  "finalResultMode" : null,
+  "finalPlanFinishedReason" : null,
+  "finalError" : null,
+  "finishSignal" : "cancel",
+  "steps" : [ {
+    "stage" : "INTENT",
+    "route" : "graph-step",
+    "startedAt" : "2026-05-04T15:20:08.458512Z",
+    "endedAt" : "2026-05-04T15:20:08.770512Z",
+    "durationMs" : 312,
+    "inputSummary" : {
+      "query" : "查询订单信息",
+      "canonicalQuery" : "",
+      "recallQuery" : "查询订单信息",
+      "effectiveQuery" : "查询订单信息",
+      "currentPlanStepIndex" : 0
+    },
+    "outputSummary" : {
+      "intentClassification" : "DATA_ANALYSIS",
+      "resultMode" : "",
+      "error" : ""
+    },
+    "error" : null
+  }, {
+    "stage" : "EVIDENCE",
+    "route" : "graph-step",
+    "startedAt" : "2026-05-04T15:20:08.774780Z",
+    "endedAt" : "2026-05-04T15:20:09.092780Z",
+    "durationMs" : 318,
+    "inputSummary" : {
+      "query" : "查询订单信息",
+      "canonicalQuery" : "",
+      "recallQuery" : "查询订单信息",
+      "effectiveQuery" : "查询订单信息",
+      "currentPlanStepIndex" : 0
+    },
+    "outputSummary" : {
+      "intentClassification" : "DATA_ANALYSIS",
+      "resultMode" : "",
+      "error" : ""
+    },
+    "error" : null
+  }, {
+    "stage" : "SCHEMA",
+    "route" : "graph-step",
+    "startedAt" : "2026-05-04T15:20:09.101230Z",
+    "endedAt" : "2026-05-04T15:20:09.167230Z",
+    "durationMs" : 66,
+    "inputSummary" : {
+      "query" : "查询订单信息",
+      "canonicalQuery" : "",
+      "recallQuery" : "查询订单信息",
+      "effectiveQuery" : "查询订单信息",
+      "currentPlanStepIndex" : 0
+    },
+    "outputSummary" : {
+      "intentClassification" : "DATA_ANALYSIS",
+      "resultMode" : "",
+      "error" : ""
+    },
+    "error" : null
+  } ]
+}

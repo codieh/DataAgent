@@ -344,6 +344,21 @@
                 </div>
             </div>
 
+            <div class="card">
+                <div class="section-title">
+                    <h2>索引初始化</h2>
+                    <span class="pill" id="indexStatusPill">未检查</span>
+                </div>
+                <div class="button-row" style="margin-bottom:12px;">
+                    <button class="secondary" id="refreshIndexStatusBtn">刷新状态</button>
+                    <button class="secondary" id="initEvidenceBtn">初始化 Evidence</button>
+                    <button class="secondary" id="initDocumentsBtn">初始化 Documents</button>
+                    <button class="secondary" id="initSchemaBtn">初始化 Schema</button>
+                    <button class="primary" id="initAllBtn">初始化 All</button>
+                </div>
+                <pre id="indexStatusOutput">还没有索引状态。</pre>
+            </div>
+
             <div class="card" id="feedbackCard">
                 <div class="section-title">
                     <h2>HumanFeedback</h2>
@@ -476,6 +491,8 @@
         eventCount: 0
     };
 
+    const TERMINAL_STAGES = new Set(["RESULT"]);
+
     const els = {
         agentId: document.getElementById("agentId"),
         threadId: document.getElementById("threadId"),
@@ -488,6 +505,13 @@
         approveBtn: document.getElementById("approveBtn"),
         rejectBtn: document.getElementById("rejectBtn"),
         feedbackComment: document.getElementById("feedbackComment"),
+        refreshIndexStatusBtn: document.getElementById("refreshIndexStatusBtn"),
+        initEvidenceBtn: document.getElementById("initEvidenceBtn"),
+        initDocumentsBtn: document.getElementById("initDocumentsBtn"),
+        initSchemaBtn: document.getElementById("initSchemaBtn"),
+        initAllBtn: document.getElementById("initAllBtn"),
+        indexStatusPill: document.getElementById("indexStatusPill"),
+        indexStatusOutput: document.getElementById("indexStatusOutput"),
         feedbackStatus: document.getElementById("feedbackStatus"),
         streamStatus: document.getElementById("streamStatus"),
         statusThreadId: document.getElementById("statusThreadId"),
@@ -616,6 +640,8 @@
         els.eventCount.textContent = "0 events";
         els.plannerMeta.textContent = "steps: 0";
         setStreamStatus("IDLE");
+        els.indexStatusPill.textContent = "未检查";
+        els.indexStatusOutput.textContent = "还没有索引状态。";
         updateStatus();
     }
 
@@ -701,6 +727,60 @@
         els.plannerDetails.textContent = JSON.stringify(state.plannerDetails, null, 2);
     }
 
+    function setIndexStatusLabel(text) {
+        els.indexStatusPill.textContent = text;
+    }
+
+    async function fetchJson(url, options = {}) {
+        const response = await fetch(url, {
+            method: options.method || "GET",
+            headers: {
+                "Content-Type": "application/json"
+            }
+        });
+        const text = await response.text();
+        let payload;
+        try {
+            payload = text ? JSON.parse(text) : {};
+        } catch (e) {
+            payload = { raw: text };
+        }
+        if (!response.ok) {
+            throw new Error(typeof payload === "object" ? JSON.stringify(payload) : String(payload));
+        }
+        return payload;
+    }
+
+    async function refreshIndexStatus() {
+        setIndexStatusLabel("检查中...");
+        try {
+            const payload = await fetchJson("/api/index/status");
+            els.indexStatusOutput.textContent = JSON.stringify(payload, null, 2);
+            setIndexStatusLabel("状态已刷新");
+            appendEventLog("index-status", payload);
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            els.indexStatusOutput.textContent = `索引状态获取失败：\n${message}`;
+            setIndexStatusLabel("状态失败");
+            appendEventLog("index-status-error", message);
+        }
+    }
+
+    async function runIndexInit(endpoint, label) {
+        setIndexStatusLabel(`${label}中...`);
+        try {
+            const payload = await fetchJson(endpoint, { method: "POST" });
+            els.indexStatusOutput.textContent = JSON.stringify(payload, null, 2);
+            setIndexStatusLabel(`${label}完成`);
+            appendEventLog("index-init", { endpoint, payload });
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            els.indexStatusOutput.textContent = `${label}失败：\n${message}`;
+            setIndexStatusLabel(`${label}失败`);
+            appendEventLog("index-init-error", { endpoint, message });
+        }
+    }
+
     function handlePayload(message) {
         const { stage, type, payload, chunk, error, done } = message;
         if (message.threadId) {
@@ -753,13 +833,81 @@
         if (error) {
             state.currentResultMode = state.currentResultMode || "error";
         }
-        if (done && stage) {
-            const meta = payload?.message || payload?.resultMode || payload?.status || (error ? error : "完成");
+        if (stage === "RESULT" && payload?.resultMode) {
+            state.currentResultMode = payload.resultMode;
+        }
+        const stageCompleted = Boolean(stage) && (done || isStageCompletedByPayload(message));
+        if (stageCompleted && stage) {
+            const meta = resolveStageMeta(message);
             setStageState(stage, error ? "error" : "done", meta);
         } else if (stage) {
             setStageState(stage, error ? "error" : "active", chunk || "处理中");
         }
         updateStatus();
+    }
+
+    function isStageCompletedByPayload(message) {
+        const { stage, type, payload, chunk, error } = message;
+        if (!stage || error || !payload || chunk) {
+            return false;
+        }
+        switch (stage) {
+            case "INTENT":
+                return Boolean(payload.classification);
+            case "EVIDENCE":
+                return Array.isArray(payload.evidences) || Array.isArray(payload.documents);
+            case "SCHEMA":
+                return Array.isArray(payload.tables) || typeof payload.schemaTextLen === "number";
+            case "SCHEMA_RECALL":
+                return Array.isArray(payload.recalledTables);
+            case "ENHANCE":
+                return Boolean(payload.canonicalQuery);
+            case "SQL_GENERATE":
+                return Boolean(payload.sql) || typeof payload.sqlLen === "number";
+            case "SQL_EXECUTE":
+                return type === "RESULT_SET" || Boolean(payload.resultMode);
+            default:
+                return false;
+        }
+    }
+
+    function resolveStageMeta(message) {
+        const { stage, type, payload, error } = message;
+        if (error) {
+            return error;
+        }
+        if (payload?.message) {
+            return payload.message;
+        }
+        if (payload?.resultMode) {
+            return payload.resultMode;
+        }
+        if (payload?.status) {
+            return payload.status;
+        }
+        switch (stage) {
+            case "INTENT":
+                return payload?.classification || "完成";
+            case "EVIDENCE":
+                return payload?.rewrittenQuery ? "证据召回完成" : "完成";
+            case "SCHEMA":
+                return Array.isArray(payload?.tables) ? `schema tables: ${payload.tables.length}` : "完成";
+            case "SCHEMA_RECALL":
+                return Array.isArray(payload?.recalledTables)
+                    ? `recalled: ${payload.recalledTables.join(", ")}`
+                    : "完成";
+            case "ENHANCE":
+                return payload?.canonicalQuery || "完成";
+            case "SQL_GENERATE":
+                return payload?.sql ? "SQL ready" : "完成";
+            case "SQL_EXECUTE":
+                if (type === "RESULT_SET") {
+                    return `${Array.isArray(payload?.rows) ? payload.rows.length : 0} rows`;
+                }
+                return payload?.resultMode || "执行完成";
+            default:
+                return "完成";
+        }
     }
 
     function connect(params) {
@@ -788,11 +936,15 @@
             const message = parseEventData(event.data);
             appendEventLog("complete", message);
             handlePayload(message);
-            state.waitingHumanFeedback = message?.payload?.status === "WAITING" || state.currentResultMode === "waiting_human_feedback";
-            setStreamStatus(state.waitingHumanFeedback ? "WAITING_HUMAN_FEEDBACK" : "COMPLETED");
-            updateStatus();
-            source.close();
-            state.eventSource = null;
+            const terminal = message?.stage && TERMINAL_STAGES.has(message.stage);
+            if (terminal) {
+                state.waitingHumanFeedback = message?.payload?.status === "WAITING"
+                    || state.currentResultMode === "waiting_human_feedback";
+                setStreamStatus(state.waitingHumanFeedback ? "WAITING_HUMAN_FEEDBACK" : "COMPLETED");
+                updateStatus();
+                source.close();
+                state.eventSource = null;
+            }
         });
 
         source.addEventListener("error", event => {
@@ -810,7 +962,9 @@
 
     function startRequest(extra = {}) {
         const agentId = els.agentId.value.trim() || "1";
-        const query = els.query.value.trim();
+        const query = Object.prototype.hasOwnProperty.call(extra, "query")
+            ? String(extra.query || "").trim()
+            : els.query.value.trim();
         const threadId = els.threadId.value.trim();
         if (!query) {
             alert("请先输入 query。");
@@ -842,6 +996,7 @@
         }
         startRequest({
             keepPanels: true,
+            query: state.currentQuery,
             params: {
                 threadId: state.lastThreadId,
                 humanFeedbackApproved: approved,
@@ -858,6 +1013,11 @@
     els.clearBtn.addEventListener("click", () => resetPanels({ keepQuery: false }));
     els.approveBtn.addEventListener("click", () => submitHumanFeedback(true));
     els.rejectBtn.addEventListener("click", () => submitHumanFeedback(false));
+    els.refreshIndexStatusBtn.addEventListener("click", () => refreshIndexStatus());
+    els.initEvidenceBtn.addEventListener("click", () => runIndexInit("/api/index/init/evidence", "Evidence 初始化"));
+    els.initDocumentsBtn.addEventListener("click", () => runIndexInit("/api/index/init/documents", "Documents 初始化"));
+    els.initSchemaBtn.addEventListener("click", () => runIndexInit("/api/index/init/schema", "Schema 初始化"));
+    els.initAllBtn.addEventListener("click", () => runIndexInit("/api/index/init/all", "All 初始化"));
 
     initTimeline();
     updateStatus();

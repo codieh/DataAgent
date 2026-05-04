@@ -72,6 +72,28 @@ mvn "-Dmaven.repo.local=D:\GitHub\DataAgent\data-agent-backend\target\m2repo" -p
 
 ---
 
+### 2.3 Apple Silicon Mac 推荐方案
+
+如果是 **Apple Silicon Mac**，当前最省事、最容易复现的一条路径是：
+
+- **JDK 19**
+- **Maven 3.9+**
+- **LM Studio**
+  - 作为本地 embedding 服务
+- **OrbStack**
+  - 作为本地 MySQL / PostgreSQL + pgvector 容器运行环境
+
+推荐原因：
+
+- `LM Studio` 在 Apple Silicon 上本地运行体验更友好
+- `OrbStack` 比 Docker Desktop 更轻量，适合开发环境
+- 当前项目已经支持 **OpenAI embeddings 兼容接口**
+- 当前项目默认数据库端口就是：
+  - MySQL：`3306`
+  - PostgreSQL：`5432`
+
+---
+
 ## 3. 必须准备的数据库
 
 ### 3.1 MySQL（业务 SQL 查询）
@@ -106,6 +128,17 @@ jdbc:mysql://127.0.0.1:3306/product_db
 
 这些表是当前 schema introspect / schema recall / NL2SQL 的默认演示对象。
 
+如果你已经有项目内 demo SQL，可以直接导入：
+
+- SQL 文件：
+  - `data-agent-backend/src/main/resources/sql/product_db.sql`
+
+如果你使用 `OrbStack` / Docker 容器，容器名假设为 `dataagent-mysql`，可以执行：
+
+```bash
+docker exec -i dataagent-mysql mysql -uroot -padmin product_db < /Users/yourname/code/github/DataAgent/data-agent-backend/src/main/resources/sql/product_db.sql
+```
+
 ---
 
 ### 3.2 PostgreSQL + pgvector（Recall 向量检索）
@@ -139,6 +172,12 @@ CREATE EXTENSION IF NOT EXISTS vector;
 > 当前项目里的 `PgVectorSearchService` 在运行时也会尝试 `CREATE EXTENSION IF NOT EXISTS vector`，  
 > 但前提是连接账号有足够权限。新电脑上如果权限不足，最好提前手动执行。
 
+如果你使用 `OrbStack` / Docker 容器，容器名假设为 `dataagent-pgvector`，可以直接执行：
+
+```bash
+docker exec -it dataagent-pgvector psql -U postgres -d data_agent_recall -c "CREATE EXTENSION IF NOT EXISTS vector;"
+```
+
 ---
 
 ## 4. 必须准备的模型服务
@@ -147,16 +186,32 @@ CREATE EXTENSION IF NOT EXISTS vector;
 
 当前 recall embedding 默认配置是：
 
-- base-url: `http://localhost:11434`
+- base-url: `http://127.0.0.1:1234`
 - path: `/v1/embeddings`
-- model: `bge-m3`
+- model: `text-embedding-bge-m3`
 
 也就是说，项目预期本地有一个**兼容 OpenAI embeddings 接口**的服务在跑。
 
 你至少要保证：
 
-- `POST http://localhost:11434/v1/embeddings`
-- 可以正常返回 `bge-m3` 的向量
+- `POST http://127.0.0.1:1234/v1/embeddings`
+- 可以正常返回 embedding 向量
+
+如果你使用 `LM Studio`，建议：
+
+- 在 `Developer` / `Local Server` 中启动本地 API Server
+- 确认加载的 embedding 模型是：
+  - `bge-m3`
+  - 或 LM Studio 中对应的 OpenAI-compatible model id，例如 `text-embedding-bge-m3`
+- 记下 LM Studio 实际暴露出来的模型名
+  - 然后填到 `RECALL_EMBEDDING_MODEL`
+
+注意：
+
+- `bge-m3` 是 **embedding 模型**
+- `bge-reranker-v2-m3` / `bge-reranker-m3` 是 **reranker 模型**
+- 当前项目已经接入本地 embedding 服务，但 **还没有直接调用本地 reranker 模型服务**
+- 当前项目里的 rerank 仍然是轻量规则版，不是 cross-encoder 服务版
 
 建议通过环境变量覆盖：
 
@@ -223,6 +278,15 @@ CREATE EXTENSION IF NOT EXISTS vector;
 
 > 如果后面要进一步工程化，建议把这些也逐步改成环境变量配置，而不是继续写死绝对路径。
 
+如果你是 Mac，建议直接改成仓库内可写目录，例如：
+
+- trace：
+  - `/Users/yourname/code/github/DataAgent/data-agent-backend/data/traces`
+- recall store：
+  - `/Users/yourname/code/github/DataAgent/data-agent-backend/data/recall`
+- documents：
+  - `/Users/yourname/code/github/DataAgent/data-agent-backend/data/documents`
+
 ---
 
 ## 6. 建议配置的环境变量
@@ -270,6 +334,14 @@ CREATE EXTENSION IF NOT EXISTS vector;
 - `product_db` 可连接
 - 默认 demo 表存在
 
+如果你使用 `OrbStack` / Docker Compose，可以用：
+
+```bash
+docker compose up -d
+docker ps
+docker exec -it dataagent-mysql mysql -uroot -padmin -D product_db -e "SHOW TABLES;"
+```
+
 ### Step 2：启动 PostgreSQL + pgvector
 
 确认：
@@ -277,12 +349,20 @@ CREATE EXTENSION IF NOT EXISTS vector;
 - `data_agent_recall` 可连接
 - `vector` 扩展存在
 
+例如：
+
+```bash
+docker exec -it dataagent-pgvector psql -U postgres -d data_agent_recall -c "\dx"
+```
+
 ### Step 3：启动 embedding 服务
 
 确认：
 
 - `http://localhost:11434/v1/embeddings` 可用
-- `bge-m3` 模型可返回向量
+- `http://127.0.0.1:1234/v1/embeddings` 可用
+- LM Studio 中已加载 `bge-m3` 对应 embedding 模型
+- `RECALL_EMBEDDING_MODEL` 与 LM Studio 实际模型 id 一致
 
 ### Step 4：设置 LLM key
 
@@ -304,14 +384,14 @@ CREATE EXTENSION IF NOT EXISTS vector;
 
 推荐优先使用项目内 Maven 仓库路径：
 
-```powershell
-mvn "-Dmaven.repo.local=D:\GitHub\DataAgent\data-agent-backend\target\m2repo" -pl data-agent-backend -DskipTests compile
+```bash
+./mvnw -Dmaven.repo.local=./data-agent-backend/target/m2repo -pl data-agent-backend -DskipTests compile
 ```
 
 ### Step 7：启动 backend
 
-```powershell
-mvn "-Dmaven.repo.local=D:\GitHub\DataAgent\data-agent-backend\target\m2repo" -pl data-agent-backend spring-boot:run
+```bash
+./mvnw -Dmaven.repo.local=./data-agent-backend/target/m2repo -pl data-agent-backend spring-boot:run
 ```
 
 ---
@@ -361,7 +441,26 @@ mvn "-Dmaven.repo.local=D:\GitHub\DataAgent\data-agent-backend\target\m2repo" -p
 
 ---
 
-### 9.2 `application.yml` 里的绝对路径没改
+### 9.2 embedding 服务地址和模型名不匹配
+
+现在代码默认更接近 `LM Studio` 本地服务：
+
+- base-url：`http://127.0.0.1:1234`
+- path：`/v1/embeddings`
+- model：`text-embedding-bge-m3`
+
+如果你在 LM Studio 里实际加载的模型名不是这个，需要显式设置：
+
+- `RECALL_EMBEDDING_MODEL`
+
+否则会出现：
+
+- 接口可访问
+- 但返回 `model not found`
+
+---
+
+### 9.3 `application.yml` 里的绝对路径没改
 
 如果新电脑没有：
 
@@ -371,13 +470,13 @@ mvn "-Dmaven.repo.local=D:\GitHub\DataAgent\data-agent-backend\target\m2repo" -p
 
 ---
 
-### 9.3 pgvector 扩展没装
+### 9.4 pgvector 扩展没装
 
 PostgreSQL 本身装好了，不代表 `vector` 扩展就可用。
 
 ---
 
-### 9.4 本地 embedding 服务没起来
+### 9.5 本地 embedding 服务没起来
 
 当前 recall 已经依赖 embedding，不起服务会直接影响：
 
@@ -387,7 +486,7 @@ PostgreSQL 本身装好了，不代表 `vector` 扩展就可用。
 
 ---
 
-### 9.5 LLM key 没配
+### 9.6 LLM key 没配
 
 当前默认不是 mock provider，  
 所以没有 key 时：
@@ -402,7 +501,7 @@ PostgreSQL 本身装好了，不代表 `vector` 扩展就可用。
 
 ---
 
-### 9.6 Maven 本地仓库路径问题
+### 9.7 Maven 本地仓库路径问题
 
 这个项目之前已经出现过：
 
@@ -412,6 +511,25 @@ PostgreSQL 本身装好了，不代表 `vector` 扩展就可用。
 所以新电脑建议从第一天开始就考虑：
 
 - 使用项目内 `m2repo`
+
+---
+
+### 9.8 当前本地 reranker 不是 LM Studio cross-encoder
+
+即使你在 LM Studio 中装了：
+
+- `bge-reranker-v2-m3`
+- `bge-reranker-m3`
+
+当前项目默认也**不会自动调用它们**。
+
+当前 rerank 逻辑还是代码内置的轻量规则版：
+
+- 关键词覆盖率
+- exact match bonus
+- base score 融合
+
+如果后面要真正接入 LM Studio reranker，需要额外补一个 `RecallReranker` 实现。
 
 ---
 
@@ -431,6 +549,17 @@ PostgreSQL 本身装好了，不代表 `vector` 扩展就可用。
 - 改好 `application.yml` 的绝对路径
 - 起 `lite-debug.html`
 - 走一遍 query
+
+如果是我们当前已经验证过的 Apple Silicon Mac 路径，最小可用组合可以具体化为：
+
+- JDK 19
+- Maven / `./mvnw`
+- OrbStack
+- MySQL 容器
+- PostgreSQL + pgvector 容器
+- LM Studio
+  - `bge-m3` 作为 embedding 模型
+- `LLM_ANTHROPIC_API_KEY`
 
 这就足够让当前 `lite-backend` 的主能力跑起来了。
 
