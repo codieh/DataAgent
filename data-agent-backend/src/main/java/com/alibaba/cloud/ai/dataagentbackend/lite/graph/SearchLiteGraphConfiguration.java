@@ -103,6 +103,8 @@ public class SearchLiteGraphConfiguration {
 			strategies.put(SearchLiteGraphStateKeys.HUMAN_REVIEW_ENABLED, KeyStrategy.REPLACE);
 			strategies.put(SearchLiteGraphStateKeys.HUMAN_FEEDBACK_STATUS, KeyStrategy.REPLACE);
 			strategies.put(SearchLiteGraphStateKeys.HUMAN_FEEDBACK_COMMENT, KeyStrategy.REPLACE);
+			strategies.put(SearchLiteGraphStateKeys.HUMAN_FEEDBACK_DATA, KeyStrategy.REPLACE);
+			strategies.put(SearchLiteGraphStateKeys.HUMAN_NEXT_NODE, KeyStrategy.REPLACE);
 			strategies.put(SearchLiteGraphStateKeys.AWAITING_HUMAN_FEEDBACK, KeyStrategy.REPLACE);
 			strategies.put(SearchLiteGraphStateKeys.PLAN_STEPS, KeyStrategy.REPLACE);
 			strategies.put(SearchLiteGraphStateKeys.CURRENT_PLAN_STEP_INDEX, KeyStrategy.REPLACE);
@@ -154,8 +156,9 @@ public class SearchLiteGraphConfiguration {
 					Map.of(SQL_GENERATE_NODE, SQL_GENERATE_NODE, PREPARE_RESULT_NODE, PREPARE_RESULT_NODE,
 							HUMAN_FEEDBACK_NODE, HUMAN_FEEDBACK_NODE))
 			.addConditionalEdges(HUMAN_FEEDBACK_NODE, edge_async(humanFeedbackDispatcher),
-					Map.of(SQL_GENERATE_NODE, SQL_GENERATE_NODE, PLANNER_NODE, PLANNER_NODE,
-							PREPARE_RESULT_NODE, PREPARE_RESULT_NODE))
+					Map.of(PLAN_EXECUTOR_NODE, PLAN_EXECUTOR_NODE, SQL_GENERATE_NODE, SQL_GENERATE_NODE,
+							PLANNER_NODE, PLANNER_NODE,
+							PREPARE_RESULT_NODE, PREPARE_RESULT_NODE, END, END))
 			.addConditionalEdges(SQL_GENERATE_NODE, edge_async(sqlGenerateDispatcher),
 					Map.of(SQL_EXECUTE_NODE, SQL_EXECUTE_NODE, PREPARE_RESULT_NODE, PREPARE_RESULT_NODE))
 			.addConditionalEdges(SQL_EXECUTE_NODE, edge_async(sqlExecuteDispatcher),

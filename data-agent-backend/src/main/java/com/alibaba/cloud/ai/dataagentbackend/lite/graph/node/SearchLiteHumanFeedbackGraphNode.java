@@ -7,7 +7,9 @@ import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteState;
 import com.alibaba.cloud.ai.dataagentbackend.lite.SearchLiteContext;
 import com.alibaba.cloud.ai.dataagentbackend.lite.SearchLiteMessages;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphMessageEmitter;
+import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphConfiguration;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphStateMapper;
+import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphStateKeys;
 import com.alibaba.cloud.ai.dataagentbackend.lite.trace.SearchLiteTraceRecorder;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.action.NodeAction;
@@ -48,8 +50,15 @@ public class SearchLiteHumanFeedbackGraphNode implements NodeAction {
 		SearchLiteContext context = new SearchLiteContext(resolveThreadId(liteState));
 		long startedAt = System.nanoTime();
 
-		String feedbackStatus = safe(liteState.getHumanFeedbackStatus()).toUpperCase();
-		if (!StringUtils.hasText(feedbackStatus)) {
+		Map<String, Object> feedbackData = state.value(SearchLiteGraphStateKeys.HUMAN_FEEDBACK_DATA)
+			.filter(Map.class::isInstance)
+			.map(Map.class::cast)
+			.orElse(Map.of());
+		if (feedbackData.isEmpty()) {
+			// NOTE: With interruptBefore(HUMAN_FEEDBACK), this branch is normally unreachable
+			// because the graph halts before this node executes. The waiting state is handled
+			// externally by SearchLiteGraphService.markWaitingHumanFeedback(). This branch is
+			// kept as a defensive fallback in case the interrupt configuration changes.
 			liteState.setAwaitingHumanFeedback(true);
 			liteState.setPlanFinished(true);
 			liteState.setPlanFinishedReason("waiting_human_feedback");
@@ -59,56 +68,51 @@ public class SearchLiteHumanFeedbackGraphNode implements NodeAction {
 					(System.nanoTime() - startedAt) / 1_000_000, beforeState, liteState, null);
 			log.info("human feedback node waiting: threadId={}, steps={}", context.threadId(),
 					liteState.getPlanSteps() == null ? 0 : liteState.getPlanSteps().size());
-			return SearchLiteGraphStateMapper.fromSearchLiteState(liteState);
+			return withHumanNextNode(liteState, "WAIT_FOR_FEEDBACK");
 		}
 
+		boolean approved = resolveApproved(feedbackData);
+		String feedbackComment = resolveFeedbackComment(feedbackData);
+		liteState.setHumanFeedbackStatus(approved ? "APPROVED" : "REJECTED");
+		liteState.setHumanFeedbackComment(feedbackComment);
 		liteState.setAwaitingHumanFeedback(false);
 		liteState.setPlanFinished(false);
 		liteState.setPlanFinishedReason(null);
 		liteState.setResultMode(null);
 
-		if ("APPROVED".equalsIgnoreCase(feedbackStatus)) {
+		if (approved) {
 			liteState.setHumanReviewEnabled(false);
 			emitApproved(context, liteState);
 			traceRecorder.recordStage(context.threadId(), SearchLiteStage.HUMAN_FEEDBACK, "approved",
 					(System.nanoTime() - startedAt) / 1_000_000, beforeState, liteState, null);
 			log.info("human feedback approved: threadId={}", context.threadId());
-			return SearchLiteGraphStateMapper.fromSearchLiteState(liteState);
+			return withHumanNextNode(liteState, SearchLiteGraphConfiguration.PLAN_EXECUTOR_NODE);
 		}
 
-		if ("REJECTED".equalsIgnoreCase(feedbackStatus)) {
-			liteState.setHumanReviewEnabled(true);
-			liteState.setPlanValidationStatus(false);
-			liteState.setPlanValidationError(StringUtils.hasText(liteState.getHumanFeedbackComment())
-					? liteState.getHumanFeedbackComment().trim()
-					: "Plan rejected by human reviewer");
-			liteState.setPlanRepairCount(liteState.getPlanRepairCount() + 1);
-			liteState.setPlannerRawOutput("");
-			liteState.setCurrentPlanStepIndex(0);
-			resetPlanSteps(liteState.getPlanSteps());
-			if (liteState.getPlanRepairCount() > maxRepairAttempts) {
-				liteState.setPlanFinished(true);
-				liteState.setPlanFinishedReason("human_feedback_repair_exhausted");
-				liteState.setResultMode("execution_error");
-				liteState.setError("人工反馈驳回次数超过上限：" + liteState.getPlanValidationError());
-			}
-			emitRejected(context, liteState);
-			traceRecorder.recordStage(context.threadId(), SearchLiteStage.HUMAN_FEEDBACK, "rejected",
-					(System.nanoTime() - startedAt) / 1_000_000, beforeState, liteState,
-					liteState.getPlanValidationError());
-			log.info("human feedback rejected: threadId={}, repairCount={}, comment={}", context.threadId(),
-					liteState.getPlanRepairCount(), liteState.getPlanValidationError());
-			return SearchLiteGraphStateMapper.fromSearchLiteState(liteState);
+		liteState.setHumanReviewEnabled(true);
+		liteState.setPlanValidationStatus(false);
+		liteState.setPlanValidationError(StringUtils.hasText(feedbackComment) ? feedbackComment.trim()
+				: "Plan rejected by human reviewer");
+		liteState.setPlanRepairCount(liteState.getPlanRepairCount() + 1);
+		liteState.setPlannerRawOutput("");
+		liteState.setCurrentPlanStepIndex(0);
+		resetPlanSteps(liteState.getPlanSteps());
+		if (liteState.getPlanRepairCount() > maxRepairAttempts) {
+			liteState.setPlanFinished(true);
+			liteState.setPlanFinishedReason("human_feedback_repair_exhausted");
+			liteState.setResultMode("execution_error");
+			liteState.setError("人工反馈驳回次数超过上限：" + liteState.getPlanValidationError());
 		}
-
-		liteState.setAwaitingHumanFeedback(true);
-		liteState.setPlanFinished(true);
-		liteState.setPlanFinishedReason("waiting_human_feedback");
-		liteState.setResultMode("waiting_human_feedback");
-		emitWaiting(context, liteState);
-		traceRecorder.recordStage(context.threadId(), SearchLiteStage.HUMAN_FEEDBACK, "waiting",
-				(System.nanoTime() - startedAt) / 1_000_000, beforeState, liteState, null);
-		return SearchLiteGraphStateMapper.fromSearchLiteState(liteState);
+		emitRejected(context, liteState);
+		traceRecorder.recordStage(context.threadId(), SearchLiteStage.HUMAN_FEEDBACK, "rejected",
+				(System.nanoTime() - startedAt) / 1_000_000, beforeState, liteState,
+				liteState.getPlanValidationError());
+		log.info("human feedback rejected: threadId={}, repairCount={}, comment={}", context.threadId(),
+				liteState.getPlanRepairCount(), liteState.getPlanValidationError());
+		if (liteState.getPlanRepairCount() > maxRepairAttempts) {
+			return withHumanNextNode(liteState, "END");
+		}
+		return withHumanNextNode(liteState, SearchLiteGraphConfiguration.PLANNER_NODE);
 	}
 
 	private void emitWaiting(SearchLiteContext context, SearchLiteState state) {
@@ -161,6 +165,25 @@ public class SearchLiteHumanFeedbackGraphNode implements NodeAction {
 
 	private String safe(String value) {
 		return value == null ? "" : value.trim();
+	}
+
+	private boolean resolveApproved(Map<String, Object> feedbackData) {
+		Object value = feedbackData.getOrDefault("feedback", Boolean.TRUE);
+		if (value instanceof Boolean approvedBoolean) {
+			return approvedBoolean;
+		}
+		return Boolean.parseBoolean(String.valueOf(value));
+	}
+
+	private String resolveFeedbackComment(Map<String, Object> feedbackData) {
+		Object value = feedbackData.getOrDefault("feedback_content", "");
+		return value == null ? "" : String.valueOf(value).trim();
+	}
+
+	private Map<String, Object> withHumanNextNode(SearchLiteState state, String nextNode) {
+		Map<String, Object> updated = SearchLiteGraphStateMapper.fromSearchLiteState(state);
+		updated.put(SearchLiteGraphStateKeys.HUMAN_NEXT_NODE, nextNode);
+		return updated;
 	}
 
 }

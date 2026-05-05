@@ -64,4 +64,5 @@ vectorstore/*
 /.m2repo/
 
 # ignore generated recall index files
-data-agent-backend/data/recall/*index.json
+data/recall/*index.json
+data/traces/*.json

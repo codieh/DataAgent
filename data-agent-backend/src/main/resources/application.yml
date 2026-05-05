@@ -24,7 +24,7 @@ search:
         max-attempts: 3
     recall:
       # keyword|bm25|vector|hybrid|pgvector|hybrid-pgvector|bm25-pgvector-rerank
-      provider: hybrid-pgvector
+      provider: bm25-pgvector-rerank
       candidate-multiplier: 4
       bm25:
         k1: 1.2

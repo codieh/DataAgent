@@ -152,9 +152,9 @@ public class SearchLiteOrchestrator {
 		String threadId = StringUtils.hasText(request.threadId()) ? request.threadId() : UUID.randomUUID().toString();
 		SearchLiteContext ctx = new SearchLiteContext(threadId);
 		boolean feedbackResume = request.hasHumanFeedback() && graphService != null;
-		SearchLiteState state = feedbackResume ? graphService.takePendingHumanFeedbackState(threadId).orElse(null) : null;
+		SearchLiteState state = null;
 		boolean manageConversation = !feedbackResume;
-		if (state == null) {
+		if (!feedbackResume) {
 			state = SearchLiteState.fromRequest(
 					new SearchLiteRequest(request.agentId(), threadId, request.query(), request.humanReviewEnabled(),
 							request.humanFeedbackApproved(), request.humanFeedbackComment()));
@@ -164,13 +164,14 @@ public class SearchLiteOrchestrator {
 			state.setContextualizedQuery(preparedConversationContext.contextualizedQuery());
 		}
 		else {
-			String feedbackStatus = request.humanFeedbackApproved() == null ? null
-					: request.humanFeedbackApproved() ? "APPROVED" : "REJECTED";
-			state.setHumanReviewEnabled("APPROVED".equalsIgnoreCase(feedbackStatus) ? false
-					: request.humanReviewEnabled() || state.isHumanReviewEnabled());
-			state.setHumanFeedbackStatus(feedbackStatus);
-			state.setHumanFeedbackComment(request.humanFeedbackComment());
+			state = SearchLiteState.fromRequest(
+					new SearchLiteRequest(request.agentId(), threadId, request.query(), request.humanReviewEnabled(),
+							request.humanFeedbackApproved(), request.humanFeedbackComment()));
 			state.setAwaitingHumanFeedback(false);
+			state.setPlanFinished(false);
+			state.setPlanFinishedReason(null);
+			state.setResultMode(null);
+			state.setError(null);
 		}
 		AtomicReference<SearchLiteState> latestState = new AtomicReference<>(state);
 		AtomicBoolean completed = new AtomicBoolean(false);

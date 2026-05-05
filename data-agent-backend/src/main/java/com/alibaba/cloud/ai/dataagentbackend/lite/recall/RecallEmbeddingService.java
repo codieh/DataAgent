@@ -34,7 +34,7 @@ public class RecallEmbeddingService {
 
 	public boolean vectorEnabled() {
 		return switch (provider) {
-			case "vector", "hybrid", "pgvector", "hybrid-pgvector" -> true;
+			case "vector", "hybrid", "pgvector", "hybrid-pgvector", "bm25-pgvector-rerank" -> true;
 			default -> false;
 		};
 	}

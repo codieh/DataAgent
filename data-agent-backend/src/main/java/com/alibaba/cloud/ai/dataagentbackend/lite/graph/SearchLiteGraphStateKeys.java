@@ -45,6 +45,10 @@ public final class SearchLiteGraphStateKeys {
 
 	public static final String HUMAN_FEEDBACK_COMMENT = "humanFeedbackComment";
 
+	public static final String HUMAN_FEEDBACK_DATA = "humanFeedbackData";
+
+	public static final String HUMAN_NEXT_NODE = "humanNextNode";
+
 	public static final String AWAITING_HUMAN_FEEDBACK = "awaitingHumanFeedback";
 
 	public static final String PLAN_STEPS = "planSteps";
