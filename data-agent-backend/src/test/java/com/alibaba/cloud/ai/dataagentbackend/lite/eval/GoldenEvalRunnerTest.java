@@ -25,8 +25,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 		"search.lite.sql.execute.provider=mock",
 		"search.lite.result.provider=mock",
 		"search.lite.eval.suite=golden",
-		"search.lite.eval.cases-dir=D:/GitHub/DataAgent/data-agent-backend/data/eval/cases",
-		"search.lite.eval.reports-dir=D:/GitHub/DataAgent/data-agent-backend/target/test-eval-reports-golden",
+		"search.lite.eval.cases-dir=data/eval/cases",
+		"search.lite.eval.reports-dir=target/test-eval-reports-golden",
 		"APP_LOG_LEVEL=INFO"
 })
 class GoldenEvalRunnerTest {
@@ -43,7 +43,7 @@ class GoldenEvalRunnerTest {
 
 		assertNotNull(report);
 		assertEquals("golden", report.suite());
-		assertEquals(6, report.totalCases());
+		assertEquals(15, report.totalCases());
 		assertEquals(1, report.datasetSummaries().size());
 		assertEquals("golden-core-v1", report.datasetSummaries().get(0).datasetId());
 		assertTrue(report.results().stream().allMatch(result -> result.caseId().startsWith("GC")));

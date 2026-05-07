@@ -19,7 +19,7 @@ public class EvalCaseLoader {
 	private final Path casesDir;
 
 	public EvalCaseLoader(ObjectMapper objectMapper,
-			@Value("${search.lite.eval.cases-dir:D:/GitHub/DataAgent/data-agent-backend/data/eval/cases}") String casesDir) {
+			@Value("${search.lite.eval.cases-dir:data/eval/cases}") String casesDir) {
 		this.objectMapper = objectMapper;
 		this.casesDir = Path.of(casesDir);
 	}

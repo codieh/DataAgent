@@ -2,7 +2,7 @@
   "datasetId": "multi-turn-v1",
   "version": "eval-v1",
   "suite": "standard",
-  "description": "首版多轮追问评测集，通过 history 回放复用 threadId，重点验证 contextualizedQuery 与 follow-up 处理。",
+  "description": "多轮追问评测集（9 题），覆盖 1-hop follow-up、时间条件改写、筛选追加、3-hop 连续追问、用户纠错、话题切换回切、否定式追问与指代消解。",
   "cases": [
     {
       "caseId": "MT01",
@@ -23,7 +23,8 @@
         "expectedResultMode": "success",
         "expectedSqlGenerated": true,
         "expectedSqlExecuted": true,
-        "expectedContextualizedQueryContains": ["上一轮查询", "查询累计消费金额最高的用户"]
+        "expectedContextualizedQueryContains": ["上一轮查询", "查询累计消费金额最高的用户"],
+        "expectedSqlContains": ["users", "orders", "count"]
       }
     },
     {
@@ -44,7 +45,8 @@
         "expectedTables": ["orders"],
         "expectedSqlGenerated": true,
         "expectedSqlExecuted": true,
-        "expectedContextualizedQueryContains": ["上一轮查询", "查询 2025 年 6 月的订单总数"]
+        "expectedContextualizedQueryContains": ["上一轮查询", "查询 2025 年 6 月的订单总数"],
+        "expectedSqlContains": ["from orders", "order_date", "interval"]
       }
     },
     {
@@ -65,7 +67,8 @@
         "expectedTables": ["products", "order_items", "categories", "product_categories"],
         "expectedSqlGenerated": true,
         "expectedSqlExecuted": true,
-        "expectedContextualizedQueryContains": ["上一轮查询", "查询销量最高的 10 个商品"]
+        "expectedContextualizedQueryContains": ["上一轮查询", "查询销量最高的 10 个商品"],
+        "expectedSqlContains": ["product_categories", "categories", "电子产品"]
       }
     },
     {
@@ -86,8 +89,133 @@
         "expectedTables": ["users", "orders"],
         "expectedSqlGenerated": true,
         "expectedSqlExecuted": true,
-        "expectedContextualizedQueryContains": ["上一轮查询", "查询每个用户的累计消费金额"]
+        "expectedContextualizedQueryContains": ["上一轮查询", "查询每个用户的累计消费金额"],
+        "expectedSqlContains": ["users", "orders", "avg"]
       }
+    },
+    {
+      "caseId": "MT05",
+      "title": "三轮连续追问",
+      "category": "multi_turn_followup",
+      "scenarioType": "multi_turn",
+      "query": "按月份拆分看趋势",
+      "history": [
+        {
+          "query": "查询累计消费金额最高的用户",
+          "note": "第一轮：用户维度"
+        },
+        {
+          "query": "这些用户里谁下单最多",
+          "note": "第二轮：追问下单次数"
+        }
+      ],
+      "tags": ["multi-turn", "3-hop"],
+      "expectations": {
+        "expectedIntent": "DATA_ANALYSIS",
+        "expectedSqlGenerated": true,
+        "expectedSqlExecuted": true,
+        "expectedContextualizedQueryContains": ["累计消费", "下单"]
+      },
+      "notes": "验证 3 轮追问的上下文累积能力。"
+    },
+    {
+      "caseId": "MT06",
+      "title": "用户纠错重试",
+      "category": "multi_turn_followup",
+      "scenarioType": "multi_turn",
+      "query": "不对，我要的是按用户维度统计，不是按商品",
+      "history": [
+        {
+          "query": "统计每个商品的销量",
+          "note": "首轮：商品维度统计"
+        },
+        {
+          "query": "按分类拆分看",
+          "note": "第二轮：分类维度"
+        }
+      ],
+      "tags": ["multi-turn", "correction"],
+      "expectations": {
+        "expectedIntent": "DATA_ANALYSIS",
+        "expectedSqlGenerated": true,
+        "expectedSqlExecuted": true,
+        "expectedContextualizedQueryContains": ["用户"]
+      },
+      "notes": "验证用户纠错时系统能正确理解不是X而是Y。"
+    },
+    {
+      "caseId": "MT07",
+      "title": "话题切换后回切",
+      "category": "multi_turn_followup",
+      "scenarioType": "multi_turn",
+      "query": "回到刚才那个用户消费的统计，加上时间范围看最近 30 天",
+      "history": [
+        {
+          "query": "查询每个用户的累计消费金额",
+          "note": "第一轮：用户消费"
+        },
+        {
+          "query": "统计每个商品的库存",
+          "note": "第二轮：话题切换到库存"
+        }
+      ],
+      "tags": ["multi-turn", "topic-switch"],
+      "expectations": {
+        "expectedIntent": "DATA_ANALYSIS",
+        "expectedTables": ["users", "orders"],
+        "expectedSqlGenerated": true,
+        "expectedSqlExecuted": true,
+        "expectedContextualizedQueryContains": ["用户", "消费"]
+      },
+      "notes": "验证话题切换后回切时上下文恢复能力。"
+    },
+    {
+      "caseId": "MT08",
+      "title": "否定式追问",
+      "category": "multi_turn_followup",
+      "scenarioType": "multi_turn",
+      "query": "不要已完成的，只看已取消的订单",
+      "history": [
+        {
+          "query": "统计已完成订单数、待处理订单数、已取消订单数",
+          "note": "首轮：全状态统计"
+        }
+      ],
+      "tags": ["multi-turn", "negation"],
+      "expectations": {
+        "expectedIntent": "DATA_ANALYSIS",
+        "expectedTables": ["orders"],
+        "expectedSqlGenerated": true,
+        "expectedSqlExecuted": true,
+        "expectedSqlContains": ["cancelled"]
+      },
+      "notes": "验证否定式条件过滤能力。"
+    },
+    {
+      "caseId": "MT09",
+      "title": "指代消解",
+      "category": "multi_turn_followup",
+      "scenarioType": "multi_turn",
+      "query": "它的库存还有多少",
+      "history": [
+        {
+          "query": "查询销量最高的商品",
+          "note": "首轮：确定某商品"
+        },
+        {
+          "query": "这个商品属于哪个分类",
+          "note": "第二轮：追问分类"
+        }
+      ],
+      "tags": ["multi-turn", "coreference"],
+      "expectations": {
+        "expectedIntent": "DATA_ANALYSIS",
+        "expectedTables": ["products"],
+        "expectedSqlGenerated": true,
+        "expectedSqlExecuted": true,
+        "expectedContextualizedQueryContains": ["销量最高"]
+      },
+      "notes": "验证它的指代消解能力。"
     }
   ]
 }
