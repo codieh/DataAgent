@@ -11,7 +11,10 @@ import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStep;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStepResult;
 import com.alibaba.cloud.ai.dataagentbackend.lite.trace.SearchLiteTraceRecorder;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
@@ -46,10 +49,6 @@ public class SearchLiteOrchestrator {
 
 	private final SearchLiteTraceRecorder traceRecorder;
 
-	public SearchLiteOrchestrator(List<SearchLiteStep> steps) {
-		this(steps, "pipeline", null, new MultiTurnContextManager(5, 240), null);
-	}
-
 	@Autowired
 	public SearchLiteOrchestrator(List<SearchLiteStep> steps,
 			@Value("${search.lite.orchestrator.mode:pipeline}") String mode, SearchLiteGraphService graphService,
@@ -69,11 +68,15 @@ public class SearchLiteOrchestrator {
 	public Mono<SearchLiteRunResult> runForEvaluation(SearchLiteRequest request) {
 		PreparedRun preparedRun = prepareRun(request);
 		long startedAt = System.nanoTime();
-		return buildExecutionFlux(preparedRun).collectList().map(messages -> new SearchLiteRunResult(
-				preparedRun.threadId(),
-				preparedRun.latestState().get(),
-				messages,
-				Duration.ofNanos(System.nanoTime() - startedAt).toMillis()));
+		return buildExecutionFlux(preparedRun).collectList().map(messages -> {
+			SearchLiteState finalState = finalizeEvaluationState(preparedRun.latestState().get(), messages);
+			preparedRun.latestState().set(finalState);
+			return new SearchLiteRunResult(
+					preparedRun.threadId(),
+					finalState,
+					messages,
+					Duration.ofNanos(System.nanoTime() - startedAt).toMillis());
+		});
 	}
 
 	private Flux<SearchLiteMessage> runWithSelectedMode(SearchLiteContext ctx, SearchLiteState state,
@@ -230,6 +233,149 @@ public class SearchLiteOrchestrator {
 
 	private record PreparedRun(SearchLiteRequest request, String threadId, SearchLiteContext context, SearchLiteState state,
 			AtomicReference<SearchLiteState> latestState, AtomicBoolean completed, boolean manageConversation) {
+	}
+
+	private SearchLiteState finalizeEvaluationState(SearchLiteState state, List<SearchLiteMessage> messages) {
+		SearchLiteState target = state == null ? new SearchLiteState() : state;
+		List<SearchLiteMessage> safeMessages = messages == null ? List.of() : messages;
+		for (SearchLiteMessage message : safeMessages) {
+			if (message == null) {
+				continue;
+			}
+			if (StringUtils.hasText(message.error())) {
+				target.setError(message.error());
+				if (!StringUtils.hasText(target.getResultMode())) {
+					target.setResultMode("execution_error");
+				}
+				continue;
+			}
+			Map<String, Object> payload = asMap(message.payload());
+			switch (message.stage()) {
+				case INTENT -> {
+					String classification = firstNonBlank(stringValue(payload.get("classification")),
+							normalizeIntentLiteral(message.chunk()));
+					if (StringUtils.hasText(classification) && !StringUtils.hasText(target.getIntentClassification())) {
+						target.setIntentClassification(classification);
+					}
+				}
+				case SCHEMA_RECALL -> {
+					List<String> recalledTables = stringList(payload.get("recalledTables"));
+					if (!recalledTables.isEmpty() && (target.getRecalledTables() == null || target.getRecalledTables().isEmpty())) {
+						target.setRecalledTables(recalledTables);
+					}
+				}
+				case ENHANCE -> {
+					String canonicalQuery = stringValue(payload.get("canonicalQuery"));
+					if (StringUtils.hasText(canonicalQuery) && !StringUtils.hasText(target.getCanonicalQuery())) {
+						target.setCanonicalQuery(canonicalQuery);
+					}
+				}
+				case SQL_GENERATE -> {
+					String sql = firstNonBlank(stringValue(payload.get("sql")), message.chunk());
+					if (StringUtils.hasText(sql) && !StringUtils.hasText(target.getSql())) {
+						target.setSql(sql);
+					}
+				}
+				case SQL_EXECUTE -> {
+					List<Map<String, Object>> rows = rowList(payload.get("rows"));
+					if (!rows.isEmpty() && (target.getRows() == null || target.getRows().isEmpty())) {
+						target.setRows(rows);
+					}
+				}
+				case RESULT -> {
+					String resultMode = stringValue(payload.get("resultMode"));
+					if (StringUtils.hasText(resultMode) && !StringUtils.hasText(target.getResultMode())) {
+						target.setResultMode(resultMode);
+					}
+					String resultSummary = firstNonBlank(stringValue(payload.get("summary")), message.chunk());
+					if (StringUtils.hasText(resultSummary) && !StringUtils.hasText(target.getResultSummary())) {
+						target.setResultSummary(resultSummary);
+					}
+				}
+				case HUMAN_FEEDBACK -> {
+					String status = stringValue(payload.get("status"));
+					if ("WAITING".equalsIgnoreCase(status)) {
+						target.setAwaitingHumanFeedback(true);
+						if (!StringUtils.hasText(target.getResultMode())) {
+							target.setResultMode("waiting_human_feedback");
+						}
+					}
+				}
+				default -> {
+				}
+			}
+		}
+		return target;
+	}
+
+	private Map<String, Object> asMap(Object payload) {
+		if (!(payload instanceof Map<?, ?> map)) {
+			return Map.of();
+		}
+		LinkedHashMap<String, Object> normalized = new LinkedHashMap<>();
+		for (Map.Entry<?, ?> entry : map.entrySet()) {
+			normalized.put(String.valueOf(entry.getKey()), entry.getValue());
+		}
+		return normalized;
+	}
+
+	private List<String> stringList(Object value) {
+		if (!(value instanceof List<?> list)) {
+			return List.of();
+		}
+		List<String> values = new ArrayList<>();
+		for (Object item : list) {
+			String text = stringValue(item);
+			if (StringUtils.hasText(text)) {
+				values.add(text);
+			}
+		}
+		return values;
+	}
+
+	@SuppressWarnings("unchecked")
+	private List<Map<String, Object>> rowList(Object value) {
+		if (!(value instanceof List<?> list)) {
+			return List.of();
+		}
+		List<Map<String, Object>> rows = new ArrayList<>();
+		for (Object item : list) {
+			if (item instanceof Map<?, ?> map) {
+				LinkedHashMap<String, Object> row = new LinkedHashMap<>();
+				for (Map.Entry<?, ?> entry : map.entrySet()) {
+					row.put(String.valueOf(entry.getKey()), entry.getValue());
+				}
+				rows.add((Map<String, Object>) row);
+			}
+		}
+		return rows;
+	}
+
+	private String stringValue(Object value) {
+		return value == null ? null : String.valueOf(value);
+	}
+
+	private String firstNonBlank(String... values) {
+		if (values == null) {
+			return null;
+		}
+		for (String value : values) {
+			if (StringUtils.hasText(value)) {
+				return value;
+			}
+		}
+		return null;
+	}
+
+	private String normalizeIntentLiteral(String value) {
+		if (!StringUtils.hasText(value)) {
+			return null;
+		}
+		String normalized = value.trim();
+		if ("DATA_ANALYSIS".equalsIgnoreCase(normalized) || "CHITCHAT".equalsIgnoreCase(normalized)) {
+			return normalized.toUpperCase(java.util.Locale.ROOT);
+		}
+		return null;
 	}
 
 }

@@ -2,35 +2,122 @@
   {
     "id": "metric-gmv-1",
     "title": "GMV 指标口径",
-    "snippet": "GMV（成交总额）默认口径为支付金额合计（未扣除退款），统计时需明确时间范围与币种。",
-    "source": "mock://kb/metrics/gmv",
-    "score": 0.9,
+    "snippet": "GMV（成交总额）= SUM(order_items.quantity * order_items.unit_price)，仅统计 orders.status = 'completed' 的订单。cancelled 和 pending 订单不计入 GMV。",
+    "source": "business://product_db/gmv",
+    "score": 0.95,
     "metadata": {
-      "type": "DOC",
-      "tags": ["metric", "gmv"]
+      "type": "RULE",
+      "tags": ["metric", "gmv", "revenue"]
     }
   },
   {
-    "id": "user-core-1",
-    "title": "核心用户定义",
-    "snippet": "核心用户：近 30 天内完成过支付且退款率 < 5% 的用户；若业务另有定义需以业务规则为准。",
-    "source": "mock://kb/users/core",
+    "id": "metric-sales-1",
+    "title": "销量统计口径",
+    "snippet": "销量 = SUM(order_items.quantity)，统计 completed 订单的明细数量。订单数 = COUNT(orders.id)，两者是不同维度。",
+    "source": "business://product_db/sales",
+    "score": 0.9,
+    "metadata": {
+      "type": "RULE",
+      "tags": ["metric", "sales", "quantity"]
+    }
+  },
+  {
+    "id": "order-status-1",
+    "title": "订单状态默认规则",
+    "snippet": "订单状态有三种：completed（已完成）、pending（待处理）、cancelled（已取消）。默认统计 completed 订单；若用户只说'订单数'可统计全部状态；涉及销售额/销量时限制为 completed。",
+    "source": "business://product_db/order-status",
     "score": 0.85,
     "metadata": {
-      "type": "FAQ",
-      "tags": ["user", "core-user"]
+      "type": "RULE",
+      "tags": ["order", "status", "default"]
+    }
+  },
+  {
+    "id": "product-category-1",
+    "title": "商品分类关系",
+    "snippet": "products 与 categories 是多对多关系，通过 product_categories 关联表连接。一个商品可属于多个分类。按分类统计时必须 JOIN product_categories。",
+    "source": "business://product_db/category",
+    "score": 0.8,
+    "metadata": {
+      "type": "RULE",
+      "tags": ["product", "category", "many-to-many"]
     }
   },
   {
     "id": "time-range-1",
     "title": "时间范围默认规则",
-    "snippet": "未明确时间范围时，默认使用最近 7 天；需要月/季度统计时必须在查询中显式指定。",
-    "source": "mock://kb/rules/time-range",
-    "score": 0.6,
+    "snippet": "数据时间范围为 2025-01-01 至 2025-06-30。未明确时间范围时，默认统计全部数据；需要月度/季度统计时必须在查询中显式指定。",
+    "source": "business://product_db/time-range",
+    "score": 0.75,
     "metadata": {
       "type": "RULE",
-      "tags": ["time", "default"]
+      "tags": ["time", "default", "range"]
+    }
+  },
+  {
+    "id": "inventory-1",
+    "title": "库存分析规则",
+    "snippet": "低库存商品指 products.stock < 20 的商品。库存为商品当前可售数量，与订单无直接关联。",
+    "source": "business://product_db/inventory",
+    "score": 0.7,
+    "metadata": {
+      "type": "RULE",
+      "tags": ["product", "stock", "inventory"]
+    }
+  },
+  {
+    "id": "user-order-1",
+    "title": "用户订单关系",
+    "snippet": "一个用户可有多笔订单（orders.user_id -> users.id）。分析用户消费时需关联 orders 和 order_items。",
+    "source": "business://product_db/user-order",
+    "score": 0.7,
+    "metadata": {
+      "type": "RULE",
+      "tags": ["user", "order", "relationship"]
+    }
+  },
+  {
+    "id": "price-1",
+    "title": "价格字段说明",
+    "snippet": "products.price 为商品当前单价，order_items.unit_price 为下单时快照单价。计算销售额应使用 order_items.unit_price，而非 products.price。",
+    "source": "business://product_db/price",
+    "score": 0.8,
+    "metadata": {
+      "type": "RULE",
+      "tags": ["price", "unit_price", "snapshot"]
+    }
+  },
+  {
+    "id": "metric-aov-1",
+    "title": "客单价指标口径",
+    "snippet": "客单价 = GMV / completed 订单数。也可用 orders.total_amount 的 AVG 计算（仅 completed 订单）。两者结果近似但不完全相同，优先使用 order_items 汇总方式。",
+    "source": "business://product_db/aov",
+    "score": 0.85,
+    "metadata": {
+      "type": "RULE",
+      "tags": ["metric", "aov", "客单价"]
+    }
+  },
+  {
+    "id": "metric-revenue-1",
+    "title": "销售额与订单金额区分",
+    "snippet": "销售额（GMV）= SUM(order_items.quantity * order_items.unit_price)，从明细表汇总，仅 completed 订单。订单金额 = orders.total_amount，是订单级字段。问'最高金额的订单'用 total_amount；问'销售额/销售金额'用明细表汇总。",
+    "source": "business://product_db/revenue",
+    "score": 0.8,
+    "metadata": {
+      "type": "RULE",
+      "tags": ["metric", "revenue", "total_amount", "gmv"]
+    }
+  },
+  {
+    "id": "metric-repeat-1",
+    "title": "复购率指标口径",
+    "snippet": "复购率 = 有 2 笔及以上 completed 订单的用户数 / 有 completed 订单的用户数。统计时先按 user_id 分组筛选 COUNT(orders) >= 2，再除以总购买用户数。",
+    "source": "business://product_db/repeat-purchase",
+    "score": 0.75,
+    "metadata": {
+      "type": "RULE",
+      "tags": ["metric", "repeat", "复购"]
     }
   }
 ]
-

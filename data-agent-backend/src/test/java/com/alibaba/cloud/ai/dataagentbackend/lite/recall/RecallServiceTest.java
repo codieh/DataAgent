@@ -26,7 +26,7 @@ class RecallServiceTest {
 				new DocumentIndexBuilder(),
 				new SchemaIndexBuilder(),
 				new FileRecallDocumentStore(new ObjectMapper(), Files.createTempDirectory("recall-service-evidence").toString()),
-				new RecallEmbeddingService(noopEmbeddingClient(), new EmbeddingProperties("http://localhost", "", "bge-m3", "/v1/embeddings"),
+				new RecallEmbeddingService(noopEmbeddingClient(), new EmbeddingProperties("http://localhost", "", "bge-m3", "/v1/embeddings", 5, 30),
 						"keyword"),
 				new EvidenceRecallMetadataResolver(),
 				new DocumentRecallMetadataResolver());
@@ -50,7 +50,7 @@ class RecallServiceTest {
 				new DocumentIndexBuilder(),
 				new SchemaIndexBuilder(),
 				new FileRecallDocumentStore(new ObjectMapper(), Files.createTempDirectory("recall-service-schema").toString()),
-				new RecallEmbeddingService(noopEmbeddingClient(), new EmbeddingProperties("http://localhost", "", "bge-m3", "/v1/embeddings"),
+				new RecallEmbeddingService(noopEmbeddingClient(), new EmbeddingProperties("http://localhost", "", "bge-m3", "/v1/embeddings", 5, 30),
 						"keyword"),
 				new EvidenceRecallMetadataResolver(),
 				new DocumentRecallMetadataResolver());
@@ -79,7 +79,7 @@ class RecallServiceTest {
 		RecallService recallService = new RecallService(new KeywordRecallEngine(), new EvidenceIndexBuilder(),
 				new DocumentIndexBuilder(), new SchemaIndexBuilder(),
 				new FileRecallDocumentStore(new ObjectMapper(), Files.createTempDirectory("recall-service-document").toString()),
-				new RecallEmbeddingService(noopEmbeddingClient(), new EmbeddingProperties("http://localhost", "", "bge-m3", "/v1/embeddings"),
+				new RecallEmbeddingService(noopEmbeddingClient(), new EmbeddingProperties("http://localhost", "", "bge-m3", "/v1/embeddings", 5, 30),
 						"keyword"),
 				new EvidenceRecallMetadataResolver(),
 				new DocumentRecallMetadataResolver());

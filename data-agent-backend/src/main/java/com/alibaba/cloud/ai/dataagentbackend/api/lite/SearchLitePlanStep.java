@@ -85,7 +85,7 @@ public class SearchLitePlanStep {
 	}
 
 	public void setPreviewRows(List<Map<String, Object>> previewRows) {
-		this.previewRows = previewRows == null ? new ArrayList<>() : previewRows;
+		this.previewRows = sanitizeRows(previewRows);
 	}
 
 	public String getError() {
@@ -102,6 +102,54 @@ public class SearchLitePlanStep {
 
 	public void setSummarySnippet(String summarySnippet) {
 		this.summarySnippet = summarySnippet;
+	}
+
+	private List<Map<String, Object>> sanitizeRows(List<Map<String, Object>> rows) {
+		if (rows == null) {
+			return new ArrayList<>();
+		}
+		List<Map<String, Object>> sanitized = new ArrayList<>(rows.size());
+		for (Map<String, Object> row : rows) {
+			sanitized.add(sanitizeMap(row));
+		}
+		return sanitized;
+	}
+
+	private Map<String, Object> sanitizeMap(Map<String, Object> raw) {
+		Map<String, Object> sanitized = new java.util.LinkedHashMap<>();
+		if (raw == null) {
+			return sanitized;
+		}
+		for (Map.Entry<String, Object> entry : raw.entrySet()) {
+			String key = entry.getKey();
+			if ("@class".equals(key)) {
+				continue;
+			}
+			sanitized.put(key, sanitizeValue(entry.getValue()));
+		}
+		return sanitized;
+	}
+
+	private Object sanitizeValue(Object value) {
+		if (value instanceof Map<?, ?> map) {
+			Map<String, Object> nested = new java.util.LinkedHashMap<>();
+			for (Map.Entry<?, ?> entry : map.entrySet()) {
+				String key = String.valueOf(entry.getKey());
+				if ("@class".equals(key)) {
+					continue;
+				}
+				nested.put(key, sanitizeValue(entry.getValue()));
+			}
+			return nested;
+		}
+		if (value instanceof List<?> list) {
+			List<Object> nested = new ArrayList<>(list.size());
+			for (Object item : list) {
+				nested.add(sanitizeValue(item));
+			}
+			return nested;
+		}
+		return value;
 	}
 
 }

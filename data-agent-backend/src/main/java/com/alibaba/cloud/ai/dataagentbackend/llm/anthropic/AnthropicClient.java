@@ -2,6 +2,7 @@ package com.alibaba.cloud.ai.dataagentbackend.llm.anthropic;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -47,6 +48,8 @@ public class AnthropicClient {
 		}
 
 		this.webClient = b.build();
+		log.info("LLM client initialized: baseUrl={}, model={}, requestTimeout={}s, streamTimeout={}s",
+				props.baseUrl(), props.model(), props.requestTimeoutSeconds(), props.streamTimeoutSeconds());
 	}
 
 	public Mono<String> createMessage(String systemPrompt, String userPrompt) {
@@ -59,6 +62,7 @@ public class AnthropicClient {
 			.bodyValue(req)
 			.retrieve()
 			.bodyToMono(MessageResponse.class)
+			.timeout(Duration.ofSeconds(props.requestTimeoutSeconds()))
 			.map(MessageResponse::firstText);
 	}
 
@@ -97,6 +101,7 @@ public class AnthropicClient {
 				return extractTextDelta(data);
 			})
 			.filter(StringUtils::hasText)
+			.timeout(Duration.ofSeconds(props.streamTimeoutSeconds()))
 			.doOnNext(d -> deltaCount.incrementAndGet())
 			.doOnError(e -> log.warn("LLM stream error: baseUrl={}, model={}, error={}", props.baseUrl(),
 					props.model(), e == null ? null : e.getMessage(), e))

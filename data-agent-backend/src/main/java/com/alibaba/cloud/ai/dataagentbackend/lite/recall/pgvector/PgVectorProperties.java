@@ -7,7 +7,7 @@ public record PgVectorProperties(boolean enabled, String url, String username, S
 		int dimensions, boolean syncOnSearch) {
 
 	public PgVectorProperties {
-		url = normalize(url, "jdbc:postgresql://127.0.0.1:5432/data_agent_recall");
+		url = normalize(url, "jdbc:postgresql://localhost:5432/data_agent_recall");
 		username = normalize(username, "postgres");
 		password = password == null ? "" : password;
 		tableName = normalize(tableName, "recall_vectors");

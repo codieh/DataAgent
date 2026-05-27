@@ -63,39 +63,57 @@ public class EnhanceMinimaxStep implements SearchLiteStep {
 
 	@Override
 	public SearchLiteStepResult run(SearchLiteContext context, SearchLiteState state) {
+		String currentTime = java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+
 		String system = """
-				You rewrite user queries for a SQL data assistant.
-				Return ONLY valid JSON without markdown or extra text.
+				你是一位顶级的自然语言理解专家，擅长融合业务知识，对用户查询进行澄清、转换、扩展。
+				你必须只返回合法 JSON，不要输出 markdown、解释文本或代码块。
 				""".trim();
 
 		String user = """
-				Given the user query, output:
-				- canonicalQuery: a single clear and complete question for SQL generation
-				- expandedQueries: 1-3 alternative rewrites (including the canonicalQuery as the first item)
+				请处理用户查询，输出以下两个字段：
+				- canonicalQuery：一个清晰、完整、独立的规范化查询，可直接用于 SQL 生成
+				- expandedQueries：1-3 个语义相同但表达不同的扩展查询（canonicalQuery 作为第一项）
 
-				Rules:
-				- Keep the meaning the same; do NOT invent new business requirements.
-				- Preserve time ranges and filters if present.
-				- If the current query is a follow-up, use the multi-turn context to resolve pronouns and omitted conditions.
-				- You may use business rules and document definitions to clarify domain terms, but do NOT add unrelated constraints.
-				- If the query is already clear, canonicalQuery can equal the original query.
+				处理规则：
+				1. 查询澄清：结合多轮对话历史，理解用户完整意图，进行指代消解（"它"->"A产品"）。
+				2. 时间转换：识别相对时间（"最近7天"、"上个月"），根据当前时间转换为绝对日期或范围。
+				3. 业务术语解析：查阅业务知识，将查询中的业务术语替换为其具体的、可用数据描述的定义。
+				4. 保持语义不变：不要编造新的业务需求，不要添加用户未提及的约束。
+				5. 如果查询已经清晰，canonicalQuery 可以等于原查询。
 
-				Output JSON schema:
+				输出 JSON 格式：
 				{"canonicalQuery":"...","expandedQueries":["...","..."]}
 
-				Business rules / FAQ hints:
+				---
+
+				示例：
+				[当前时间: 2025-11-08 11:11:12]
+				【业务知识】: "核心用户"被定义为最近30天内消费总额超过5000元的用户。
+				【多轮输入】: (无)
+				<最新>用户输入: 帮我看看上个月的核心用户有多少
+				输出：
+				{"canonical_query":"查询上个月（2025-10-01至2025-10-31）期间，消费总额超过5000元的用户数量","expanded_queries":["统计在2025年10月份，累计消费金额大于5000的客户总数是多少？","找出上个月消费超过5000元的核心用户有多少人"]}
+
+				---
+
+				[当前时间: %s]
+
+				【业务知识】:
 				%s
 
-				Definition / background documents:
+				【文档定义】:
 				%s
 
-				Multi-turn context:
+				【多轮输入】:
 				%s
 
-				User query:
+				<最新>用户输入:
 				%s
-				""".formatted(resolveEvidenceContext(state), resolveDocumentContext(state), resolveMultiTurnContext(state),
-						state.getQuery()).trim();
+
+				输出：
+				""".formatted(currentTime, resolveEvidenceContext(state), resolveDocumentContext(state),
+						resolveMultiTurnContext(state), state.getQuery()).trim();
 
 		Flux<SearchLiteMessage> start = Flux
 			.just(SearchLiteMessages.message(context, stage(), SearchLiteMessageType.TEXT, "正在进行查询增强...", null))

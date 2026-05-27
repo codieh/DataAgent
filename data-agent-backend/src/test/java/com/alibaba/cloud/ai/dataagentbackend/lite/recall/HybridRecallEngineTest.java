@@ -1,6 +1,7 @@
 package com.alibaba.cloud.ai.dataagentbackend.lite.recall;
 
 import com.alibaba.cloud.ai.dataagentbackend.lite.recall.embedding.EmbeddingClient;
+import com.alibaba.cloud.ai.dataagentbackend.lite.recall.pgvector.PgVectorSearchService;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -15,7 +16,7 @@ class HybridRecallEngineTest {
 	@Test
 	void should_boost_schema_table_with_exact_match_and_type_weight() {
 		EmbeddingClient embeddingClient = text -> List.of(0.5, 0.5);
-		HybridRecallEngine engine = new HybridRecallEngine(embeddingClient, "hybrid", 0.5, 4, 1.2, 1.0, 0.8, 0.9, 0.2);
+		HybridRecallEngine engine = new HybridRecallEngine((PgVectorSearchService) embeddingClient, "hybrid", 0.5, 4, 1.2, 1.0, 0.8, 0.9, 0.2);
 
 		RecallDocument table = RecallEmbeddings.withEmbedding(
 				new RecallDocument("schema-table:orders", RecallDocumentType.SCHEMA_TABLE, "orders", "订单表",
@@ -38,7 +39,7 @@ class HybridRecallEngineTest {
 	@Test
 	void should_normalize_keyword_score_before_fusion() {
 		EmbeddingClient embeddingClient = text -> List.of(1.0, 0.0);
-		HybridRecallEngine engine = new HybridRecallEngine(embeddingClient, "hybrid", 0.5, 4, 1.0, 1.0, 1.0, 0.9, 0.0);
+		HybridRecallEngine engine = new HybridRecallEngine((PgVectorSearchService) embeddingClient, "hybrid", 0.5, 4, 1.0, 1.0, 1.0, 0.9, 0.0);
 
 		RecallDocument strongKeyword = RecallEmbeddings.withEmbedding(
 				new RecallDocument("d1", RecallDocumentType.EVIDENCE, "订单金额", "订单金额 订单金额 订单金额", Map.of()),
@@ -58,7 +59,7 @@ class HybridRecallEngineTest {
 	@Test
 	void should_rerank_pgvector_hybrid_candidates_with_bm25_signal() {
 		EmbeddingClient embeddingClient = text -> List.of(1.0, 0.0);
-		HybridRecallEngine engine = new HybridRecallEngine(embeddingClient, "bm25-pgvector-rerank", 0.7, 4, 1.0, 1.0, 1.0,
+		HybridRecallEngine engine = new HybridRecallEngine((PgVectorSearchService) embeddingClient, "bm25-pgvector-rerank", 0.7, 4, 1.0, 1.0, 1.0,
 				0.9, 0.0);
 
 		RecallDocument exact = RecallEmbeddings.withEmbedding(

@@ -7,6 +7,8 @@ import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteStage;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteState;
 import com.alibaba.cloud.ai.dataagentbackend.lite.SearchLiteOrchestrator;
 import com.alibaba.cloud.ai.dataagentbackend.lite.SearchLiteRunResult;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -30,6 +32,8 @@ import java.util.stream.Collectors;
 @Service
 public class EvalRunner {
 
+	private static final Logger log = LoggerFactory.getLogger(EvalRunner.class);
+
 	private static final DateTimeFormatter REPORT_ID_FORMAT = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")
 		.withLocale(Locale.ROOT)
 		.withZone(ZoneId.systemDefault());
@@ -46,7 +50,7 @@ public class EvalRunner {
 
 	public EvalRunner(SearchLiteOrchestrator orchestrator, EvalCaseLoader caseLoader, EvalReportWriter reportWriter,
 			@Value("${search.lite.eval.agent-id:eval-agent}") String defaultAgentId,
-			@Value("${search.lite.eval.suite:standard}") String suite) {
+			@Value("${search.lite.eval.suite:quick}") String suite) {
 		this.orchestrator = orchestrator;
 		this.caseLoader = caseLoader;
 		this.reportWriter = reportWriter;
@@ -59,6 +63,9 @@ public class EvalRunner {
 		if (loadedDatasets.isEmpty()) {
 			throw new IllegalStateException("no eval datasets matched suite: " + suite);
 		}
+		log.info("lite eval suite selected: suite={}, datasets={}, totalCases={}", suite,
+				loadedDatasets.stream().map(loaded -> loaded.dataset().datasetId()).toList(),
+				loadedDatasets.stream().mapToInt(loaded -> loaded.dataset().cases().size()).sum());
 		List<EvalCaseResult> results = new ArrayList<>();
 		for (EvalCaseLoader.LoadedEvalDataset loadedDataset : loadedDatasets) {
 			for (EvalCaseDefinition definition : loadedDataset.dataset().cases()) {

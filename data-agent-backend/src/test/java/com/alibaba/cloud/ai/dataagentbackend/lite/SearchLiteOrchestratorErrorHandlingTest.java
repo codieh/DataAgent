@@ -4,6 +4,7 @@ import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteMessage;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteRequest;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteStage;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteState;
+import com.alibaba.cloud.ai.dataagentbackend.lite.conversation.MultiTurnContextManager;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStep;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStepResult;
 import org.junit.jupiter.api.Test;
@@ -34,7 +35,7 @@ class SearchLiteOrchestratorErrorHandlingTest {
 			}
 		};
 
-		SearchLiteOrchestrator orchestrator = new SearchLiteOrchestrator(List.of(badStep));
+		SearchLiteOrchestrator orchestrator = new SearchLiteOrchestrator(List.of(badStep), "pipeline", null, new MultiTurnContextManager(5, 240, 3), null);
 		Flux<SearchLiteMessage> flux = orchestrator.stream(new SearchLiteRequest("agent-1", "thread-1", "q"));
 
 		List<SearchLiteMessage> msgs = flux.collectList().block(Duration.ofSeconds(5));

@@ -94,6 +94,19 @@ public class SearchLiteGraphService {
 			}
 			catch (Exception e) {
 				multiTurnContextManager.discardPending(context.threadId());
+				SearchLiteState failedState = latestState.get() == null ? state : latestState.get();
+				if (failedState == null) {
+					failedState = new SearchLiteState();
+					failedState.setThreadId(context.threadId());
+				}
+				Throwable root = rootCause(e);
+				String message = root == null || root.getMessage() == null ? "unknown error" : root.getMessage();
+				failedState.setError(message);
+				if (failedState.getResultMode() == null || failedState.getResultMode().isBlank()) {
+					failedState.setResultMode("execution_error");
+				}
+				failedState.setAwaitingHumanFeedback(false);
+				latestState.set(failedState);
 				emitError(sink, context, e);
 			}
 			finally {
@@ -165,13 +178,18 @@ public class SearchLiteGraphService {
 	}
 
 	private void emitError(Sinks.Many<SearchLiteMessage> sink, SearchLiteContext context, Throwable error) {
+		Throwable root = rootCause(error);
+		String message = root == null || root.getMessage() == null ? "unknown error" : root.getMessage();
+		sink.tryEmitNext(SearchLiteMessages.error(context, SearchLiteStage.RESULT, message));
+		sink.tryEmitComplete();
+	}
+
+	private Throwable rootCause(Throwable error) {
 		Throwable root = error;
 		while (root != null && root.getCause() != null) {
 			root = root.getCause();
 		}
-		String message = root == null || root.getMessage() == null ? "unknown error" : root.getMessage();
-		sink.tryEmitNext(SearchLiteMessages.error(context, SearchLiteStage.RESULT, message));
-		sink.tryEmitComplete();
+		return root;
 	}
 
 	private boolean isWaitingForHumanFeedback(SearchLiteState state) {

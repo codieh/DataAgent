@@ -12,7 +12,7 @@ import java.util.List;
 
 import static com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphConfiguration.PLAN_EXECUTOR_NODE;
 import static com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphConfiguration.PREPARE_RESULT_NODE;
-import static com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphConfiguration.SQL_RETRY_NODE;
+import static com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphConfiguration.SQL_REPAIR_NODE;
 
 @Component
 public class SearchLiteSqlExecuteDispatcher implements EdgeAction {
@@ -58,8 +58,8 @@ public class SearchLiteSqlExecuteDispatcher implements EdgeAction {
 			}
 			if (shouldRetry(error, sql, retryCount)) {
 				log.info("graph sql-execute dispatcher: execution failed, retryCount={}, route to {}, error={}", retryCount,
-						SQL_RETRY_NODE, error);
-				return SQL_RETRY_NODE;
+						SQL_REPAIR_NODE, error);
+				return SQL_REPAIR_NODE;
 			}
 			log.info("graph sql-execute dispatcher: execution failed, retry exhausted or not retryable, route to {}, error={}",
 					PLAN_EXECUTOR_NODE, error);

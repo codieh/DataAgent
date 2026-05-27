@@ -38,6 +38,8 @@ public final class SearchLiteGraphStateMapper {
 		values.put(SearchLiteGraphStateKeys.RECALLED_SCHEMA_TEXT, state.getRecalledSchemaText());
 		values.put(SearchLiteGraphStateKeys.CANONICAL_QUERY, state.getCanonicalQuery());
 		values.put(SearchLiteGraphStateKeys.EXPANDED_QUERIES, state.getExpandedQueries());
+		values.put(SearchLiteGraphStateKeys.FEASIBILITY_RESULT, state.getFeasibilityResult());
+		values.put(SearchLiteGraphStateKeys.FEASIBILITY_MESSAGE, state.getFeasibilityMessage());
 		values.put(SearchLiteGraphStateKeys.HUMAN_REVIEW_ENABLED, state.isHumanReviewEnabled());
 		values.put(SearchLiteGraphStateKeys.HUMAN_FEEDBACK_STATUS, state.getHumanFeedbackStatus());
 		values.put(SearchLiteGraphStateKeys.HUMAN_FEEDBACK_COMMENT, state.getHumanFeedbackComment());
@@ -84,6 +86,8 @@ public final class SearchLiteGraphStateMapper {
 		state.setRecalledSchemaText(get(graphState, SearchLiteGraphStateKeys.RECALLED_SCHEMA_TEXT, String.class));
 		state.setCanonicalQuery(get(graphState, SearchLiteGraphStateKeys.CANONICAL_QUERY, String.class));
 		state.setExpandedQueries(get(graphState, SearchLiteGraphStateKeys.EXPANDED_QUERIES, java.util.List.class));
+		state.setFeasibilityResult(get(graphState, SearchLiteGraphStateKeys.FEASIBILITY_RESULT, String.class));
+		state.setFeasibilityMessage(get(graphState, SearchLiteGraphStateKeys.FEASIBILITY_MESSAGE, String.class));
 		Boolean humanReviewEnabled = get(graphState, SearchLiteGraphStateKeys.HUMAN_REVIEW_ENABLED, Boolean.class);
 		state.setHumanReviewEnabled(Boolean.TRUE.equals(humanReviewEnabled));
 		state.setHumanFeedbackStatus(get(graphState, SearchLiteGraphStateKeys.HUMAN_FEEDBACK_STATUS, String.class));

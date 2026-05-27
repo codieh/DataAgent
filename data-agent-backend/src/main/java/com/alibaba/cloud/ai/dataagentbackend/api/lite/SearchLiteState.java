@@ -47,6 +47,11 @@ public class SearchLiteState {
 
 	private List<String> expandedQueries = new ArrayList<>();
 
+	// feasibility
+	private String feasibilityResult;
+
+	private String feasibilityMessage;
+
 	// human review
 	private boolean humanReviewEnabled;
 
@@ -242,6 +247,22 @@ public class SearchLiteState {
 		this.expandedQueries = expandedQueries == null ? new ArrayList<>() : expandedQueries;
 	}
 
+	public String getFeasibilityResult() {
+		return feasibilityResult;
+	}
+
+	public void setFeasibilityResult(String feasibilityResult) {
+		this.feasibilityResult = feasibilityResult;
+	}
+
+	public String getFeasibilityMessage() {
+		return feasibilityMessage;
+	}
+
+	public void setFeasibilityMessage(String feasibilityMessage) {
+		this.feasibilityMessage = feasibilityMessage;
+	}
+
 	public boolean isHumanReviewEnabled() {
 		return humanReviewEnabled;
 	}
@@ -419,7 +440,7 @@ public class SearchLiteState {
 	}
 
 	public void setRows(List<Map<String, Object>> rows) {
-		this.rows = rows == null ? new ArrayList<>() : rows;
+		this.rows = sanitizeRows(rows);
 	}
 
 	public String getResultSummary() {
@@ -444,6 +465,56 @@ public class SearchLiteState {
 
 	public void setError(String error) {
 		this.error = error;
+	}
+
+	private List<Map<String, Object>> sanitizeRows(List<Map<String, Object>> rows) {
+		if (rows == null) {
+			return new ArrayList<>();
+		}
+		List<Map<String, Object>> sanitized = new ArrayList<>(rows.size());
+		for (Map<String, Object> row : rows) {
+			sanitized.add(sanitizeMap(row));
+		}
+		return sanitized;
+	}
+
+	@SuppressWarnings("unchecked")
+	private Map<String, Object> sanitizeMap(Map<String, Object> raw) {
+		Map<String, Object> sanitized = new java.util.LinkedHashMap<>();
+		if (raw == null) {
+			return sanitized;
+		}
+		for (Map.Entry<String, Object> entry : raw.entrySet()) {
+			String key = entry.getKey();
+			if ("@class".equals(key)) {
+				continue;
+			}
+			sanitized.put(key, sanitizeValue(entry.getValue()));
+		}
+		return sanitized;
+	}
+
+	@SuppressWarnings("unchecked")
+	private Object sanitizeValue(Object value) {
+		if (value instanceof Map<?, ?> map) {
+			Map<String, Object> nested = new java.util.LinkedHashMap<>();
+			for (Map.Entry<?, ?> entry : map.entrySet()) {
+				String key = String.valueOf(entry.getKey());
+				if ("@class".equals(key)) {
+					continue;
+				}
+				nested.put(key, sanitizeValue(entry.getValue()));
+			}
+			return nested;
+		}
+		if (value instanceof List<?> list) {
+			List<Object> nested = new ArrayList<>(list.size());
+			for (Object item : list) {
+				nested.add(sanitizeValue(item));
+			}
+			return nested;
+		}
+		return value;
 	}
 
 }

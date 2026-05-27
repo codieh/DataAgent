@@ -2,10 +2,22 @@ Q: 默认应该统计哪些订单状态？
 A: 如果问题没有特别说明，销售额和销量类问题优先统计 completed 订单。
 
 Q: pending 订单是否应该计入销售额？
-A: 一般不建议默认计入，除非业务问题明确要求统计待支付或待处理订单。
+A: 不建议默认计入，除非业务问题明确要求统计待处理订单。
 
 Q: cancelled 订单是否计入销量或销售额？
-A: 默认不计入。
+A: 不计入。cancelled 表示已取消的订单。
 
-Q: 如果用户只说“订单数”，应该怎么处理？
-A: 默认可以统计全部订单数；如果问题涉及成交、销量、销售额，则优先限制为 completed。
+Q: 如果用户只说"订单数"，应该怎么处理？
+A: 默认统计全部订单数；如果问题涉及成交、销量、销售额，则限制为 completed。
+
+Q: 订单状态有哪几种？
+A: 三种：completed（已完成）、pending（待处理）、cancelled（已取消）。
+
+Q: 如何计算某个用户的累计消费金额？
+A: 关联 orders 和 order_items，按 completed 订单筛选，SUM(order_items.quantity * order_items.unit_price)。
+
+Q: products.price 和 order_items.unit_price 有什么区别？
+A: products.price 是商品当前单价，order_items.unit_price 是下单时的快照价格。计算销售额应使用 unit_price。
+
+Q: 商品和分类是什么关系？
+A: 多对多关系，通过 product_categories 关联表连接。一个商品可属于多个分类。

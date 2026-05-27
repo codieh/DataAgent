@@ -120,7 +120,7 @@ public class EvidenceFileStep implements SearchLiteStep {
 	private EvidenceRun buildEvidenceRun(SearchLiteContext context, SearchLiteState state) {
 		String originalQuery = state.getQuery();
 		String recallQuery = state.getRecallQuery();
-		String rewrittenQuery = evidenceQueryRewriteService.rewrite(recallQuery);
+		String rewrittenQuery = evidenceQueryRewriteService.rewrite(recallQuery, state.getMultiTurnContext());
 		state.setEvidenceRewriteQuery(rewrittenQuery);
 		List<EvidenceItem> all = evidenceRepository.listAll();
 		if (all == null || all.isEmpty()) {

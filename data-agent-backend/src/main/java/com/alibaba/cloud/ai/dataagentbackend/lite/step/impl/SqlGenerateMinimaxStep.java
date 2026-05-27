@@ -83,9 +83,9 @@ public class SqlGenerateMinimaxStep implements SearchLiteStep {
 				question == null ? 0 : question.length(), schemaLen, evidenceLen, documentLen);
 
 		String system = """
-				You are a senior data analyst who writes correct and safe SQL.
-				Return ONLY a single MySQL SELECT statement.
-				Do NOT return markdown, code fences, explanations, or JSON.
+				你是一位精通 MySQL 的高级数据工程师。
+				你的任务是根据【数据库 Schema】和用户问题，编写一句高效、准确的 SQL 查询语句。
+				仅输出 SQL 语句本身，不要输出任何额外标记，特别是 Markdown 标记。
 				""".trim();
 
 		String user = buildSqlGenerationPrompt(question, schema, evidence, documents, retryHint, planContext, defaultLimit);
@@ -146,46 +146,59 @@ public class SqlGenerateMinimaxStep implements SearchLiteStep {
 	static String buildSqlGenerationPrompt(String question, String schema, String evidence, String documents, String retryHint,
 			String planContext, int defaultLimit) {
 		return """
-				User question:
+				# 用户问题
 				%s
 
-				Authoritative database schema (STRUCTURE SOURCE, must be obeyed):
+				# 数据库 Schema（绝对事实，必须严格遵循）
+				%s
+				注意：你编写的 SQL 中所有表名和列名必须严格存在于上述 Schema 中，严禁臆造不存在的字段。
+
+				# 业务知识（参考）
 				%s
 
-				Supporting business rules and FAQ hints:
+				# 文档定义（参考）
 				%s
 
-				Supporting definitions and background documents:
+				# 重试提示
 				%s
 
-				Retry hints from previous SQL attempt:
+				# 计划上下文
 				%s
 
-				Plan context and previous step outputs:
-				%s
+				# 上下文使用规则
+				- Schema 是硬约束：SQL 的表名、列名、JOIN 路径必须严格来自 Schema。
+				- 业务知识是参考：如果业务知识与 Schema 冲突，以 Schema 为准。
+				- 文档定义是参考：用于理解业务术语的含义，但不能引入 Schema 中不存在的表或列。
+				- 如果重试提示存在，修复上次 SQL 的错误，但保持业务意图不变。
+				- 如果计划上下文存在，仅在当前步骤依赖前序结果时使用。
 
-				How to use context:
-				- Treat schema as the hard constraint for tables, columns, joins, and SQL structure.
-				- Use ONLY tables/columns that exist in the schema section.
-				- Treat evidence as explicit business rules, FAQ answers, or metric calculation hints.
-				- Treat documents as concept definitions and background explanations, especially for business terms like user segments and metrics.
-				- If evidence conflicts with schema, always trust schema.
-				- If documents conflict with schema, always trust schema.
-				- If a document provides a definition that clearly matches the user question, prefer that definition over unrelated evidence.
-				- If evidence or documents are irrelevant to the current question, ignore them.
-				- If retry hints are present, fix the previous SQL mistake but keep the business intent unchanged.
-				- If plan context contains previous step outputs, use them only as constraints for the current step when the current instruction depends on previous results.
+				# SQL 编写约束
+				1. 输出必须是单条 MySQL SELECT 语句（无分号，无多条语句）。
+				2. 使用清晰的表别名。
+				3. 禁止使用 SELECT *，只选择需要的列。
+				4. 问题未明确要求明细时，优先输出聚合/统计结果。
+				5. 除非问题明确要求所有行，否则必须添加 LIMIT %d。
+				6. 禁止使用系统函数（CURRENT_USER(), USER(), VERSION(), @@variables）。
+				7. 禁止直接查询敏感字段（phone, mobile, email, id_card, salary, wage, bank_card, address），除非问题明确要求且策略允许。
+				8. 避免使用 MySQL 保留字作为别名。
+				9. 如果问题模糊或 Schema 无法完全回答，仍然输出最佳努力的 SELECT。
 
-				Constraints:
-				- Output must be a single MySQL SELECT statement (no semicolons, no multiple statements).
-				- Prefer clear table aliases.
-				- Do NOT use SELECT *.
-				- Prefer aggregated/statistical results over raw row-level detail when the question does not explicitly ask for detail rows.
-				- Always add LIMIT %d unless the question explicitly asks for all rows.
-				- Do NOT add debug/system columns (e.g., CURRENT_USER(), USER(), VERSION(), @@variables).
-				- Avoid directly selecting sensitive columns such as phone, mobile, email, id_card, salary, wage, bank_card, address unless the question explicitly asks and policy allows it.
-				- Avoid reserved keywords as aliases.
-				- If the question is ambiguous or cannot be answered with the schema, still output the best-effort SELECT.
+				# 输出格式
+				仅输出 SQL 语句，不要使用任何额外标记，特别是 Markdown 标记。
+
+				---
+
+				# 输出示例
+
+				❌ 错误输出（带有 Markdown 标记，会导致执行器解析失败）：
+				```sql
+				select `id`, `name` from `user`;
+				```
+
+				✅ 正确输出（纯 SQL 语句）：
+				select `id`, `name` from `user` limit 200;
+
+				---
 				""".formatted(safe(question), safe(schema), safe(evidence), safe(documents), safe(retryHint), safe(planContext),
 					Math.max(1, defaultLimit)).trim();
 	}

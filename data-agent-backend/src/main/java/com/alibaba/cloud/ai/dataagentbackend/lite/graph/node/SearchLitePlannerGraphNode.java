@@ -75,9 +75,9 @@ public class SearchLitePlannerGraphNode implements NodeAction {
 				SearchLiteMessageType.TEXT, "正在规划分析步骤...", null));
 
 		String system = """
-				You are a senior data analysis planner.
-				Split the request into a concise, executable SQL-first plan.
-				Return ONLY valid JSON without markdown or extra commentary.
+				你是一位拥有深厚业务洞察力的高级数据分析专家。
+				你的核心职责是解析用户的业务问题，并基于给定的数据库 Schema，制定一个严谨、可执行的分步执行计划。
+				你必须且只能输出一个合法的 JSON 对象，严禁包含 markdown 标记、注释或任何 JSON 结构之外的文本。
 				""".trim();
 		String user = buildPlannerPrompt(liteState);
 		String rawOutput;
@@ -121,9 +121,10 @@ public class SearchLitePlannerGraphNode implements NodeAction {
 
 	private String buildPlannerPrompt(SearchLiteState state) {
 		StringBuilder prompt = new StringBuilder("""
-				Create a SQL-only execution plan for the current data analysis request.
+				# 核心任务
+				为当前数据分析请求创建一个 SQL 执行计划。
 
-				Output JSON schema:
+				# 输出 JSON 格式
 				{
 				  "steps": [
 				    {
@@ -134,40 +135,46 @@ public class SearchLitePlannerGraphNode implements NodeAction {
 				  ]
 				}
 
-				Rules:
-				- Only use tool value "SQL".
-				- Create 1 to %d steps.
-				- Each step instruction must be self-contained and executable by a SQL generator.
-				- If the query is simple, return exactly one step.
-				- If the query has multiple dependent asks, decompose into ordered SQL steps.
-				- Do not invent unavailable business constraints.
-				- Prefer minimal step count.
-				- If prior plan validation failed, fix the issues explicitly.
+				# 规则
+				1. 只使用 "SQL" 作为 tool 值。
+				2. 创建 1 到 %d 个步骤。
+				3. 每个步骤的 instruction 必须是自包含的，能被 SQL 生成器直接执行。
+				4. 如果查询简单，只返回一个步骤。
+				5. 如果查询有多个依赖关系，拆分为有序的 SQL 步骤。
+				6. 不要编造 Schema 中不存在的业务约束。
+				7. 优先使用最少步骤数。
+				8. 如果之前的计划校验失败，明确修复问题。
 
-				User request:
+				# 思考路径
+				1. 理解目标：用户的核心疑问是什么？
+				2. 核对 Schema：检查计划查询的字段是否在 Schema 中真实存在。
+				3. 拆解步骤：将大问题拆解为可执行的 SQL 步骤。
+				4. 撰写指令：确保每个步骤的 instruction 足够详细，让 SQL 生成器一看就懂。
+
+				# 用户请求
 				%s
 
-				Canonical query:
+				# 规范化查询
 				%s
 
-				Multi-turn context:
+				# 多轮上下文
 				%s
 
-				Schema context:
+				# Schema 上下文
 				%s
 
-				Evidence context:
+				# 业务知识
 				%s
 
-				Document context:
+				# 文档定义
 				%s
 				""".formatted(maxSteps, safe(state.getQuery()), safe(state.getCanonicalQuery()),
 					safeOrDefault(state.getMultiTurnContext(), "(无)"), safeOrDefault(state.getRecalledSchemaText(), "(无)"),
 					safeOrDefault(state.getEvidenceText(), "(无)"), safeOrDefault(state.getDocumentText(), "(无)")));
 
 		if (StringUtils.hasText(state.getPlanValidationError())) {
-			prompt.append("\nPrevious plan validation error:\n").append(state.getPlanValidationError()).append('\n');
-			prompt.append("\nPrevious raw plan:\n").append(safeOrDefault(state.getPlannerRawOutput(), "(无)")).append('\n');
+			prompt.append("\n# 之前的计划校验错误\n").append(state.getPlanValidationError()).append('\n');
+			prompt.append("\n# 之前的原始计划\n").append(safeOrDefault(state.getPlannerRawOutput(), "(无)")).append('\n');
 		}
 		return prompt.toString().trim();
 	}

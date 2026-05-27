@@ -24,8 +24,12 @@ public class DocumentChunker {
 
 	private final int maxChars;
 
-	public DocumentChunker(@Value("${search.lite.document.chunk.max-chars:400}") int maxChars) {
+	private final int overlapChars;
+
+	public DocumentChunker(@Value("${search.lite.document.chunk.max-chars:400}") int maxChars,
+			@Value("${search.lite.document.chunk.overlap-chars:80}") int overlapChars) {
 		this.maxChars = Math.max(100, maxChars);
+		this.overlapChars = Math.max(0, Math.min(overlapChars, this.maxChars / 2));
 	}
 
 	public List<DocumentIndexBuilder.SourceDocument> chunk(String docName, Path relativePath, String fileType, String content) {
@@ -102,29 +106,106 @@ public class DocumentChunker {
 		if (text.length() <= maxChars) {
 			return List.of(text);
 		}
+		List<String> sentences = splitSentences(text);
+		if (sentences.size() <= 1) {
+			return splitBySlidingWindow(text);
+		}
+		return splitSentencesWithOverlap(sentences);
+	}
+
+	private List<String> splitSentencesWithOverlap(List<String> sentences) {
 		List<String> pieces = new ArrayList<>();
+		int index = 0;
+		while (index < sentences.size()) {
+			StringBuilder current = new StringBuilder();
+			int endExclusive = index;
+			while (endExclusive < sentences.size()) {
+				String sentence = sentences.get(endExclusive);
+				if (current.length() > 0 && current.length() + 1 + sentence.length() > maxChars) {
+					break;
+				}
+				if (current.length() > 0) {
+					current.append('\n');
+				}
+				current.append(sentence);
+				endExclusive++;
+			}
+			if (endExclusive == index) {
+				String sentence = sentences.get(index);
+				pieces.addAll(splitBySlidingWindow(sentence));
+				index++;
+				continue;
+			}
+			pieces.add(current.toString().trim());
+			if (endExclusive >= sentences.size()) {
+				break;
+			}
+			index = rewindForOverlap(sentences, index, endExclusive);
+		}
+		return pieces;
+	}
+
+	private int rewindForOverlap(List<String> sentences, int startInclusive, int endExclusive) {
+		if (overlapChars <= 0) {
+			return endExclusive;
+		}
+		int overlapLength = 0;
+		for (int i = endExclusive - 1; i >= startInclusive; i--) {
+			String sentence = sentences.get(i);
+			int candidate = overlapLength + sentence.length();
+			if (overlapLength > 0) {
+				candidate += 1;
+			}
+			if (candidate > overlapChars) {
+				return i == endExclusive - 1 ? endExclusive - 1 : i + 1;
+			}
+			overlapLength = candidate;
+		}
+		return startInclusive + 1;
+	}
+
+	private List<String> splitBySlidingWindow(String text) {
+		List<String> pieces = new ArrayList<>();
+		int step = Math.max(1, maxChars - overlapChars);
 		int start = 0;
 		while (start < text.length()) {
 			int end = Math.min(start + maxChars, text.length());
-			if (end < text.length()) {
-				int paragraphBreak = text.lastIndexOf("\n\n", end);
-				if (paragraphBreak > start + maxChars / 2) {
-					end = paragraphBreak;
-				}
-				else {
-					int sentenceBreak = Math.max(text.lastIndexOf('。', end), text.lastIndexOf('\n', end));
-					if (sentenceBreak > start + maxChars / 2) {
-						end = sentenceBreak + 1;
-					}
-				}
-			}
 			String piece = text.substring(start, end).trim();
 			if (!piece.isBlank()) {
 				pieces.add(piece);
 			}
-			start = Math.max(end, start + 1);
+			if (end >= text.length()) {
+				break;
+			}
+			start = Math.min(start + step, text.length() - 1);
 		}
 		return pieces;
+	}
+
+	private List<String> splitSentences(String text) {
+		List<String> sentences = new ArrayList<>();
+		StringBuilder current = new StringBuilder();
+		for (int i = 0; i < text.length(); i++) {
+			char ch = text.charAt(i);
+			current.append(ch);
+			if (isSentenceBoundary(ch)) {
+				addSentence(sentences, current);
+				current = new StringBuilder();
+			}
+		}
+		addSentence(sentences, current);
+		return sentences;
+	}
+
+	private void addSentence(List<String> sentences, StringBuilder current) {
+		String normalized = current == null ? "" : current.toString().trim();
+		if (!normalized.isBlank()) {
+			sentences.add(normalized);
+		}
+	}
+
+	private boolean isSentenceBoundary(char ch) {
+		return ch == '。' || ch == '！' || ch == '？' || ch == '.' || ch == '!' || ch == '?' || ch == '\n';
 	}
 
 	private static void addSection(List<Section> sections, String title, StringBuilder current) {

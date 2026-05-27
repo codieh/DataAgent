@@ -37,12 +37,30 @@ public class SearchLitePrepareResultGraphNode implements NodeAction {
 
 	public static final String MODE_WAITING_HUMAN_FEEDBACK = "waiting_human_feedback";
 
+	public static final String MODE_NEED_CLARIFICATION = "need_clarification";
+
+	public static final String MODE_FREE_CHAT = "free_chat";
+
 	@Override
 	public Map<String, Object> apply(OverAllState state) {
 		SearchLiteState liteState = SearchLiteGraphStateMapper.toSearchLiteState(state);
 		SearchLiteState beforeState = SearchLiteGraphStateMapper.toSearchLiteState(state);
 		long startedAt = System.nanoTime();
-		if (liteState.isAwaitingHumanFeedback() || MODE_WAITING_HUMAN_FEEDBACK.equalsIgnoreCase(liteState.getResultMode())) {
+		if (MODE_NEED_CLARIFICATION.equalsIgnoreCase(liteState.getResultMode())) {
+			if (!StringUtils.hasText(liteState.getResultSummary())) {
+				liteState.setResultSummary(StringUtils.hasText(liteState.getFeasibilityMessage())
+						? liteState.getFeasibilityMessage()
+						: "当前问题信息不足，无法生成准确查询。请补充更明确的业务对象、指标名称或筛选条件后再试。");
+			}
+		}
+		else if (MODE_FREE_CHAT.equalsIgnoreCase(liteState.getResultMode())) {
+			if (!StringUtils.hasText(liteState.getResultSummary())) {
+				liteState.setResultSummary(StringUtils.hasText(liteState.getFeasibilityMessage())
+						? liteState.getFeasibilityMessage()
+						: "当前请求不是数据分析类问题，无法通过数据查询回答。请问您是否有数据分析相关的需求？");
+			}
+		}
+		else if (liteState.isAwaitingHumanFeedback() || MODE_WAITING_HUMAN_FEEDBACK.equalsIgnoreCase(liteState.getResultMode())) {
 			liteState.setResultMode(MODE_WAITING_HUMAN_FEEDBACK);
 			if (!StringUtils.hasText(liteState.getResultSummary())) {
 				liteState.setResultSummary("计划已生成，等待人工审核后继续执行。");

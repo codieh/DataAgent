@@ -7,4 +7,8 @@ public interface EvidenceQueryRewriteService {
 
 	String rewrite(String query);
 
+	default String rewrite(String query, String multiTurnContext) {
+		return rewrite(query);
+	}
+
 }

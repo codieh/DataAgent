@@ -84,8 +84,8 @@ public class ResultMinimaxStep implements SearchLiteStep {
 		List<Map<String, Object>> preview = rows == null ? List.of() : rows.stream().limit(maxRowsForPrompt).toList();
 
 		String system = """
-				You are a data analyst assistant.
-				Write a concise summary in Chinese.
+				你是一位专业的数据分析顾问，需要基于 SQL 执行结果，生成简洁、准确的中文总结。
+				根据提供的数据结果进行推理，不得杜撰数据。
 				""".trim();
 
 		String user = buildUserPrompt(state, sql, rowCount, preview);
@@ -134,6 +134,12 @@ public class ResultMinimaxStep implements SearchLiteStep {
 			case "waiting_human_feedback" -> "计划已生成，等待人工审核。请基于当前 threadId 提交审核结果后继续执行。";
 			case "blocked_sensitive_sql" -> "当前查询涉及敏感字段或敏感明细，已被安全策略拦截。建议改为统计类查询或去除敏感字段后重试。";
 			case "blocked_wide_export" -> "当前查询可能导致大范围明细导出，已被安全策略拦截。建议增加筛选条件、限制范围，或改为聚合统计后重试。";
+			case "need_clarification" -> StringUtils.hasText(state.getFeasibilityMessage())
+					? state.getFeasibilityMessage()
+					: "当前问题信息不足，无法生成准确查询。请补充更明确的业务对象、指标名称或筛选条件后再试。";
+			case "free_chat" -> StringUtils.hasText(state.getFeasibilityMessage())
+					? state.getFeasibilityMessage()
+					: "当前请求不是数据分析类问题，无法通过数据查询回答。请问您是否有数据分析相关的需求？";
 			default -> null;
 		};
 		if (!StringUtils.hasText(summary)) {
@@ -168,30 +174,31 @@ public class ResultMinimaxStep implements SearchLiteStep {
 			rowsJson = String.valueOf(preview);
 		}
 		return """
-				User question:
+				# 用户问题
 				%s
 
-				Execution plan and completed steps:
+				# 执行计划与完成步骤
 				%s
 
-				SQL executed:
+				# 执行的 SQL
 				%s
 
-				Row count:
+				# 返回行数
 				%d
 
-				Top rows (JSON preview):
+				# 数据预览（JSON）
 				%s
 
-				Completed plan step summary:
+				# 计划步骤总结
 				%s
 
-				Output requirements:
-				- Provide 3-6 bullet points.
-				- Mention row count and any obvious patterns.
-				- If multiple plan steps are available, summarize across all steps instead of only the last SQL.
-				- Explicitly mention how many steps were planned, which steps succeeded or failed, and what each step found.
-				- If result is empty, explain possible reasons and suggest a follow-up query.
+				# 输出要求
+				1. 提供 3-6 条要点总结。
+				2. 提及返回行数和明显的规律或趋势。
+				3. 如果有多个计划步骤，综合所有步骤进行总结，不要只看最后一条 SQL。
+				4. 明确说明计划了多少步骤、哪些成功/失败、每步发现了什么。
+				5. 如果结果为空，解释可能原因并建议后续查询。
+				6. 只基于提供的数据进行总结，不要补充你认为应该有的数据。
 				""".formatted(safe(query), planJson(state), safe(sql), rowCount, rowsJson, planSummaryText(state)).trim();
 	}
 

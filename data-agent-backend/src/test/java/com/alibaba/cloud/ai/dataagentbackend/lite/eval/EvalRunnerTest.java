@@ -29,6 +29,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 		"search.lite.result.provider=mock",
 		"search.lite.eval.cases-dir=data/eval/cases",
 		"search.lite.eval.reports-dir=target/test-eval-reports",
+		"search.lite.eval.suite=standard",
 		"APP_LOG_LEVEL=INFO"
 })
 class EvalRunnerTest {
@@ -44,9 +45,9 @@ class EvalRunnerTest {
 		EvalRunReport report = evalRunner.runDefaultSuite();
 
 		assertNotNull(report);
-		assertEquals("standard", report.suite());
-		assertEquals(45, report.totalCases());
-		assertEquals(3, report.datasetSummaries().size());
+		assertEquals("all", report.suite());
+		assertEquals(72, report.totalCases());
+		assertEquals(5, report.datasetSummaries().size());
 		assertNotNull(report.metrics());
 		assertEquals(report.passedCases(), report.metrics().expectationPassRate().passed());
 		assertEquals(report.totalCases(), report.metrics().expectationPassRate().total());

@@ -7,6 +7,7 @@ import org.springframework.util.StringUtils;
 
 import java.util.ArrayDeque;
 import java.util.Deque;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -22,14 +23,20 @@ public class MultiTurnContextManager {
 
 	private final Map<String, PendingConversationTurn> pendingTurns = new ConcurrentHashMap<>();
 
+	private final Map<String, String> rollingSummaries = new ConcurrentHashMap<>();
+
 	private final int maxTurnHistory;
 
 	private final int maxFieldLength;
 
+	private final int recentDetailTurns;
+
 	public MultiTurnContextManager(@Value("${search.lite.context.max-turn-history:5}") int maxTurnHistory,
-			@Value("${search.lite.context.max-field-length:240}") int maxFieldLength) {
+			@Value("${search.lite.context.max-field-length:240}") int maxFieldLength,
+			@Value("${search.lite.context.recent-detail-turns:3}") int recentDetailTurns) {
 		this.maxTurnHistory = Math.max(1, maxTurnHistory);
 		this.maxFieldLength = Math.max(40, maxFieldLength);
+		this.recentDetailTurns = Math.max(1, recentDetailTurns);
 	}
 
 	public PreparedConversationContext prepareTurn(String threadId, String userQuery) {
@@ -63,10 +70,8 @@ public class MultiTurnContextManager {
 
 		Deque<ConversationTurn> deque = history.computeIfAbsent(threadId, key -> new ArrayDeque<>());
 		synchronized (deque) {
-			while (deque.size() >= maxTurnHistory) {
-				deque.pollFirst();
-			}
 			deque.addLast(turn);
+			summarizeIfNeeded(threadId, deque);
 		}
 	}
 
@@ -82,23 +87,70 @@ public class MultiTurnContextManager {
 			return EMPTY_CONTEXT;
 		}
 		Deque<ConversationTurn> deque = history.get(threadId);
-		if (deque == null || deque.isEmpty()) {
+		String rollingSummary = safe(rollingSummaries.get(threadId));
+		if ((deque == null || deque.isEmpty()) && !StringUtils.hasText(rollingSummary)) {
 			return EMPTY_CONTEXT;
 		}
 		StringBuilder builder = new StringBuilder();
-		int index = 1;
-		for (ConversationTurn turn : deque) {
-			if (builder.length() > 0) {
-				builder.append("\n\n");
+		if (StringUtils.hasText(rollingSummary)) {
+			builder.append("[会话滚动摘要]");
+			appendLine(builder, "摘要", rollingSummary);
+		}
+		if (deque != null && !deque.isEmpty()) {
+			List<ConversationTurn> turns = recentTurns(deque);
+			int index = 1;
+			for (ConversationTurn turn : turns) {
+				if (builder.length() > 0) {
+					builder.append("\n\n");
+				}
+				builder.append("[最近第").append(index++).append("轮详情]");
+				appendLine(builder, "用户问题", turn.userQuery());
+				appendLine(builder, "上下文补全", turn.contextualizedQuery());
+				appendLine(builder, "规范化问题", turn.canonicalQuery());
+				appendLine(builder, "SQL", turn.sql());
+				appendLine(builder, "结果摘要", turn.resultSummary());
 			}
-			builder.append("[最近第").append(index++).append("轮]");
-			appendLine(builder, "用户问题", turn.userQuery());
-			appendLine(builder, "上下文补全", turn.contextualizedQuery());
-			appendLine(builder, "规范化问题", turn.canonicalQuery());
-			appendLine(builder, "SQL", turn.sql());
-			appendLine(builder, "结果摘要", turn.resultSummary());
 		}
 		return builder.length() == 0 ? EMPTY_CONTEXT : builder.toString();
+	}
+
+	private List<ConversationTurn> recentTurns(Deque<ConversationTurn> deque) {
+		synchronized (deque) {
+			int size = deque.size();
+			int skip = Math.max(0, size - recentDetailTurns);
+			List<ConversationTurn> turns = new java.util.ArrayList<>(Math.min(size, recentDetailTurns));
+			int index = 0;
+			for (ConversationTurn turn : deque) {
+				if (index++ < skip) {
+					continue;
+				}
+				turns.add(turn);
+			}
+			return turns;
+		}
+	}
+
+	private void summarizeIfNeeded(String threadId, Deque<ConversationTurn> deque) {
+		if (maxTurnHistory <= recentDetailTurns) {
+			while (deque.size() > maxTurnHistory) {
+				deque.pollFirst();
+			}
+			return;
+		}
+		if (deque.size() < maxTurnHistory || deque.size() <= recentDetailTurns) {
+			return;
+		}
+		int summarizeCount = deque.size() - recentDetailTurns;
+		String summary = rollingSummaries.get(threadId);
+		for (int i = 0; i < summarizeCount; i++) {
+			ConversationTurn archived = deque.pollFirst();
+			if (archived != null) {
+				summary = mergeSummary(summary, archived);
+			}
+		}
+		if (StringUtils.hasText(summary)) {
+			rollingSummaries.put(threadId, summary);
+		}
 	}
 
 	private String buildContextualizedQuery(String threadId, String userQuery) {
@@ -173,6 +225,37 @@ public class MultiTurnContextManager {
 			return;
 		}
 		builder.append("\n").append(label).append(": ").append(value.trim());
+	}
+
+	private String mergeSummary(String existingSummary, ConversationTurn turn) {
+		StringBuilder builder = new StringBuilder();
+		String topic = firstNonBlank(turn.canonicalQuery(), turn.contextualizedQuery(), turn.userQuery());
+		String result = firstNonBlank(turn.resultSummary(), turn.sql());
+		String intent = safe(turn.intentClassification());
+		if (StringUtils.hasText(existingSummary)) {
+			builder.append(existingSummary.trim());
+		}
+		if (StringUtils.hasText(topic)) {
+			appendMergedLine(builder, "当前主题", topic);
+		}
+		if (StringUtils.hasText(result)) {
+			appendMergedLine(builder, "最近结果", result);
+		}
+		if (StringUtils.hasText(intent)) {
+			appendMergedLine(builder, "意图", intent);
+		}
+		String merged = builder.toString().trim();
+		return abbreviate(merged);
+	}
+
+	private void appendMergedLine(StringBuilder builder, String label, String value) {
+		if (!StringUtils.hasText(value)) {
+			return;
+		}
+		if (builder.length() > 0) {
+			builder.append("\n");
+		}
+		builder.append(label).append(": ").append(abbreviate(value));
 	}
 
 	private String abbreviate(String text) {

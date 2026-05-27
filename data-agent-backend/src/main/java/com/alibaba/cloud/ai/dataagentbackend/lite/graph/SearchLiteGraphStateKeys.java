@@ -39,6 +39,10 @@ public final class SearchLiteGraphStateKeys {
 
 	public static final String EXPANDED_QUERIES = "expandedQueries";
 
+	public static final String FEASIBILITY_RESULT = "feasibilityResult";
+
+	public static final String FEASIBILITY_MESSAGE = "feasibilityMessage";
+
 	public static final String HUMAN_REVIEW_ENABLED = "humanReviewEnabled";
 
 	public static final String HUMAN_FEEDBACK_STATUS = "humanFeedbackStatus";

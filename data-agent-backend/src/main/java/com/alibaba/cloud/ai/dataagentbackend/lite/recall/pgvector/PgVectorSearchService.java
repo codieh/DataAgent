@@ -11,13 +11,11 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.jdbc.core.BatchPreparedStatementSetter;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.stereotype.Component;
 
-import javax.sql.DataSource;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.util.ArrayList;
@@ -29,7 +27,6 @@ import java.util.Objects;
 import java.util.Set;
 
 @Component
-@EnableConfigurationProperties(PgVectorProperties.class)
 public class PgVectorSearchService {
 
 	private static final Logger log = LoggerFactory.getLogger(PgVectorSearchService.class);
@@ -47,11 +44,15 @@ public class PgVectorSearchService {
 
 	private volatile boolean schemaReady;
 
-	public PgVectorSearchService(PgVectorProperties properties, EmbeddingClient embeddingClient, ObjectMapper objectMapper) {
+	public PgVectorSearchService(PgVectorProperties properties, EmbeddingClient embeddingClient, ObjectMapper objectMapper,
+			@Qualifier("pgVectorJdbcTemplate") JdbcTemplate jdbcTemplate) {
 		this.properties = Objects.requireNonNull(properties, "properties");
 		this.embeddingClient = Objects.requireNonNull(embeddingClient, "embeddingClient");
 		this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper");
-		this.jdbcTemplate = new JdbcTemplate(buildDataSource(properties));
+		this.jdbcTemplate = Objects.requireNonNull(jdbcTemplate, "jdbcTemplate");
+		log.info("pgvector jdbc initialized: enabled={}, url={}, username={}, tableName={}, dimensions={}, syncOnSearch={}",
+				properties.enabled(), properties.url(), properties.username(), properties.tableName(),
+				properties.dimensions(), properties.syncOnSearch());
 	}
 
 	public boolean isEnabled() {
@@ -59,20 +60,24 @@ public class PgVectorSearchService {
 	}
 
 	public List<RecallHit> search(String query, List<RecallDocument> documents, RecallOptions options) {
-		if (!isEnabled() || documents == null || documents.isEmpty()) {
+		if (!isEnabled()) {
+			log.info("pgvector search skipped: enabled=false");
 			return List.of();
 		}
 		RecallOptions effectiveOptions = options == null ? RecallOptions.defaults() : options;
 		List<Double> queryEmbedding = embeddingClient.embed(query);
 		if (queryEmbedding.isEmpty()) {
+			log.warn("pgvector: embedding returned empty vector, skip search");
 			return List.of();
 		}
 		ensureSchema();
+		boolean synced = false;
 		if (properties.syncOnSearch()) {
 			syncDocuments(documents);
+			synced = true;
 		}
 		int requestedTopK = Math.max(1, effectiveOptions.topK());
-		int candidateLimit = Math.min(Math.max(requestedTopK * 5, requestedTopK + 10), documents.size());
+		int candidateLimit = Math.max(requestedTopK * 5, requestedTopK + 10);
 		String vectorLiteral = toVectorLiteral(queryEmbedding);
 		String sql = """
 				SELECT id, recall_type, title, content, metadata::text AS metadata_json,
@@ -82,33 +87,53 @@ public class PgVectorSearchService {
 				LIMIT ?
 				""".formatted(properties.tableName());
 		List<Map<String, Object>> rows = jdbcTemplate.queryForList(sql, vectorLiteral, vectorLiteral, candidateLimit);
-		Map<String, RecallDocument> originalById = new LinkedHashMap<>();
-		for (RecallDocument document : documents) {
-			originalById.put(document.id(), document);
-		}
 		List<RecallHit> hits = new ArrayList<>();
+		int typeMismatch = 0;
+		int metadataMismatch = 0;
+		int nonPositiveScore = 0;
+		List<String> candidatePreview = log.isDebugEnabled() ? new ArrayList<>() : List.of();
 		for (Map<String, Object> row : rows) {
 			String id = stringValue(row.get("id"));
-			RecallDocument original = originalById.get(id);
+			double score = numberValue(row.get("score"));
+			if (log.isDebugEnabled() && candidatePreview.size() < 5) {
+				candidatePreview.add(formatCandidatePreview(id, row.get("recall_type"), score));
+			}
 			Map<String, Object> metadata = parseMetadata(row.get("metadata_json"));
-			RecallDocument document = original != null ? mergeDocument(original, metadata)
-					: rebuildDocument(id, row.get("content"), row.get("title"), row.get("recall_type"), metadata);
-			if (!matchesType(document, effectiveOptions.types())
-					|| !RecallMetadataMatcher.matches(document, effectiveOptions.requiredMetadata())) {
+			RecallDocument document = rebuildDocument(id, row.get("content"), row.get("title"), row.get("recall_type"),
+					metadata);
+			if (!matchesType(document, effectiveOptions.types())) {
+				typeMismatch++;
 				continue;
 			}
-			double score = numberValue(row.get("score"));
+			if (!RecallMetadataMatcher.matches(document, effectiveOptions.requiredMetadata())) {
+				metadataMismatch++;
+				continue;
+			}
 			if (score > 0) {
 				hits.add(new RecallHit(document, score, List.of("pgvector")));
 			}
+			else {
+				nonPositiveScore++;
+			}
 		}
-		return hits.stream()
+		List<RecallHit> result = hits.stream()
 			.sorted(Comparator.comparingDouble(RecallHit::score).reversed())
 			.limit(requestedTopK)
 			.toList();
+		log.info(
+				"pgvector search: queryLen={}, synced={}, syncDocCount={}, dbRows={}, filteredHits={}, typeMismatch={}, metadataMismatch={}, nonPositiveScore={}, topK={}, returned={}",
+				query == null ? 0 : query.length(), synced, documents == null ? 0 : documents.size(), rows.size(),
+				hits.size(), typeMismatch, metadataMismatch, nonPositiveScore, requestedTopK, result.size());
+		if (log.isDebugEnabled() && !candidatePreview.isEmpty()) {
+			log.debug("pgvector candidates: {}", candidatePreview);
+		}
+		return result;
 	}
 
 	private void syncDocuments(List<RecallDocument> documents) {
+		if (documents == null || documents.isEmpty()) {
+			return;
+		}
 		List<RecallDocument> withEmbeddings = documents.stream().filter(RecallEmbeddings::hasEmbedding).toList();
 		if (withEmbeddings.isEmpty()) {
 			return;
@@ -210,12 +235,6 @@ public class PgVectorSearchService {
 		}
 	}
 
-	private RecallDocument mergeDocument(RecallDocument original, Map<String, Object> metadata) {
-		Map<String, Object> merged = new LinkedHashMap<>(original.metadata());
-		merged.putAll(metadata);
-		return new RecallDocument(original.id(), original.type(), original.title(), original.content(), merged);
-	}
-
 	private RecallDocument rebuildDocument(String id, Object content, Object title, Object type, Map<String, Object> metadata) {
 		String restoredTitle = title == null ? id : String.valueOf(title);
 		RecallDocumentType restoredType = parseType(type);
@@ -246,6 +265,10 @@ public class PgVectorSearchService {
 		return raw == null ? "" : String.valueOf(raw);
 	}
 
+	private static String formatCandidatePreview(String id, Object rawType, double score) {
+		return "{id=%s,type=%s,score=%.4f}".formatted(id, stringValue(rawType), score);
+	}
+
 	private static String toVectorLiteral(List<Double> vector) {
 		if (vector == null || vector.isEmpty()) {
 			throw new IllegalArgumentException("Vector must not be empty");
@@ -258,15 +281,6 @@ public class PgVectorSearchService {
 			builder.append(Double.toString(vector.get(i)));
 		}
 		return builder.append(']').toString();
-	}
-
-	private static DataSource buildDataSource(PgVectorProperties properties) {
-		DriverManagerDataSource dataSource = new DriverManagerDataSource();
-		dataSource.setDriverClassName("org.postgresql.Driver");
-		dataSource.setUrl(properties.url());
-		dataSource.setUsername(properties.username());
-		dataSource.setPassword(properties.password());
-		return dataSource;
 	}
 
 }

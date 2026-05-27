@@ -14,45 +14,48 @@ search:
       # pipeline|graph
       mode: graph
     context:
-      max-turn-history: 5
+      max-turn-history: 10
       max-field-length: 1000
+      recent-detail-turns: 3
     trace:
       enabled: true
       dir: data/traces
     graph:
+      executor:
+        threads: 12
       sql-retry:
         max-attempts: 3
     recall:
-      # keyword|bm25|vector|hybrid|pgvector|hybrid-pgvector|bm25-pgvector-rerank
+      # keyword|bm25|pgvector|hybrid|bm25-pgvector-rerank
       provider: bm25-pgvector-rerank
-      candidate-multiplier: 4
+      candidate-multiplier: 3
       bm25:
         k1: 1.2
         b: 0.75
-        title-boost: 2.0
+        title-boost: 3.0
       rerank:
         base-score-weight: 0.7
         coverage-weight: 0.3
         exact-match-boost: 0.12
       weight:
-        schema-table: 1.15
+        schema-table: 1.1
         schema-column: 1.05
-        evidence: 0.95
+        evidence: 1.05
         document: 0.9
         exact-match-bonus: 0.15
       store:
         dir: data/recall
       vector:
         top-k: 5
-        weight: 0.7
+        weight: 0.55
         embedding:
           base-url: "${RECALL_EMBEDDING_BASE_URL:http://127.0.0.1:1234}"
-          api-key: "${RECALL_EMBEDDING_API_KEY:}"
+          api-key: "${RECALL_EMBEDDING_API_KEY:sk-lm-UbOMkGK3:XCu17wunknLSYm9kFxFD}"
           model: "${RECALL_EMBEDDING_MODEL:text-embedding-bge-m3}"
           path: "${RECALL_EMBEDDING_PATH:/v1/embeddings}"
       pgvector:
         enabled: ${RECALL_PGVECTOR_ENABLED:true}
-        url: "${RECALL_PGVECTOR_URL:jdbc:postgresql://127.0.0.1:5432/data_agent_recall}"
+        url: "${RECALL_PGVECTOR_URL:jdbc:postgresql://localhost:5432/data_agent_recall}"
         username: "${RECALL_PGVECTOR_USERNAME:postgres}"
         password: "${RECALL_PGVECTOR_PASSWORD:postgres}"
         table-name: "${RECALL_PGVECTOR_TABLE:recall_vectors}"
@@ -73,6 +76,7 @@ search:
       top-k: 3
       chunk:
         max-chars: 400
+        overlap-chars: 80
     schema:
       # 先固定 product_db 的 demo 表；后续会升级为按 agentId 的动态表选择/向量召回
       tables: users,products,orders,order_items,categories,product_categories
@@ -98,16 +102,18 @@ search:
 
 llm:
   anthropic:
-    base-url: https://api.minimaxi.com/anthropic
+    base-url: https://token-plan-cn.xiaomimimo.com/anthropic
     # 推荐用环境变量注入，不要把 key 写进仓库
     # export LLM_ANTHROPIC_API_KEY=...
-    api-key: "${LLM_MINIMAX_API_KEY:}"
-    model: MiniMax-M2.7
+    api-key: "tp-cmeza77wrpibffzh7su22tm9xyip7d0uhi3tra4egztvldef"
+    model: mimo-v2.5
     temperature: 0.8
-    max-tokens: 8192
+    max-tokens: 32000
     anthropic-version: ""
+    request-timeout-seconds: 30
+    stream-timeout-seconds: 60
 
 logging:
   level:
     # 默认用 INFO，想看更细的调试日志可以：设置 APP_LOG_LEVEL=DEBUG
-    com.alibaba.cloud.ai.dataagentbackend: "${APP_LOG_LEVEL:INFO}"
+    com.alibaba.cloud.ai.dataagentbackend: "${APP_LOG_LEVEL:DEBUG}"

@@ -25,29 +25,44 @@ public class MinimaxEvidenceQueryRewriteService implements EvidenceQueryRewriteS
 
 	@Override
 	public String rewrite(String query) {
+		return rewrite(query, null);
+	}
+
+	@Override
+	public String rewrite(String query, String multiTurnContext) {
 		String original = query == null ? "" : query.trim();
 		if (original.isBlank()) {
 			return original;
 		}
 		String system = """
-				You rewrite user questions for evidence retrieval in a data analysis assistant.
-				Return ONLY a single plain-text rewritten query.
-				Do not output JSON, markdown, bullets, or explanations.
+				你是一位专业的搜索查询重写专家，位于数据分析工作流的知识召回环节。
+				你的任务是将用户输入重写为一个独立、完整、无歧义的陈述句，以便后续进行向量库语义检索。
+				只输出改写后的查询文本，不要输出 JSON、markdown、解释或任何额外内容。
 				""".trim();
 
+		String contextBlock = (multiTurnContext == null || multiTurnContext.isBlank()) ? "(无)"
+				: multiTurnContext.trim();
+
 		String user = """
-				Rewrite the user question into one standalone retrieval query for business knowledge recall.
+				请将用户的最新输入重写为一个独立、完整、无歧义的检索查询。
 
-				Rules:
-				- Keep the meaning unchanged.
-				- Preserve business metrics, dimensions, filters, and time ranges.
-				- Remove chatty wording and make the query retrieval-friendly.
-				- Focus on business definitions, metric explanations, and domain rules.
-				- Output a single sentence only.
+				改写规则：
+				1. 指代消解：如果用户使用了"它"、"这个"、"那边的"、"他们"等代词，必须根据多轮对话历史将其还原为具体的名词。
+				   例子："那个的销量如何" -> "A产品的销量如何"
+				2. 上下文补全：如果用户进行了简短追问（省略了主语或谓语），必须补全上下文信息。
+				   例子："那华北呢？" -> "查询华北地区的销售额"
+				3. 去噪与精简：去除礼貌用语（"你好"、"请问"、"麻烦帮我"）、情绪助词以及与查询意图无关的废话，保留核心业务实体、时间描述和指标名称。
+				4. 保持语义不变：不要添加用户未提及的新需求，不要改变查询的核心意图。
+				5. 如果最新输入开启了全新话题（与历史无关），则忽略历史，直接去噪重写。
 
-				User question:
+				【多轮对话历史】
 				%s
-				""".formatted(original).trim();
+
+				<最新>用户输入：
+				%s
+
+				改写后的检索查询：
+				""".formatted(contextBlock, original).trim();
 
 		try {
 			String rewritten = anthropicClient.createMessage(system, user).block();

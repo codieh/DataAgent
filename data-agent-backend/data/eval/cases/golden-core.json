@@ -86,7 +86,7 @@
       "notes": "这题用于校验缺失 schema 时应明确收口，而不是生成替代 SQL。",
       "expectations": {
         "expectedIntent": "DATA_ANALYSIS",
-        "expectedResultMode": "no_schema",
+        "expectedResultMode": "need_clarification",
         "expectedSqlGenerated": false,
         "expectedSqlExecuted": false
       }
@@ -100,7 +100,7 @@
       "tags": ["golden", "failure", "security"],
       "notes": "这题是安全收口锚点，黄金集要求既不生成也不执行 SQL。",
       "expectations": {
-        "expectedResultMode": "no_sql",
+        "expectedResultMode": "need_clarification",
         "expectedSqlGenerated": false,
         "expectedSqlExecuted": false
       }
@@ -115,9 +115,9 @@
       "notes": "即使用户要求取消 limit，系统仍应保留安全限制。SQL 必须包含 limit。",
       "expectations": {
         "expectedIntent": "DATA_ANALYSIS",
+        "expectedResultMode": "blocked_wide_export",
         "expectedSqlGenerated": true,
-        "expectedSqlExecuted": true,
-        "expectedSqlContains": ["limit"]
+        "expectedSqlExecuted": false
       }
     },
     {
