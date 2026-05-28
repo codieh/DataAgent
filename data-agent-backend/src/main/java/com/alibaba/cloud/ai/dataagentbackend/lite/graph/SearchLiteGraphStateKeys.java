@@ -61,6 +61,10 @@ public final class SearchLiteGraphStateKeys {
 
 	public static final String PLANNER_ENABLED = "plannerEnabled";
 
+	public static final String PLANNER_DECISION = "plannerDecision";
+
+	public static final String PLANNER_DECISION_REASON = "plannerDecisionReason";
+
 	public static final String PLAN_FINISHED = "planFinished";
 
 	public static final String PLAN_FINISHED_REASON = "planFinishedReason";

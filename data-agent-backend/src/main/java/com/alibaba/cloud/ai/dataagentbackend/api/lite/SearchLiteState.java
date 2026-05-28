@@ -68,6 +68,10 @@ public class SearchLiteState {
 
 	private boolean plannerEnabled;
 
+	private String plannerDecision = "proceed";
+
+	private String plannerDecisionReason;
+
 	private boolean planFinished;
 
 	private String planFinishedReason;
@@ -331,6 +335,22 @@ public class SearchLiteState {
 
 	public void setPlannerEnabled(boolean plannerEnabled) {
 		this.plannerEnabled = plannerEnabled;
+	}
+
+	public String getPlannerDecision() {
+		return plannerDecision;
+	}
+
+	public void setPlannerDecision(String plannerDecision) {
+		this.plannerDecision = plannerDecision;
+	}
+
+	public String getPlannerDecisionReason() {
+		return plannerDecisionReason;
+	}
+
+	public void setPlannerDecisionReason(String plannerDecisionReason) {
+		this.plannerDecisionReason = plannerDecisionReason;
 	}
 
 	public boolean isPlanFinished() {

@@ -27,6 +27,16 @@ public class SearchLitePlanExecutorDispatcher implements EdgeAction {
 
 	@Override
 	public String apply(OverAllState state) {
+		String plannerDecision = state.value(SearchLiteGraphStateKeys.PLANNER_DECISION)
+			.filter(String.class::isInstance)
+			.map(String.class::cast)
+			.map(String::trim)
+			.orElse("proceed");
+		if (!"proceed".equalsIgnoreCase(plannerDecision)) {
+			log.info("graph plan-executor dispatcher: planner decision={}, route to {}", plannerDecision,
+					PREPARE_RESULT_NODE);
+			return PREPARE_RESULT_NODE;
+		}
 		boolean validationStatus = state.value(SearchLiteGraphStateKeys.PLAN_VALIDATION_STATUS)
 			.filter(Boolean.class::isInstance)
 			.map(Boolean.class::cast)

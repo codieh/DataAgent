@@ -47,6 +47,8 @@ public final class SearchLiteGraphStateMapper {
 		values.put(SearchLiteGraphStateKeys.PLAN_STEPS, state.getPlanSteps());
 		values.put(SearchLiteGraphStateKeys.CURRENT_PLAN_STEP_INDEX, state.getCurrentPlanStepIndex());
 		values.put(SearchLiteGraphStateKeys.PLANNER_ENABLED, state.isPlannerEnabled());
+		values.put(SearchLiteGraphStateKeys.PLANNER_DECISION, state.getPlannerDecision());
+		values.put(SearchLiteGraphStateKeys.PLANNER_DECISION_REASON, state.getPlannerDecisionReason());
 		values.put(SearchLiteGraphStateKeys.PLAN_FINISHED, state.isPlanFinished());
 		values.put(SearchLiteGraphStateKeys.PLAN_FINISHED_REASON, state.getPlanFinishedReason());
 		values.put(SearchLiteGraphStateKeys.PLANNER_RAW_OUTPUT, state.getPlannerRawOutput());
@@ -99,6 +101,8 @@ public final class SearchLiteGraphStateMapper {
 		state.setCurrentPlanStepIndex(stepIndex == null ? 0 : stepIndex);
 		Boolean plannerEnabled = get(graphState, SearchLiteGraphStateKeys.PLANNER_ENABLED, Boolean.class);
 		state.setPlannerEnabled(Boolean.TRUE.equals(plannerEnabled));
+		state.setPlannerDecision(get(graphState, SearchLiteGraphStateKeys.PLANNER_DECISION, String.class));
+		state.setPlannerDecisionReason(get(graphState, SearchLiteGraphStateKeys.PLANNER_DECISION_REASON, String.class));
 		Boolean planFinished = get(graphState, SearchLiteGraphStateKeys.PLAN_FINISHED, Boolean.class);
 		state.setPlanFinished(Boolean.TRUE.equals(planFinished));
 		state.setPlanFinishedReason(get(graphState, SearchLiteGraphStateKeys.PLAN_FINISHED_REASON, String.class));

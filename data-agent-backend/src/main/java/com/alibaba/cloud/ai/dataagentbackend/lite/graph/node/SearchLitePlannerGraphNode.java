@@ -20,10 +20,12 @@ import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 
 @Component
@@ -61,9 +63,12 @@ public class SearchLitePlannerGraphNode implements NodeAction {
 			liteState.setHumanFeedbackStatus(null);
 			liteState.setHumanFeedbackComment(null);
 			liteState.setAwaitingHumanFeedback(false);
+			liteState.setPlannerDecision("proceed");
+			liteState.setPlannerDecisionReason("");
 			messageEmitter.emitOne(context.threadId(), SearchLiteMessages.done(context, SearchLiteStage.PLANNER,
 					SearchLiteMessageType.JSON, null,
-					Map.of("steps", liteState.getPlanSteps(), "plannerEnabled", liteState.isPlannerEnabled(),
+					Map.of("decision", liteState.getPlannerDecision(), "reason", safe(liteState.getPlannerDecisionReason()),
+							"steps", liteState.getPlanSteps(), "plannerEnabled", liteState.isPlannerEnabled(),
 							"rawPlanLen", liteState.getPlannerRawOutput() == null ? 0 : liteState.getPlannerRawOutput().length(),
 							"reusedApprovedPlan", true)));
 			traceRecorder.recordStage(context.threadId(), SearchLiteStage.PLANNER, "reuse-approved-plan",
@@ -76,8 +81,8 @@ public class SearchLitePlannerGraphNode implements NodeAction {
 
 		String system = """
 				你是一位拥有深厚业务洞察力的高级数据分析专家。
-				你的核心职责是解析用户的业务问题，并基于给定的数据库 Schema，制定一个严谨、可执行的分步执行计划。
-				你必须且只能输出一个合法的 JSON 对象，严禁包含 markdown 标记、注释或任何 JSON 结构之外的文本。
+				你的任务是基于给定的数据库 Schema、业务知识和文档定义，先判断当前请求是否可以继续执行，再在可执行时制定一个严谨的 SQL 执行计划。
+				你必须且只能输出一个合法 JSON 对象，严禁包含 markdown、注释或 JSON 结构之外的任何文本。
 				""".trim();
 		String user = buildPlannerPrompt(liteState);
 		String rawOutput;
@@ -93,6 +98,8 @@ public class SearchLitePlannerGraphNode implements NodeAction {
 		liteState.setPlanSteps(plannerOutput.steps());
 		liteState.setCurrentPlanStepIndex(0);
 		liteState.setPlannerEnabled(plannerOutput.steps().size() > 1);
+		liteState.setPlannerDecision(plannerOutput.decision());
+		liteState.setPlannerDecisionReason(plannerOutput.reason());
 		liteState.setPlanFinished(false);
 		liteState.setPlanFinishedReason(null);
 		liteState.setPlannerRawOutput(rawOutput);
@@ -102,14 +109,18 @@ public class SearchLitePlannerGraphNode implements NodeAction {
 		liteState.setHumanFeedbackComment(null);
 		liteState.setAwaitingHumanFeedback(false);
 
+		applyPlannerDecision(plannerOutput, liteState);
+
 		messageEmitter.emitOne(context.threadId(), SearchLiteMessages.done(context, SearchLiteStage.PLANNER,
 				SearchLiteMessageType.JSON, null,
-				Map.of("steps", plannerOutput.steps(), "plannerEnabled", liteState.isPlannerEnabled(),
+				Map.of("decision", liteState.getPlannerDecision(), "reason", safe(liteState.getPlannerDecisionReason()),
+						"steps", plannerOutput.steps(), "plannerEnabled", liteState.isPlannerEnabled(),
 						"rawPlanLen", rawOutput == null ? 0 : rawOutput.length())));
 		traceRecorder.recordStage(context.threadId(), SearchLiteStage.PLANNER, "generate-plan",
 				(System.nanoTime() - startedAt) / 1_000_000, beforeState, liteState, null);
-		log.info("graph planner node invoked: steps={}, plannerEnabled={}, repairCount={}, stepInstructions={}",
-				plannerOutput.steps().size(), liteState.isPlannerEnabled(), liteState.getPlanRepairCount(),
+		log.info("graph planner node invoked: decision={}, steps={}, plannerEnabled={}, repairCount={}, stepInstructions={}",
+				liteState.getPlannerDecision(), plannerOutput.steps().size(), liteState.isPlannerEnabled(),
+				liteState.getPlanRepairCount(),
 				plannerOutput.steps().stream().map(SearchLitePlanStep::getInstruction).toList());
 		return SearchLiteGraphStateMapper.fromSearchLiteState(liteState);
 	}
@@ -126,6 +137,10 @@ public class SearchLitePlannerGraphNode implements NodeAction {
 
 				# 输出 JSON 格式
 				{
+				  "decision": "proceed",
+				  "reason": "",
+				  "tables": ["orders"],
+				  "columns": ["orders.status"],
 				  "steps": [
 				    {
 				      "step": 1,
@@ -137,19 +152,23 @@ public class SearchLitePlannerGraphNode implements NodeAction {
 
 				# 规则
 				1. 只使用 "SQL" 作为 tool 值。
-				2. 创建 1 到 %d 个步骤。
-				3. 每个步骤的 instruction 必须是自包含的，能被 SQL 生成器直接执行。
-				4. 如果查询简单，只返回一个步骤。
-				5. 如果查询有多个依赖关系，拆分为有序的 SQL 步骤。
-				6. 不要编造 Schema 中不存在的业务约束。
-				7. 优先使用最少步骤数。
-				8. 如果之前的计划校验失败，明确修复问题。
+				2. decision 只能是 proceed、need_clarification、reject 三种之一。
+				3. 只有在能够基于召回的 Schema 和知识完成任务时，才输出 decision=proceed。
+				4. 如果关键实体、字段、业务定义在 Schema/知识中找不到，请输出 decision=need_clarification，不要硬规划。
+				5. 如果用户请求包含危险操作、越权导出、破坏性意图，请输出 decision=reject。
+				6. 当 decision=proceed 时，创建 1 到 %d 个步骤；当不是 proceed 时，steps 必须为空数组。
+				7. 每个步骤的 instruction 必须是自包含的，能被 SQL 生成器直接执行。
+				8. 只允许使用召回 Schema 中真实存在的表和字段，不要编造。
+				9. tables 列出本计划实际依赖的表；columns 列出关键列，便于后续校验。
+				10. 优先使用最少步骤数。
+				11. 如果之前的计划校验失败，明确修复问题。
 
 				# 思考路径
 				1. 理解目标：用户的核心疑问是什么？
 				2. 核对 Schema：检查计划查询的字段是否在 Schema 中真实存在。
-				3. 拆解步骤：将大问题拆解为可执行的 SQL 步骤。
-				4. 撰写指令：确保每个步骤的 instruction 足够详细，让 SQL 生成器一看就懂。
+				3. 先做决策：判断是 proceed、need_clarification 还是 reject。
+				4. 拆解步骤：只有在 proceed 时，将大问题拆解为可执行的 SQL 步骤。
+				5. 撰写指令：确保每个步骤的 instruction 足够详细，让 SQL 生成器一看就懂。
 
 				# 用户请求
 				%s
@@ -183,17 +202,74 @@ public class SearchLitePlannerGraphNode implements NodeAction {
 		String query = resolvePlanQuery(state);
 		List<SearchLitePlanStep> fallback = List.of(new SearchLitePlanStep(1, query));
 		if (!StringUtils.hasText(raw)) {
-			return new PlannerOutput(fallback);
+			return new PlannerOutput("proceed", "", List.of(), List.of(), fallback);
 		}
 		try {
 			String json = extractJsonObject(raw.trim());
 			PlannerOutputPayload payload = objectMapper.readValue(json, PlannerOutputPayload.class);
 			List<SearchLitePlanStep> normalized = normalizeSteps(payload == null ? null : payload.steps(), query);
-			return new PlannerOutput(normalized.isEmpty() ? fallback : normalized);
+			String normalizedDecision = normalizeDecision(payload == null ? null : payload.decision());
+			String reason = safe(payload == null ? null : payload.reason());
+			List<String> tables = normalizeStringList(payload == null ? null : payload.tables());
+			List<String> columns = normalizeStringList(payload == null ? null : payload.columns());
+			if (!"proceed".equals(normalizedDecision)) {
+				return new PlannerOutput(normalizedDecision, reason, tables, columns, List.of());
+			}
+			return new PlannerOutput(normalizedDecision, reason, tables, columns,
+					normalized.isEmpty() ? fallback : normalized);
 		}
 		catch (Exception ex) {
 			log.warn("planner output parse failed, fallback to single-step plan: {}", ex.getMessage());
-			return new PlannerOutput(fallback);
+			return new PlannerOutput("proceed", "", List.of(), List.of(), fallback);
+		}
+	}
+
+	private void applyPlannerDecision(PlannerOutput plannerOutput, SearchLiteState state) {
+		String decision = normalizeDecision(plannerOutput.decision());
+		String reason = safe(plannerOutput.reason());
+		if (!"proceed".equals(decision)) {
+			state.setPlanSteps(List.of());
+			state.setPlannerEnabled(false);
+			state.setPlanFinished(true);
+			state.setCurrentPlanStepIndex(0);
+			state.setPlanFinishedReason(decision);
+			if ("need_clarification".equals(decision)) {
+				state.setResultMode("need_clarification");
+				state.setFeasibilityResult("需要澄清");
+				state.setFeasibilityMessage(reason);
+			}
+			else {
+				state.setResultMode("need_clarification");
+				state.setFeasibilityResult("自由闲聊");
+				state.setFeasibilityMessage(StringUtils.hasText(reason) ? reason : "当前请求不允许执行。");
+			}
+			return;
+		}
+
+		Set<String> recalledTables = new HashSet<>(normalizeStringList(state.getRecalledTables()));
+		if (!recalledTables.isEmpty() && !plannerOutput.tables().isEmpty()
+				&& !recalledTables.containsAll(normalizeStringList(plannerOutput.tables()))) {
+			state.setPlannerDecision("need_clarification");
+			state.setPlannerDecisionReason("计划依赖了召回 schema 中不存在的表，请补充更明确的查询条件。");
+			state.setPlanSteps(List.of());
+			state.setPlannerEnabled(false);
+			state.setPlanFinished(true);
+			state.setCurrentPlanStepIndex(0);
+			state.setPlanFinishedReason("need_clarification");
+			state.setResultMode("need_clarification");
+			state.setFeasibilityResult("需要澄清");
+			state.setFeasibilityMessage(state.getPlannerDecisionReason());
+			return;
+		}
+
+		if (plannerOutput.steps().isEmpty()) {
+			state.setPlannerDecision("need_clarification");
+			state.setPlannerDecisionReason("当前请求缺少足够信息，暂时无法形成可执行计划。");
+			state.setPlanFinished(true);
+			state.setPlanFinishedReason("need_clarification");
+			state.setResultMode("need_clarification");
+			state.setFeasibilityResult("需要澄清");
+			state.setFeasibilityMessage(state.getPlannerDecisionReason());
 		}
 	}
 
@@ -260,10 +336,27 @@ public class SearchLitePlannerGraphNode implements NodeAction {
 		return StringUtils.hasText(value) ? value.trim() : fallback;
 	}
 
-	private record PlannerOutput(List<SearchLitePlanStep> steps) {
+	private String normalizeDecision(String decision) {
+		String normalized = safe(decision).toLowerCase();
+		return switch (normalized) {
+			case "need_clarification", "reject", "proceed" -> normalized;
+			default -> "proceed";
+		};
 	}
 
-	private record PlannerOutputPayload(List<PlannerOutputStep> steps) {
+	private List<String> normalizeStringList(List<String> values) {
+		if (values == null || values.isEmpty()) {
+			return List.of();
+		}
+		return values.stream().filter(StringUtils::hasText).map(String::trim).distinct().toList();
+	}
+
+	private record PlannerOutput(String decision, String reason, List<String> tables, List<String> columns,
+			List<SearchLitePlanStep> steps) {
+	}
+
+	private record PlannerOutputPayload(String decision, String reason, List<String> tables, List<String> columns,
+			List<PlannerOutputStep> steps) {
 	}
 
 	private record PlannerOutputStep(Integer step, String instruction, String tool) {

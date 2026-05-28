@@ -50,6 +50,20 @@ public class SearchLitePlanExecutorGraphNode implements NodeAction {
 		SearchLiteState beforeState = SearchLiteGraphStateMapper.toSearchLiteState(state);
 		SearchLiteContext context = new SearchLiteContext(resolveThreadId(liteState));
 		long startedAt = System.nanoTime();
+		if (!"proceed".equalsIgnoreCase(safe(liteState.getPlannerDecision()))) {
+			liteState.setPlanFinished(true);
+			if (!StringUtils.hasText(liteState.getPlanFinishedReason())) {
+				liteState.setPlanFinishedReason(safe(liteState.getPlannerDecision()));
+			}
+			emitPlanExecutorState(context, liteState,
+					StringUtils.hasText(liteState.getPlannerDecisionReason()) ? liteState.getPlannerDecisionReason()
+							: "规划结果已收口，准备返回结果。");
+			traceRecorder.recordStage(context.threadId(), SearchLiteStage.PLAN_EXECUTOR, "planner-short-circuit",
+					(System.nanoTime() - startedAt) / 1_000_000, beforeState, liteState, null);
+			log.info("graph plan-executor short-circuited: decision={}, reason={}", liteState.getPlannerDecision(),
+					liteState.getPlannerDecisionReason());
+			return SearchLiteGraphStateMapper.fromSearchLiteState(liteState);
+		}
 		ensurePlan(liteState);
 		String validationError = validatePlan(liteState);
 		if (validationError != null) {

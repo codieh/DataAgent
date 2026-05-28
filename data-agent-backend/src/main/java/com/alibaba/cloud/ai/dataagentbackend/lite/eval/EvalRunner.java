@@ -27,6 +27,10 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
 import java.util.stream.Collectors;
 
 @Service
@@ -48,14 +52,18 @@ public class EvalRunner {
 
 	private final String suite;
 
+	private final int parallelism;
+
 	public EvalRunner(SearchLiteOrchestrator orchestrator, EvalCaseLoader caseLoader, EvalReportWriter reportWriter,
 			@Value("${search.lite.eval.agent-id:eval-agent}") String defaultAgentId,
-			@Value("${search.lite.eval.suite:quick}") String suite) {
+			@Value("${search.lite.eval.suite:quick}") String suite,
+			@Value("${search.lite.eval.parallelism:4}") int parallelism) {
 		this.orchestrator = orchestrator;
 		this.caseLoader = caseLoader;
 		this.reportWriter = reportWriter;
 		this.defaultAgentId = defaultAgentId;
 		this.suite = normalizeSuite(suite);
+		this.parallelism = Math.max(1, parallelism);
 	}
 
 	public EvalRunReport runDefaultSuite() throws IOException {
@@ -66,16 +74,52 @@ public class EvalRunner {
 		log.info("lite eval suite selected: suite={}, datasets={}, totalCases={}", suite,
 				loadedDatasets.stream().map(loaded -> loaded.dataset().datasetId()).toList(),
 				loadedDatasets.stream().mapToInt(loaded -> loaded.dataset().cases().size()).sum());
-		List<EvalCaseResult> results = new ArrayList<>();
-		for (EvalCaseLoader.LoadedEvalDataset loadedDataset : loadedDatasets) {
-			for (EvalCaseDefinition definition : loadedDataset.dataset().cases()) {
-				results.add(runCase(loadedDataset.dataset().datasetId(), definition));
-			}
-		}
+		List<IndexedEvalCase> indexedCases = indexCases(loadedDatasets);
+		log.info("lite eval execution mode: parallelism={}, caseCount={}", parallelism, indexedCases.size());
+		List<EvalCaseResult> results = runCases(indexedCases);
 
 		EvalRunReport report = buildReport(loadedDatasets, results);
 		reportWriter.write(report);
 		return report;
+	}
+
+	private List<IndexedEvalCase> indexCases(List<EvalCaseLoader.LoadedEvalDataset> loadedDatasets) {
+		List<IndexedEvalCase> indexedCases = new ArrayList<>();
+		int order = 0;
+		for (EvalCaseLoader.LoadedEvalDataset loadedDataset : loadedDatasets) {
+			for (EvalCaseDefinition definition : loadedDataset.dataset().cases()) {
+				indexedCases.add(new IndexedEvalCase(order++, loadedDataset.dataset().datasetId(), definition));
+			}
+		}
+		return indexedCases;
+	}
+
+	private List<EvalCaseResult> runCases(List<IndexedEvalCase> indexedCases) {
+		if (indexedCases.isEmpty()) {
+			return List.of();
+		}
+		if (parallelism <= 1 || indexedCases.size() == 1) {
+			return indexedCases.stream()
+				.map(indexedCase -> runCase(indexedCase.datasetId(), indexedCase.definition()))
+				.toList();
+		}
+		ExecutorService executor = Executors.newFixedThreadPool(parallelism, new EvalThreadFactory());
+		try {
+			List<CompletableFuture<IndexedEvalCaseResult>> futures = indexedCases.stream()
+				.map(indexedCase -> CompletableFuture.supplyAsync(
+						() -> new IndexedEvalCaseResult(indexedCase.order(),
+								runCase(indexedCase.datasetId(), indexedCase.definition())),
+						executor))
+				.toList();
+			return futures.stream()
+				.map(CompletableFuture::join)
+				.sorted(java.util.Comparator.comparingInt(IndexedEvalCaseResult::order))
+				.map(IndexedEvalCaseResult::result)
+				.toList();
+		}
+		finally {
+			executor.shutdown();
+		}
 	}
 
 	private EvalCaseResult runCase(String datasetId, EvalCaseDefinition definition) {
@@ -414,6 +458,25 @@ public class EvalRunner {
 
 	private String normalizeSuite(String rawSuite) {
 		return StringUtils.hasText(rawSuite) ? rawSuite.trim().toLowerCase(Locale.ROOT) : "standard";
+	}
+
+	private record IndexedEvalCase(int order, String datasetId, EvalCaseDefinition definition) {
+	}
+
+	private record IndexedEvalCaseResult(int order, EvalCaseResult result) {
+	}
+
+	private static final class EvalThreadFactory implements ThreadFactory {
+
+		private int sequence;
+
+		@Override
+		public synchronized Thread newThread(Runnable runnable) {
+			Thread thread = new Thread(runnable, "lite-eval-" + (++sequence));
+			thread.setDaemon(true);
+			return thread;
+		}
+
 	}
 
 }
