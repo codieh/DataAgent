@@ -1,0 +1,41 @@
+package com.alibaba.cloud.ai.dataagentbackend.lite.graph.node;
+
+import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteStage;
+import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphStepOutputAdapter;
+import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStep;
+import com.alibaba.cloud.ai.dataagentbackend.lite.trace.SearchLiteTraceRecorder;
+import com.alibaba.cloud.ai.graph.OverAllState;
+import com.alibaba.cloud.ai.graph.action.NodeAction;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Component;
+
+import java.util.List;
+import java.util.Map;
+
+@Component
+public class SearchLiteFeasibilityGraphNode extends SearchLiteStepGraphNodeSupport implements NodeAction {
+
+	private static final Logger log = LoggerFactory.getLogger(SearchLiteFeasibilityGraphNode.class);
+
+	private final SearchLiteStep feasibilityStep;
+
+	private final SearchLiteGraphStepOutputAdapter outputAdapter;
+
+	public SearchLiteFeasibilityGraphNode(List<SearchLiteStep> steps, SearchLiteGraphStepOutputAdapter outputAdapter,
+			SearchLiteTraceRecorder traceRecorder) {
+		super(traceRecorder);
+		this.feasibilityStep = steps.stream()
+			.filter(step -> step.stage() == SearchLiteStage.FEASIBILITY)
+			.findFirst()
+			.orElseThrow(() -> new IllegalStateException("No FEASIBILITY step configured for graph node"));
+		this.outputAdapter = outputAdapter;
+	}
+
+	@Override
+	public Map<String, Object> apply(OverAllState state) {
+		log.debug("search-lite graph feasibility node invoked");
+		return executeStep(state, feasibilityStep, outputAdapter);
+	}
+
+}

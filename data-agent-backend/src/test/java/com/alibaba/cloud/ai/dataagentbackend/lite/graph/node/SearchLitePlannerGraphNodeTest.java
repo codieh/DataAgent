@@ -3,6 +3,7 @@ package com.alibaba.cloud.ai.dataagentbackend.lite.graph.node;
 import com.alibaba.cloud.ai.dataagentbackend.llm.anthropic.AnthropicClient;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphMessageEmitter;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphMessageNormalizer;
+import com.alibaba.cloud.ai.dataagentbackend.lite.llm.SearchLiteLlmGateway;
 import com.alibaba.cloud.ai.dataagentbackend.lite.trace.SearchLiteTraceRecorder;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.alibaba.cloud.ai.graph.OverAllState;
@@ -25,6 +26,7 @@ class SearchLitePlannerGraphNodeTest {
 	@Test
 	void should_split_multi_query_into_sql_plan_steps() {
 		AnthropicClient anthropicClient = mock(AnthropicClient.class);
+		SearchLiteLlmGateway llmGateway = new SearchLiteLlmGateway(anthropicClient);
 		ObjectMapper objectMapper = new ObjectMapper();
 		SearchLiteGraphMessageEmitter emitter = new SearchLiteGraphMessageEmitter(
 				new SearchLiteGraphMessageNormalizer(objectMapper));
@@ -38,7 +40,7 @@ class SearchLitePlannerGraphNodeTest {
 				]}
 				"""));
 
-		SearchLitePlannerGraphNode node = new SearchLitePlannerGraphNode(anthropicClient, objectMapper, emitter,
+		SearchLitePlannerGraphNode node = new SearchLitePlannerGraphNode(llmGateway, objectMapper, emitter,
 				mock(SearchLiteTraceRecorder.class), 5);
 		var result = node.apply(state);
 

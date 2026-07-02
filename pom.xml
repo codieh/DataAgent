@@ -12,7 +12,6 @@
 
   <modules>
     <module>data-agent-backend</module>
-    <module>data-agent-management</module>
   </modules>
   <scm>
     <connection>git://github.com/spring-ai-alibaba/DataAgent.git</connection>

@@ -74,6 +74,7 @@ public class SearchLiteGraphMessageEmitter {
 		if (!hasSink(threadId)) {
 			return;
 		}
+		// 当前 graph 适配层仍要求同步完成 dispatch；这里属于 graph 边界，不是业务节点。
 		messageFlux.map(messageNormalizer::normalizeMessage)
 			.filter(message -> message != null)
 			.doOnNext(message -> emitNormalized(threadId, message))
@@ -88,6 +89,7 @@ public class SearchLiteGraphMessageEmitter {
 			emitStream(threadId, messageFlux);
 			return new DispatchResult(true, List.of());
 		}
+		// graph 未挂接 live sink 时，同步收集消息作为边界兜底。
 		List<SearchLiteMessage> buffered = messageFlux.map(messageNormalizer::normalizeMessage)
 			.filter(message -> message != null)
 			.collectList()

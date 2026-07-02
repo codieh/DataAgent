@@ -5,10 +5,10 @@ import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteMessageType;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteStage;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteState;
 import com.alibaba.cloud.ai.dataagentbackend.lite.SearchLiteContext;
+import com.alibaba.cloud.ai.dataagentbackend.lite.llm.SearchLiteLlmGateway;
 import com.alibaba.cloud.ai.dataagentbackend.lite.SearchLiteMessages;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStep;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStepResult;
-import com.alibaba.cloud.ai.dataagentbackend.llm.anthropic.AnthropicClient;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Duration;
 import java.util.Map;
@@ -32,12 +32,12 @@ import reactor.core.publisher.Mono;
 @ConditionalOnProperty(name = "search.lite.intent.provider", havingValue = "minimax")
 public class IntentMinimaxStep implements SearchLiteStep {
 
-	private final AnthropicClient anthropicClient;
+	private final SearchLiteLlmGateway llmGateway;
 
 	private final ObjectMapper objectMapper;
 
-	public IntentMinimaxStep(AnthropicClient anthropicClient, ObjectMapper objectMapper) {
-		this.anthropicClient = anthropicClient;
+	public IntentMinimaxStep(SearchLiteLlmGateway llmGateway, ObjectMapper objectMapper) {
+		this.llmGateway = llmGateway;
 		this.objectMapper = objectMapper;
 	}
 
@@ -68,7 +68,7 @@ public class IntentMinimaxStep implements SearchLiteStep {
 		// 这条 delta 流会被消费两次：
 		// 1) streaming：实时转发给前端；2) updated：拼接并解析最终 JSON。
 		// cache() 用于避免“二次订阅导致二次 HTTP 请求”。
-		Flux<String> sharedDeltas = anthropicClient.streamMessage(system, user).cache();
+		Flux<String> sharedDeltas = llmGateway.streamAsync(system, user).cache();
 
 		Flux<SearchLiteMessage> streaming = sharedDeltas
 			.map(delta -> SearchLiteMessages.message(context, stage(), SearchLiteMessageType.JSON, delta, null));

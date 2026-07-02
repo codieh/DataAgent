@@ -1,0 +1,2 @@
+"""Repositories grouped by aggregate."""
+

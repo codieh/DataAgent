@@ -31,10 +31,10 @@
           "category": {
             "type": "string"
           },
-          "scenarioType": {
-            "type": "string",
-            "enum": ["single_turn", "multi_turn", "failure_fallback"]
-          },
+              "scenarioType": {
+                "type": "string",
+                "enum": ["single_turn", "multi_turn", "failure_fallback", "planner"]
+              },
           "agentId": {
             "type": "string"
           },
@@ -114,6 +114,32 @@
                 "items": {
                   "type": "string"
                 }
+              },
+              "expectedPlannerEnabled": {
+                "type": "boolean"
+              },
+              "expectedPlannerDecision": {
+                "type": "string"
+              },
+              "expectedMinPlanStepCount": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "expectedMaxPlanStepCount": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "expectedPlanStepInstructionsContain": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "expectedPlanFinished": {
+                "type": "boolean"
+              },
+              "expectedPlanFinishedReason": {
+                "type": "string"
               }
             }
           }

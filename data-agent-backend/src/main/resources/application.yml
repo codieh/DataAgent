@@ -7,6 +7,11 @@ spring:
     username: "${PRODUCT_DB_USERNAME:root}"
     password: "${PRODUCT_DB_PASSWORD:admin}"
     driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 2
+      connection-timeout: 5000
+      validation-timeout: 3000
 
 search:
   lite:
@@ -17,17 +22,25 @@ search:
       max-turn-history: 10
       max-field-length: 1000
       recent-detail-turns: 3
+      ttl-minutes: 180
+      max-active-threads: 1000
     trace:
       enabled: true
       dir: data/traces
+    eval:
+      parallelism: 2
     graph:
       executor:
-        threads: 12
+        threads: 20
+        queue-capacity: 200
+        keep-alive-seconds: 60
       sql-retry:
         max-attempts: 3
     recall:
       # keyword|bm25|pgvector|hybrid|bm25-pgvector-rerank
-      provider: bm25-pgvector-rerank
+#      provider: bm25-pgvector-rerankctor-rerank
+#      provider: bm25
+      provider: hybrid
       candidate-multiplier: 3
       bm25:
         k1: 1.2
@@ -61,6 +74,11 @@ search:
         table-name: "${RECALL_PGVECTOR_TABLE:recall_vectors}"
         dimensions: ${RECALL_PGVECTOR_DIMENSIONS:1024}
         sync-on-search: ${RECALL_PGVECTOR_SYNC_ON_SEARCH:true}
+        pool:
+          maximum-size: 20
+          minimum-idle: 2
+          connection-timeout-ms: 5000
+          validation-timeout-ms: 3000
     intent:
       # mock|minimax
       provider: minimax
@@ -102,11 +120,11 @@ search:
 
 llm:
   anthropic:
-    base-url: https://token-plan-cn.xiaomimimo.com/anthropic
+    base-url: https://api.kimi.com/coding/
     # 推荐用环境变量注入，不要把 key 写进仓库
     # export LLM_ANTHROPIC_API_KEY=...
-    api-key: "tp-cmeza77wrpibffzh7su22tm9xyip7d0uhi3tra4egztvldef"
-    model: mimo-v2.5
+    api-key: "${LLM_ANTHROPIC_API_KEY:}"
+    model: kimi-for-coding
     temperature: 0.8
     max-tokens: 32000
     anthropic-version: ""

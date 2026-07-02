@@ -5,10 +5,10 @@ import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteMessageType;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteStage;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteState;
 import com.alibaba.cloud.ai.dataagentbackend.lite.SearchLiteContext;
+import com.alibaba.cloud.ai.dataagentbackend.lite.llm.SearchLiteLlmGateway;
 import com.alibaba.cloud.ai.dataagentbackend.lite.SearchLiteMessages;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStep;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStepResult;
-import com.alibaba.cloud.ai.dataagentbackend.llm.anthropic.AnthropicClient;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -47,12 +47,12 @@ public class EnhanceMinimaxStep implements SearchLiteStep {
 
 	private static final Logger log = LoggerFactory.getLogger(EnhanceMinimaxStep.class);
 
-	private final AnthropicClient anthropicClient;
+	private final SearchLiteLlmGateway llmGateway;
 
 	private final ObjectMapper objectMapper;
 
-	public EnhanceMinimaxStep(AnthropicClient anthropicClient, ObjectMapper objectMapper) {
-		this.anthropicClient = Objects.requireNonNull(anthropicClient, "anthropicClient");
+	public EnhanceMinimaxStep(SearchLiteLlmGateway llmGateway, ObjectMapper objectMapper) {
+		this.llmGateway = Objects.requireNonNull(llmGateway, "llmGateway");
 		this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper");
 	}
 
@@ -119,7 +119,7 @@ public class EnhanceMinimaxStep implements SearchLiteStep {
 			.just(SearchLiteMessages.message(context, stage(), SearchLiteMessageType.TEXT, "正在进行查询增强...", null))
 			.delayElements(Duration.ofMillis(50));
 
-		Flux<String> sharedDeltas = anthropicClient.streamMessage(system, user).cache();
+		Flux<String> sharedDeltas = llmGateway.streamAsync(system, user).cache();
 
 		Flux<SearchLiteMessage> streaming = sharedDeltas
 			.map(delta -> SearchLiteMessages.message(context, stage(), SearchLiteMessageType.JSON, delta, null));

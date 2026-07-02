@@ -48,6 +48,8 @@ public class EvalMarkdownReportRenderer {
 		builder.append("## Metrics\n\n");
 		builder.append("| Metric | Passed | Total | Rate |\n");
 		builder.append("| --- | ---: | ---: | ---: |\n");
+		appendMetric(builder, "Goal Pass Rate", report.metrics().goalPassRate());
+		appendMetric(builder, "Strict Pass Rate", report.metrics().strictPassRate());
 		appendMetric(builder, "Expectation Pass Rate", report.metrics().expectationPassRate());
 		appendMetric(builder, "Intent Accuracy", report.metrics().intentAccuracy());
 		appendMetric(builder, "Failure/Fallback Accuracy", report.metrics().failureFallbackAccuracy());
@@ -62,6 +64,9 @@ public class EvalMarkdownReportRenderer {
 		appendMetric(builder, "SQL Execution Success Rate", report.metrics().sqlExecutionSuccessRate());
 		appendMetric(builder, "Result Mode Accuracy", report.metrics().resultModeAccuracy());
 		appendMetric(builder, "Multi-turn Follow-up Accuracy", report.metrics().multiTurnFollowupAccuracy());
+		appendMetric(builder, "Planner Accuracy", report.metrics().plannerAccuracy());
+		appendMetric(builder, "Planner Enabled Accuracy", report.metrics().plannerEnabledAccuracy());
+		appendMetric(builder, "Planner Decision Accuracy", report.metrics().plannerDecisionAccuracy());
 		builder.append("\n");
 
 		builder.append("## Diagnostic Status Breakdown\n\n");
@@ -96,14 +101,19 @@ public class EvalMarkdownReportRenderer {
 			builder.append("No failed cases.\n\n");
 		}
 		else {
-			builder.append("| Case ID | Scenario | Status | Unexpected SQL Gen | Unexpected SQL Exec | Query | Failed Checks | Actual Result Mode | Error |\n");
-			builder.append("| --- | --- | --- | ---: | ---: | --- | --- | --- | --- |\n");
+		builder.append("| Case ID | Scenario | Goal Pass | Strict Pass | Status | Planner | Plan Steps | Unexpected SQL Gen | Unexpected SQL Exec | Query | Goal Failures | Failed Checks | Actual Result Mode | Error |\n");
+		builder.append("| --- | --- | ---: | ---: | --- | --- | ---: | ---: | ---: | --- | --- | --- | --- | --- |\n");
 			for (EvalCaseResult result : failedCases) {
 				builder.append("| ").append(result.caseId()).append(" | ").append(result.scenarioType()).append(" | ")
+					.append(result.goalPassed() ? "Y" : "N").append(" | ")
+					.append(result.strictPassed() ? "Y" : "N").append(" | ")
 					.append(result.diagnosticStatus()).append(" | ")
+					.append(result.plannerEnabled() ? escapeCell(result.plannerDecision()) : "-").append(" | ")
+					.append(result.planStepCount()).append(" | ")
 					.append(result.unexpectedSqlGeneration() ? "Y" : "N").append(" | ")
 					.append(result.unexpectedSqlExecution() ? "Y" : "N").append(" | ")
 					.append(escapeCell(result.query())).append(" | ")
+					.append(escapeCell(String.join(", ", result.goalFailures()))).append(" | ")
 					.append(escapeCell(String.join(", ", result.failedChecks()))).append(" | ")
 					.append(escapeCell(result.resultMode())).append(" | ").append(escapeCell(result.error())).append(" |\n");
 			}
@@ -111,13 +121,16 @@ public class EvalMarkdownReportRenderer {
 		}
 
 		builder.append("## Case Summary\n\n");
-		builder.append("| Case ID | Category | Scenario | Passed | Status | Intent | Recalled Tables | Result Mode | SQL Retry | Duration(ms) |\n");
-		builder.append("| --- | --- | --- | ---: | --- | --- | --- | --- | ---: | ---: |\n");
+		builder.append("| Case ID | Category | Scenario | Goal Pass | Strict Pass | Status | Intent | Planner | Plan Steps | Recalled Tables | Result Mode | SQL Retry | Duration(ms) |\n");
+		builder.append("| --- | --- | --- | ---: | ---: | --- | --- | --- | ---: | --- | --- | ---: | ---: |\n");
 		for (EvalCaseResult result : report.results()) {
 			builder.append("| ").append(result.caseId()).append(" | ").append(escapeCell(result.category())).append(" | ")
-				.append(result.scenarioType()).append(" | ").append(result.passed() ? "Y" : "N").append(" | ")
+				.append(result.scenarioType()).append(" | ").append(result.goalPassed() ? "Y" : "N").append(" | ")
+				.append(result.strictPassed() ? "Y" : "N").append(" | ")
 				.append(result.diagnosticStatus()).append(" | ")
 				.append(escapeCell(result.intentClassification())).append(" | ")
+				.append(result.plannerEnabled() ? escapeCell(result.plannerDecision()) : "-").append(" | ")
+				.append(result.planStepCount()).append(" | ")
 				.append(escapeCell(String.join(", ", result.recalledTables()))).append(" | ")
 				.append(escapeCell(result.resultMode())).append(" | ").append(result.sqlRetryCount()).append(" | ")
 				.append(result.durationMs()).append(" |\n");

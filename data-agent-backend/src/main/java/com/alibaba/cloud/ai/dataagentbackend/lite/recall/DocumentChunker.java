@@ -7,6 +7,8 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * 文档切块器。
@@ -21,6 +23,10 @@ import java.util.Locale;
  */
 @Component
 public class DocumentChunker {
+
+	private static final Pattern PARAGRAPH_PATTERN = Pattern.compile("\\n\\s*\\n+");
+
+	private static final Pattern SENTENCE_PATTERN = Pattern.compile("[^。！？.!?\\n]+[。！？.!?\\n]*");
 
 	private final int maxChars;
 
@@ -106,62 +112,118 @@ public class DocumentChunker {
 		if (text.length() <= maxChars) {
 			return List.of(text);
 		}
-		List<String> sentences = splitSentences(text);
-		if (sentences.size() <= 1) {
-			return splitBySlidingWindow(text);
-		}
-		return splitSentencesWithOverlap(sentences);
+		return splitParagraphsWithOverlap(text);
 	}
 
-	private List<String> splitSentencesWithOverlap(List<String> sentences) {
+	private List<String> splitParagraphsWithOverlap(String text) {
 		List<String> pieces = new ArrayList<>();
-		int index = 0;
-		while (index < sentences.size()) {
-			StringBuilder current = new StringBuilder();
-			int endExclusive = index;
-			while (endExclusive < sentences.size()) {
-				String sentence = sentences.get(endExclusive);
-				if (current.length() > 0 && current.length() + 1 + sentence.length() > maxChars) {
-					break;
-				}
-				if (current.length() > 0) {
-					current.append('\n');
-				}
-				current.append(sentence);
-				endExclusive++;
-			}
-			if (endExclusive == index) {
-				String sentence = sentences.get(index);
-				pieces.addAll(splitBySlidingWindow(sentence));
-				index++;
+		String[] paragraphs = PARAGRAPH_PATTERN.split(text.replace("\r\n", "\n"));
+		StringBuilder current = new StringBuilder();
+		for (String paragraph : paragraphs) {
+			String trimmedParagraph = paragraph == null ? "" : paragraph.trim();
+			if (trimmedParagraph.isBlank()) {
 				continue;
 			}
-			pieces.add(current.toString().trim());
-			if (endExclusive >= sentences.size()) {
-				break;
+			if (trimmedParagraph.length() > maxChars) {
+				if (current.length() > 0) {
+					pieces.add(current.toString().trim());
+					current = extractOverlap(current.toString());
+				}
+				for (String subChunk : splitLargeParagraph(trimmedParagraph)) {
+					if (subChunk.isBlank()) {
+						continue;
+					}
+					int potentialLen = current.length() + (current.length() > 0 ? 2 : 0) + subChunk.length();
+					if (potentialLen > maxChars && current.length() > 0) {
+						current = new StringBuilder();
+					}
+					if (current.length() > 0) {
+						current.append("\n\n");
+					}
+					current.append(subChunk);
+					pieces.add(current.toString().trim());
+					current = extractOverlap(current.toString());
+				}
+				continue;
 			}
-			index = rewindForOverlap(sentences, index, endExclusive);
+			int separatorLength = current.length() > 0 ? 2 : 0;
+			int potentialLength = current.length() + separatorLength + trimmedParagraph.length();
+			if (potentialLength > maxChars && current.length() > 0) {
+				pieces.add(current.toString().trim());
+				current = extractOverlap(current.toString());
+			}
+			if (current.length() > 0) {
+				current.append("\n\n");
+			}
+			current.append(trimmedParagraph);
+		}
+		if (current.length() > 0) {
+			pieces.add(current.toString().trim());
 		}
 		return pieces;
 	}
 
-	private int rewindForOverlap(List<String> sentences, int startInclusive, int endExclusive) {
-		if (overlapChars <= 0) {
-			return endExclusive;
+	private StringBuilder extractOverlap(String chunk) {
+		if (overlapChars <= 0 || chunk == null || chunk.isEmpty()) {
+			return new StringBuilder();
 		}
-		int overlapLength = 0;
-		for (int i = endExclusive - 1; i >= startInclusive; i--) {
-			String sentence = sentences.get(i);
-			int candidate = overlapLength + sentence.length();
-			if (overlapLength > 0) {
-				candidate += 1;
-			}
-			if (candidate > overlapChars) {
-				return i == endExclusive - 1 ? endExclusive - 1 : i + 1;
-			}
-			overlapLength = candidate;
+		int length = chunk.length();
+		if (length <= overlapChars) {
+			return new StringBuilder(chunk);
 		}
-		return startInclusive + 1;
+		String rawOverlap = chunk.substring(length - overlapChars);
+		int firstParagraphBreak = rawOverlap.indexOf("\n\n");
+		if (firstParagraphBreak != -1 && firstParagraphBreak + 2 < rawOverlap.length()) {
+			return new StringBuilder(rawOverlap.substring(firstParagraphBreak + 2));
+		}
+		return new StringBuilder(rawOverlap.trim());
+	}
+
+	private List<String> splitLargeParagraph(String paragraph) {
+		List<String> subChunks = new ArrayList<>();
+		Matcher matcher = SENTENCE_PATTERN.matcher(paragraph);
+		StringBuilder current = new StringBuilder();
+		int lastMatchEnd = 0;
+		while (matcher.find()) {
+			String sentence = matcher.group();
+			lastMatchEnd = matcher.end();
+			if (sentence.length() > maxChars) {
+				if (current.length() > 0) {
+					subChunks.add(current.toString().trim());
+					current = new StringBuilder();
+				}
+				subChunks.addAll(splitBySlidingWindow(sentence));
+				continue;
+			}
+			if (current.length() + sentence.length() > maxChars && current.length() > 0) {
+				subChunks.add(current.toString().trim());
+				current = new StringBuilder();
+			}
+			current.append(sentence);
+		}
+		if (lastMatchEnd < paragraph.length()) {
+			String remaining = paragraph.substring(lastMatchEnd).trim();
+			if (!remaining.isBlank()) {
+				if (remaining.length() > maxChars) {
+					if (current.length() > 0) {
+						subChunks.add(current.toString().trim());
+						current = new StringBuilder();
+					}
+					subChunks.addAll(splitBySlidingWindow(remaining));
+				}
+				else {
+					if (current.length() + remaining.length() > maxChars && current.length() > 0) {
+						subChunks.add(current.toString().trim());
+						current = new StringBuilder();
+					}
+					current.append(remaining);
+				}
+			}
+		}
+		if (current.length() > 0) {
+			subChunks.add(current.toString().trim());
+		}
+		return subChunks;
 	}
 
 	private List<String> splitBySlidingWindow(String text) {
@@ -180,32 +242,6 @@ public class DocumentChunker {
 			start = Math.min(start + step, text.length() - 1);
 		}
 		return pieces;
-	}
-
-	private List<String> splitSentences(String text) {
-		List<String> sentences = new ArrayList<>();
-		StringBuilder current = new StringBuilder();
-		for (int i = 0; i < text.length(); i++) {
-			char ch = text.charAt(i);
-			current.append(ch);
-			if (isSentenceBoundary(ch)) {
-				addSentence(sentences, current);
-				current = new StringBuilder();
-			}
-		}
-		addSentence(sentences, current);
-		return sentences;
-	}
-
-	private void addSentence(List<String> sentences, StringBuilder current) {
-		String normalized = current == null ? "" : current.toString().trim();
-		if (!normalized.isBlank()) {
-			sentences.add(normalized);
-		}
-	}
-
-	private boolean isSentenceBoundary(char ch) {
-		return ch == '。' || ch == '！' || ch == '？' || ch == '.' || ch == '!' || ch == '?' || ch == '\n';
 	}
 
 	private static void addSection(List<Section> sections, String title, StringBuilder current) {

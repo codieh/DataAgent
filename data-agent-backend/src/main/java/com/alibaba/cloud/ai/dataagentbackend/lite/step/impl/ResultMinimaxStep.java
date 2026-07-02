@@ -6,10 +6,10 @@ import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLitePlanStep;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteStage;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteState;
 import com.alibaba.cloud.ai.dataagentbackend.lite.SearchLiteContext;
+import com.alibaba.cloud.ai.dataagentbackend.lite.llm.SearchLiteLlmGateway;
 import com.alibaba.cloud.ai.dataagentbackend.lite.SearchLiteMessages;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStep;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStepResult;
-import com.alibaba.cloud.ai.dataagentbackend.llm.anthropic.AnthropicClient;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -41,15 +41,15 @@ public class ResultMinimaxStep implements SearchLiteStep {
 
 	private static final Logger log = LoggerFactory.getLogger(ResultMinimaxStep.class);
 
-	private final AnthropicClient anthropicClient;
+	private final SearchLiteLlmGateway llmGateway;
 
 	private final ObjectMapper objectMapper;
 
 	private final int maxRowsForPrompt;
 
-	public ResultMinimaxStep(AnthropicClient anthropicClient, ObjectMapper objectMapper,
+	public ResultMinimaxStep(SearchLiteLlmGateway llmGateway, ObjectMapper objectMapper,
 			@Value("${search.lite.result.max-rows-for-prompt:20}") int maxRowsForPrompt) {
-		this.anthropicClient = Objects.requireNonNull(anthropicClient, "anthropicClient");
+		this.llmGateway = Objects.requireNonNull(llmGateway, "llmGateway");
 		this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper");
 		this.maxRowsForPrompt = Math.max(1, maxRowsForPrompt);
 	}
@@ -97,7 +97,7 @@ public class ResultMinimaxStep implements SearchLiteStep {
 			.just(SearchLiteMessages.message(context, stage(), SearchLiteMessageType.TEXT, "正在整理结果...", null))
 			.delayElements(Duration.ofMillis(50));
 
-		Flux<String> sharedDeltas = anthropicClient.streamMessage(system, user).cache();
+		Flux<String> sharedDeltas = llmGateway.streamAsync(system, user).cache();
 
 		Flux<SearchLiteMessage> streaming = sharedDeltas
 			.map(delta -> SearchLiteMessages.message(context, stage(), SearchLiteMessageType.TEXT, delta, null));

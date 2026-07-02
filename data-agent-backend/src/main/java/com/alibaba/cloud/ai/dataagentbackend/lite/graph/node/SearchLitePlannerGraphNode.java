@@ -5,11 +5,11 @@ import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLitePlanStep;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteStage;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteState;
 import com.alibaba.cloud.ai.dataagentbackend.lite.SearchLiteContext;
+import com.alibaba.cloud.ai.dataagentbackend.lite.llm.SearchLiteLlmGateway;
 import com.alibaba.cloud.ai.dataagentbackend.lite.SearchLiteMessages;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphMessageEmitter;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphStateMapper;
 import com.alibaba.cloud.ai.dataagentbackend.lite.trace.SearchLiteTraceRecorder;
-import com.alibaba.cloud.ai.dataagentbackend.llm.anthropic.AnthropicClient;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.action.NodeAction;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -33,7 +33,7 @@ public class SearchLitePlannerGraphNode implements NodeAction {
 
 	private static final Logger log = LoggerFactory.getLogger(SearchLitePlannerGraphNode.class);
 
-	private final AnthropicClient anthropicClient;
+	private final SearchLiteLlmGateway llmGateway;
 
 	private final ObjectMapper objectMapper;
 
@@ -43,10 +43,10 @@ public class SearchLitePlannerGraphNode implements NodeAction {
 
 	private final int maxSteps;
 
-	public SearchLitePlannerGraphNode(AnthropicClient anthropicClient, ObjectMapper objectMapper,
+	public SearchLitePlannerGraphNode(SearchLiteLlmGateway llmGateway, ObjectMapper objectMapper,
 			SearchLiteGraphMessageEmitter messageEmitter, SearchLiteTraceRecorder traceRecorder,
 			@Value("${search.lite.graph.planner.max-steps:5}") int maxSteps) {
-		this.anthropicClient = Objects.requireNonNull(anthropicClient, "anthropicClient");
+		this.llmGateway = Objects.requireNonNull(llmGateway, "llmGateway");
 		this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper");
 		this.messageEmitter = Objects.requireNonNull(messageEmitter, "messageEmitter");
 		this.traceRecorder = Objects.requireNonNull(traceRecorder, "traceRecorder");
@@ -87,7 +87,7 @@ public class SearchLitePlannerGraphNode implements NodeAction {
 		String user = buildPlannerPrompt(liteState);
 		String rawOutput;
 		try {
-			rawOutput = anthropicClient.createMessage(system, user).blockOptional().orElse("");
+			rawOutput = llmGateway.awaitAtBoundary(llmGateway.completeAsync(system, user), "");
 		}
 		catch (Exception ex) {
 			rawOutput = "";
@@ -160,15 +160,33 @@ public class SearchLitePlannerGraphNode implements NodeAction {
 				7. 每个步骤的 instruction 必须是自包含的，能被 SQL 生成器直接执行。
 				8. 只允许使用召回 Schema 中真实存在的表和字段，不要编造。
 				9. tables 列出本计划实际依赖的表；columns 列出关键列，便于后续校验。
-				10. 优先使用最少步骤数。
-				11. 如果之前的计划校验失败，明确修复问题。
+				10. 只有当一个 SQL 步骤就能直接回答最终问题时，才允许使用单步计划。
+				11. 如果请求包含明确的阶段性表达，例如“先…再…/先找出…然后…/先筛选…再分析…/找 TopN 后再看趋势、分布、对比、归因”，通常必须拆成至少 2 步。
+				12. 如果后续分析依赖前一步筛出的对象集合、时间段、分类、TopN 结果或异常样本，必须拆成多步，不要合并成一个大而模糊的 SQL。
+				13. 对“趋势、分布、对比、归因、明细下钻”这类分析，如果前面还需要先确定分析对象，优先拆成“先确定对象，再做分析”的多步计划。
+				14. 不要为了追求步骤少而牺牲可执行性、可解释性和中间结果约束。
+				15. 不要仅仅因为用户没有明确写出 TopN / limit 数量就输出 need_clarification。对“最高的用户/销量最高的商品/客单价最高的用户”这类单数最高级表达，通常可按 Top1 理解。
+				16. 如果用户前文先定义了一批对象，后文又说“这些用户/这些商品/这些分类”，应理解为“前一步筛出的对象集合”，不要因为集合数量未显式说明而澄清。
+				17. 如果同名实体表不存在，但现有 Schema 已有能表达该实体的主键或标识字段（例如 `orders.user_id` 可表达用户维度），不要仅因缺少同名表就输出 need_clarification。
+				18. 只有在缺少关键业务定义、关键筛选条件完全无法落到现有 Schema，或者会导致多个同等合理但结果差异巨大的解释时，才输出 need_clarification。
+				19. 如果之前的计划校验失败，明确修复问题。
 
 				# 思考路径
 				1. 理解目标：用户的核心疑问是什么？
 				2. 核对 Schema：检查计划查询的字段是否在 Schema 中真实存在。
 				3. 先做决策：判断是 proceed、need_clarification 还是 reject。
-				4. 拆解步骤：只有在 proceed 时，将大问题拆解为可执行的 SQL 步骤。
-				5. 撰写指令：确保每个步骤的 instruction 足够详细，让 SQL 生成器一看就懂。
+				4. 判断是否需要多步：如果后一步依赖前一步的筛选结果、排行结果、对象集合或异常样本，优先拆成多步。
+				5. 拆解步骤：只有在 proceed 时，将大问题拆解为可执行的 SQL 步骤。
+				6. 撰写指令：确保每个步骤的 instruction 足够详细，让 SQL 生成器一看就懂。
+
+				# 拆步示例
+				- “查询销量最高的 5 个商品，再按月份统计它们的销量趋势” 应拆成至少 2 步：
+				  第一步找出 Top5 商品；
+				  第二步只针对这些商品统计月度趋势。
+				- “先找出高消费用户，再分析这些用户的下单频次” 应拆成至少 2 步。
+				- “先统计最近30天消费金额最高的用户，再看这些用户每周的下单趋势” 不应因为没有明确写 TopN 就直接 need_clarification；应优先形成可执行的多步计划。
+				- “查询最近 30 天订单总数” 通常是单步任务，不必强行拆步。
+				- “按分类统计销量” 如果没有依赖前置筛选结果，通常是单步任务。
 
 				# 用户请求
 				%s

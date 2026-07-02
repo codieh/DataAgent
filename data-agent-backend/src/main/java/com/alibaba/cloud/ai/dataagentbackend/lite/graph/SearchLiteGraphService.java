@@ -28,6 +28,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphConfiguration.HUMAN_FEEDBACK_NODE;
@@ -69,50 +70,68 @@ public class SearchLiteGraphService {
 	public void graphStreamProcess(Sinks.Many<SearchLiteMessage> sink, SearchLiteContext context, SearchLiteState state,
 			AtomicReference<SearchLiteState> latestState) {
 		messageEmitter.register(context.threadId(), sink);
-		CompletableFuture.runAsync(() -> {
-			try {
-				OverAllState finalState = state.getHumanFeedbackStatus() == null || state.getHumanFeedbackStatus().isBlank()
-						? invokeInitialState(state)
-						: resumeFinalState(state);
-				SearchLiteGraphExecutionResult graphResult = toExecutionResult(finalState, false);
-				SearchLiteState updatedState = graphResult.state() == null ? state : graphResult.state();
-				if (isWaitingForHumanFeedback(updatedState)) {
-					updatedState = markWaitingHumanFeedback(updatedState);
-					emitWaiting(context, updatedState);
-				}
-				latestState.set(updatedState);
+		try {
+			CompletableFuture.runAsync(() -> {
+				try {
+					OverAllState finalState = state.getHumanFeedbackStatus() == null || state.getHumanFeedbackStatus().isBlank()
+							? invokeInitialState(state)
+							: resumeFinalState(state);
+					SearchLiteGraphExecutionResult graphResult = toExecutionResult(finalState, false);
+					SearchLiteState updatedState = graphResult.state() == null ? state : graphResult.state();
+					if (isWaitingForHumanFeedback(updatedState)) {
+						updatedState = markWaitingHumanFeedback(updatedState);
+						emitWaiting(context, updatedState);
+					}
+					latestState.set(updatedState);
 
-				if (!"DATA_ANALYSIS".equalsIgnoreCase(updatedState.getIntentClassification())) {
-					sink.tryEmitNext(SearchLiteMessages.done(context, SearchLiteStage.RESULT, SearchLiteMessageType.JSON, null,
-							Map.of("ok", true, "classification", updatedState.getIntentClassification(),
-									"message", "当前问题不进入数据分析主链路")));
+					if (!"DATA_ANALYSIS".equalsIgnoreCase(updatedState.getIntentClassification())) {
+						sink.tryEmitNext(SearchLiteMessages.done(context, SearchLiteStage.RESULT, SearchLiteMessageType.JSON, null,
+								Map.of("ok", true, "classification", updatedState.getIntentClassification(),
+										"message", "当前问题不进入数据分析主链路")));
+					}
+					if (!updatedState.isAwaitingHumanFeedback()) {
+						multiTurnContextManager.finishTurn(updatedState);
+					}
+					sink.tryEmitComplete();
 				}
-				if (!updatedState.isAwaitingHumanFeedback()) {
-					multiTurnContextManager.finishTurn(updatedState);
+				catch (Exception e) {
+					multiTurnContextManager.discardPending(context.threadId());
+					SearchLiteState failedState = latestState.get() == null ? state : latestState.get();
+					if (failedState == null) {
+						failedState = new SearchLiteState();
+						failedState.setThreadId(context.threadId());
+					}
+					Throwable root = rootCause(e);
+					String message = root == null || root.getMessage() == null ? "unknown error" : root.getMessage();
+					failedState.setError(message);
+					if (failedState.getResultMode() == null || failedState.getResultMode().isBlank()) {
+						failedState.setResultMode("execution_error");
+					}
+					failedState.setAwaitingHumanFeedback(false);
+					latestState.set(failedState);
+					emitError(sink, context, e);
 				}
-				sink.tryEmitComplete();
+				finally {
+					messageEmitter.unregister(context.threadId());
+				}
+			}, executor);
+		}
+		catch (RejectedExecutionException ex) {
+			multiTurnContextManager.discardPending(context.threadId());
+			SearchLiteState failedState = latestState.get() == null ? state : latestState.get();
+			if (failedState == null) {
+				failedState = new SearchLiteState();
+				failedState.setThreadId(context.threadId());
 			}
-			catch (Exception e) {
-				multiTurnContextManager.discardPending(context.threadId());
-				SearchLiteState failedState = latestState.get() == null ? state : latestState.get();
-				if (failedState == null) {
-					failedState = new SearchLiteState();
-					failedState.setThreadId(context.threadId());
-				}
-				Throwable root = rootCause(e);
-				String message = root == null || root.getMessage() == null ? "unknown error" : root.getMessage();
-				failedState.setError(message);
-				if (failedState.getResultMode() == null || failedState.getResultMode().isBlank()) {
-					failedState.setResultMode("execution_error");
-				}
-				failedState.setAwaitingHumanFeedback(false);
-				latestState.set(failedState);
-				emitError(sink, context, e);
-			}
-			finally {
-				messageEmitter.unregister(context.threadId());
-			}
-		}, executor);
+			failedState.setError("系统当前处理请求较多，请稍后重试");
+			failedState.setResultMode("system_busy");
+			failedState.setAwaitingHumanFeedback(false);
+			latestState.set(failedState);
+			log.warn("graph task rejected: threadId={}", context.threadId(), ex);
+			sink.tryEmitNext(SearchLiteMessages.error(context, SearchLiteStage.RESULT, "系统当前处理请求较多，请稍后重试"));
+			sink.tryEmitComplete();
+			messageEmitter.unregister(context.threadId());
+		}
 	}
 
 	private OverAllState invokeInitialState(SearchLiteState state) throws GraphRunnerException {

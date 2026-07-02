@@ -1,6 +1,6 @@
 package com.alibaba.cloud.ai.dataagentbackend.lite.recall;
 
-import com.alibaba.cloud.ai.dataagentbackend.llm.anthropic.AnthropicClient;
+import com.alibaba.cloud.ai.dataagentbackend.lite.llm.SearchLiteLlmGateway;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -17,10 +17,10 @@ public class MinimaxEvidenceQueryRewriteService implements EvidenceQueryRewriteS
 
 	private static final Logger log = LoggerFactory.getLogger(MinimaxEvidenceQueryRewriteService.class);
 
-	private final AnthropicClient anthropicClient;
+	private final SearchLiteLlmGateway llmGateway;
 
-	public MinimaxEvidenceQueryRewriteService(AnthropicClient anthropicClient) {
-		this.anthropicClient = Objects.requireNonNull(anthropicClient, "anthropicClient");
+	public MinimaxEvidenceQueryRewriteService(SearchLiteLlmGateway llmGateway) {
+		this.llmGateway = Objects.requireNonNull(llmGateway, "llmGateway");
 	}
 
 	@Override
@@ -65,7 +65,7 @@ public class MinimaxEvidenceQueryRewriteService implements EvidenceQueryRewriteS
 				""".formatted(contextBlock, original).trim();
 
 		try {
-			String rewritten = anthropicClient.createMessage(system, user).block();
+			String rewritten = llmGateway.awaitAtBoundary(llmGateway.completeAsync(system, user), original);
 			String normalized = normalize(rewritten, original);
 			log.info("evidence rewrite done: originalLen={}, rewrittenLen={}", original.length(), normalized.length());
 			return normalized;

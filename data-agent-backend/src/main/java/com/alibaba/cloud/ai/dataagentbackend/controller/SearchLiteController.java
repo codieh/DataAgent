@@ -15,6 +15,9 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Flux;
 
+import java.time.Instant;
+import java.util.concurrent.atomic.AtomicLong;
+
 @RestController
 @CrossOrigin(origins = "*")
 @RequestMapping("/api/stream")
@@ -43,12 +46,25 @@ public class SearchLiteController {
 		log.info("SSE 请求：/api/stream/search-lite agentId={}, threadId={}, queryLen={}, humanReview={}, hasFeedback={}",
 				agentId, threadId, queryLen, humanReview, humanFeedbackApproved != null);
 
+		AtomicLong emittedSeq = new AtomicLong(0);
+
 		return orchestrator.stream(
 				new SearchLiteRequest(agentId, threadId, query, humanReview, humanFeedbackApproved, humanFeedbackComment))
+			.map(message -> normalizeOutboundMessage(message, emittedSeq))
 			.map(this::toSse)
 			.doOnSubscribe(s -> log.info("SSE 已订阅：agentId={}, threadId={}", agentId, threadId))
 			.doOnCancel(() -> log.info("SSE 已取消：agentId={}, threadId={}", agentId, threadId))
 			.doFinally(signal -> log.info("SSE 结束：agentId={}, threadId={}, signal={}", agentId, threadId, signal));
+	}
+
+	private SearchLiteMessage normalizeOutboundMessage(SearchLiteMessage message, AtomicLong emittedSeq) {
+		if (message == null) {
+			return null;
+		}
+		long nextSeq = emittedSeq.incrementAndGet();
+		Instant timestamp = message.timestamp() == null ? Instant.now() : message.timestamp();
+		return new SearchLiteMessage(message.threadId(), message.stage(), message.type(), message.chunk(), message.payload(),
+				message.done(), message.error(), nextSeq, timestamp);
 	}
 
 	private ServerSentEvent<SearchLiteMessage> toSse(SearchLiteMessage message) {
@@ -56,7 +72,7 @@ public class SearchLiteController {
 		if (message.error() != null && !message.error().isBlank()) {
 			event = "error";
 		}
-		else if (message.done()) {
+		else if (message.done() && isTerminalStage(message)) {
 			event = "complete";
 		}
 		else {
@@ -64,6 +80,14 @@ public class SearchLiteController {
 		}
 
 		return ServerSentEvent.builder(message).event(event).id(message.threadId() + ":" + message.seq()).build();
+	}
+
+	private boolean isTerminalStage(SearchLiteMessage message) {
+		if (message == null || message.stage() == null) {
+			return false;
+		}
+		return message.stage() == com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteStage.RESULT
+				|| message.stage() == com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteStage.HUMAN_FEEDBACK;
 	}
 
 }

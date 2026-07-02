@@ -140,10 +140,11 @@ public class RecallService {
 			.toList();
 
 		List<SchemaTable> recalledTables = filterTables(availableTables, tableNames, topK);
-		List<RecallHit> columnHits = tableNames.isEmpty() ? List.of()
+		List<RecallHit> filteredColumnHits = recalledTables.isEmpty() ? List.of()
 				: recallEngine.search(mergedQuery, schemaIndex.columnDocuments(),
-						new RecallOptions(Math.max(topK * 5, 10), Set.of(RecallDocumentType.SCHEMA_COLUMN), Map.of()));
-		List<RecallHit> filteredColumnHits = filterColumnHitsByTables(columnHits, recalledTables);
+						new RecallOptions(resolveSchemaColumnTopK(topK, recalledTables.size()),
+								Set.of(RecallDocumentType.SCHEMA_COLUMN),
+								Map.of("tableName", recalledTables.stream().map(SchemaTable::name).toList())));
 		List<SchemaTable> focusedTables = focusTablesByColumnHits(recalledTables, filteredColumnHits);
 		String promptText = formatSchemaPrompt(focusedTables);
 		logRecallHits("schema-table", mergedQuery, loaded.isPresent() ? "store" : "rebuild", tableHits);
@@ -210,6 +211,12 @@ public class RecallService {
 			.filter(table -> tableNames.contains(table.name()))
 			.toList();
 		return filtered.isEmpty() ? tables.stream().limit(topK).toList() : filtered;
+	}
+
+	private static int resolveSchemaColumnTopK(int topK, int tableCount) {
+		int safeTopK = Math.max(1, topK);
+		int safeTableCount = Math.max(1, tableCount);
+		return Math.max(Math.max(safeTopK * 5, safeTableCount * 6), 10);
 	}
 
 	private static List<RecallHit> filterColumnHitsByTables(List<RecallHit> hits, List<SchemaTable> tables) {

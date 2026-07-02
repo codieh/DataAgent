@@ -84,6 +84,12 @@ V1 只做规则可判的字段，不直接接 LLM-as-a-judge。
 - `expectedSqlExecuted`
 - `expectedSqlRetryCount`
 - `expectedContextualizedQueryContains`
+- `expectedPlannerEnabled`
+- `expectedPlannerDecision`
+- `expectedMinPlanStepCount` / `expectedMaxPlanStepCount`
+- `expectedPlanStepInstructionsContain`
+- `expectedPlanFinished`
+- `expectedPlanFinishedReason`
 
 ## 3. 跑批执行策略
 
@@ -138,7 +144,7 @@ Runner 直接复用：
 
 ## 5. 指标定义
 
-V1 先统计 11 个指标：
+V1 目前统计 14 个指标：
 
 - `expectationPassRate`
 - `intentAccuracy`
@@ -152,6 +158,9 @@ V1 先统计 11 个指标：
 - `sqlExecutionSuccessRate`
 - `resultModeAccuracy`
 - `multiTurnFollowupAccuracy`
+- `plannerAccuracy`
+- `plannerEnabledAccuracy`
+- `plannerDecisionAccuracy`
 
 同时 runner 现在支持按 suite 过滤 dataset。
 

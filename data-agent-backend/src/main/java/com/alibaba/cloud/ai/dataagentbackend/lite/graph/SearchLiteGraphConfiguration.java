@@ -36,8 +36,13 @@ import org.springframework.beans.factory.annotation.Value;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static com.alibaba.cloud.ai.graph.action.AsyncEdgeAction.edge_async;
 import static com.alibaba.cloud.ai.graph.action.AsyncNodeAction.node_async;
@@ -204,14 +209,32 @@ public class SearchLiteGraphConfiguration {
 
 	@Bean(destroyMethod = "shutdown")
 	public ExecutorService searchLiteGraphExecutor(
-			@Value("${search.lite.graph.executor.threads:12}") int threadCount) {
+			@Value("${search.lite.graph.executor.threads:12}") int threadCount,
+			@Value("${search.lite.graph.executor.queue-capacity:200}") int queueCapacity,
+			@Value("${search.lite.graph.executor.keep-alive-seconds:60}") long keepAliveSeconds) {
 		int poolSize = Math.max(1, threadCount);
-		return Executors.newFixedThreadPool(poolSize, runnable -> {
+		int safeQueueCapacity = Math.max(1, queueCapacity);
+		long safeKeepAliveSeconds = Math.max(0L, keepAliveSeconds);
+		BlockingQueue<Runnable> workQueue = new LinkedBlockingQueue<>(safeQueueCapacity);
+		ThreadFactory threadFactory = new SearchLiteGraphThreadFactory();
+		ThreadPoolExecutor executor = new ThreadPoolExecutor(poolSize, poolSize, safeKeepAliveSeconds,
+				TimeUnit.SECONDS, workQueue, threadFactory, new ThreadPoolExecutor.AbortPolicy());
+		executor.prestartAllCoreThreads();
+		return executor;
+	}
+
+	private static final class SearchLiteGraphThreadFactory implements ThreadFactory {
+
+		private final AtomicInteger sequence = new AtomicInteger(1);
+
+		@Override
+		public Thread newThread(Runnable runnable) {
 			Thread thread = new Thread(runnable);
-			thread.setName("search-lite-graph-" + thread.getId());
+			thread.setName("search-lite-graph-" + sequence.getAndIncrement());
 			thread.setDaemon(true);
 			return thread;
-		});
+		}
+
 	}
 
 }
