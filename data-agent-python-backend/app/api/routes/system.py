@@ -1,3 +1,9 @@
+"""系统级路由：启动引导、健康检查、智能体/数据源列举与数据源连通性测试。
+
+这些端点不依赖具体会话/运行，主要服务前端首屏初始化与运维健康探测。
+当前智能体与数据源为内置单例配置，后续可扩展为可配置的多实例。
+"""
+
 from datetime import datetime, timezone
 from time import monotonic
 
@@ -13,12 +19,14 @@ from app.api.schemas import (
     HealthResponse,
 )
 from app.domain.errors import ResourceNotFoundError
+from app.config import get_settings
 
 
 router = APIRouter(tags=["system"])
 
 
 def agents() -> list[AgentProfile]:
+    """返回当前可用的智能体清单（目前为内置默认智能体）。"""
     return [
         AgentProfile(
             id="default-analysis",
@@ -30,6 +38,7 @@ def agents() -> list[AgentProfile]:
 
 
 def datasources() -> list[DatasourceSummary]:
+    """返回当前已配置的数据源清单（目前为内置 sales-db）。"""
     return [
         DatasourceSummary(id="sales-db", name="销售分析数据库", type="mysql", status="configured", is_default=True)
     ]
@@ -37,6 +46,8 @@ def datasources() -> list[DatasourceSummary]:
 
 @router.get("/bootstrap", response_model=BootstrapResponse)
 async def bootstrap() -> BootstrapResponse:
+    """首屏引导接口：聚合默认智能体、推荐问题、数据源与功能开关。"""
+    settings = get_settings()
     return BootstrapResponse(
         default_agent_id="default-analysis",
         agents=agents(),
@@ -46,7 +57,8 @@ async def bootstrap() -> BootstrapResponse:
             "humanReview": True,
             "charts": True,
             "exports": True,
-            "pythonAnalysis": False,
+            # Python 分析开关由配置决定
+            "pythonAnalysis": settings.python_analysis_enabled,
             "multiAgent": False,
             "skills": False,
         },
@@ -55,6 +67,7 @@ async def bootstrap() -> BootstrapResponse:
 
 @router.get("/health", response_model=HealthResponse)
 async def health(session: SessionDependency) -> HealthResponse:
+    # 用一条轻量 SQL 验证数据库可达
     await session.execute(text("SELECT 1"))
     return HealthResponse(status="ok", database="connected", version="0.2.0", timestamp=datetime.now(timezone.utc))
 
@@ -71,12 +84,14 @@ async def list_datasources() -> list[DatasourceSummary]:
 
 @router.post("/datasources/{datasource_id}/test", response_model=DatasourceTestResponse)
 async def test_datasource(datasource_id: str) -> DatasourceTestResponse:
+    """测试指定数据源连通性，返回连接状态与延迟；非内置数据源视为不存在。"""
     if datasource_id != "sales-db":
         raise ResourceNotFoundError("datasource", datasource_id)
     from app.application.executor import graph_runtime
 
     started = monotonic()
     try:
+        # 通过图运行时读取库表元数据，既能验证连接又能统计表数量
         snapshot = await graph_runtime.database.schema_snapshot()
         table_count = len(snapshot.get("tables", []))
         return DatasourceTestResponse(
@@ -86,6 +101,7 @@ async def test_datasource(datasource_id: str) -> DatasourceTestResponse:
             message=f"连接成功，读取到 {table_count} 张表",
         )
     except Exception as error:
+        # 连接失败也返回 200，由响应体 status= failed 表达异常，便于前端统一处理
         return DatasourceTestResponse(
             datasource_id=datasource_id,
             status="failed",

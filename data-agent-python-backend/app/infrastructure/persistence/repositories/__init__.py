@@ -1,2 +1,11 @@
-"""Repositories grouped by aggregate."""
+"""按聚合划分的仓储实现（Repositories grouped by aggregate）。
+
+每个子模块负责一个聚合根的持久化与查询逻辑，例如对话、运行、产物、
+人工审核、事件、工具调用等。各仓储均继承自 ``base.RepositoryBase``，
+共享同一个异步 ``AsyncSession``。
+
+本模块在文件末尾导出 ``Repository``：它通过多重继承把上述各聚合仓储组合为
+一个事务门面，使调用方在单次会话中即可完成跨聚合的读写，并保证提交/回滚
+在同一事务边界内。
+"""
 

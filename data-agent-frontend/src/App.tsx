@@ -9,6 +9,8 @@ const DEFAULT_BACKEND = 'http://localhost:8000'
 
 function App() {
   const streamRef = useRef<AbortController | null>(null)
+  const resultRequestRef = useRef(0)
+  const selectedResultSetIdRef = useRef<string | null>(null)
   const [view, setView] = useState<AppView>('welcome')
   const [backendUrl, setBackendUrl] = useState(() => localStorage.getItem('data-agent.backend-url') || DEFAULT_BACKEND)
   const [bootstrap, setBootstrap] = useState<Bootstrap | null>(null)
@@ -16,6 +18,9 @@ function App() {
   const [conversation, setConversation] = useState<ConversationDetail | null>(null)
   const [run, setRun] = useState<AnalysisRun | null>(null)
   const [resultSet, setResultSet] = useState<ResultSet | null>(null)
+  const [selectedResultSetId, setSelectedResultSetId] = useState<string | null>(null)
+  const [resultLoading, setResultLoading] = useState(false)
+  const [resultError, setResultError] = useState<string | null>(null)
   const [events, setEvents] = useState<RunEvent[]>([])
   const [query, setQuery] = useState('')
   const [humanReview, setHumanReview] = useState(false)
@@ -46,9 +51,32 @@ function App() {
   useEffect(() => { void refreshShell() }, [backendUrl])
   useEffect(() => () => streamRef.current?.abort(), [])
 
-  async function loadResult(nextRun: AnalysisRun, page = 1) {
-    const resultSetId = [...nextRun.queries].reverse().find((item) => item.resultSetId)?.resultSetId
-    setResultSet(resultSetId ? await api.resultSet(backendUrl, resultSetId, page) : null)
+  async function loadResult(nextRun: AnalysisRun, page = 1, requestedId?: string | null) {
+    const availableIds = nextRun.queries.flatMap((item) => item.resultSetId ? [item.resultSetId] : [])
+    const resultSetId = requestedId && availableIds.includes(requestedId)
+      ? requestedId
+      : availableIds[availableIds.length - 1]
+    const requestId = ++resultRequestRef.current
+    selectedResultSetIdRef.current = resultSetId || null
+    setSelectedResultSetId(resultSetId || null)
+    setResultError(null)
+    if (!resultSetId) {
+      setResultSet(null)
+      setResultLoading(false)
+      return
+    }
+    setResultLoading(true)
+    try {
+      const nextResult = await api.resultSet(backendUrl, resultSetId, page)
+      if (requestId === resultRequestRef.current) setResultSet(nextResult)
+    } catch (reason) {
+      if (requestId === resultRequestRef.current) {
+        setResultSet(null)
+        setResultError(reason instanceof Error ? reason.message : String(reason))
+      }
+    } finally {
+      if (requestId === resultRequestRef.current) setResultLoading(false)
+    }
   }
 
   async function refreshRun(runId: string, navigate = true) {
@@ -56,7 +84,7 @@ function App() {
     startTransition(() => setRun(nextRun))
     if (navigate && nextRun.status === 'waiting_review') setView('review')
     if (nextRun.status === 'completed') {
-      await loadResult(nextRun)
+      await loadResult(nextRun, 1, selectedResultSetIdRef.current)
       if (navigate) setView('results')
     }
     if (navigate && (nextRun.status === 'failed' || nextRun.status === 'cancelled')) setView('workspace')
@@ -124,6 +152,9 @@ function App() {
     const detail = await api.conversation(backendUrl, item.id)
     setConversation(detail)
     setResultSet(null)
+    selectedResultSetIdRef.current = null
+    setSelectedResultSetId(null)
+    setResultError(null)
     setEvents([])
     if (item.lastRunId) {
       const latest = await refreshRun(item.lastRunId, false)
@@ -140,6 +171,9 @@ function App() {
     setConversation(null)
     setRun(null)
     setResultSet(null)
+    selectedResultSetIdRef.current = null
+    setSelectedResultSetId(null)
+    setResultError(null)
     setEvents([])
     setQuery('')
     setView('welcome')
@@ -215,7 +249,7 @@ function App() {
   let screen
   if (view === 'welcome') screen = <WelcomeScreen {...navigation} query={query} connected={connected} prompts={bootstrap?.recommendedQuestions || []} error={error} onQueryChange={setQuery} onSubmit={submit} />
   else if (view === 'workspace') screen = <WorkspaceScreen {...navigation} query={query} conversation={conversation} run={run} events={events} connected={connected} status={status} onQueryChange={setQuery} onSubmit={submit} onStop={cancelRun} onRetry={retryRun} onViewResults={() => setView('results')} />
-  else if (view === 'results') screen = <ResultsScreen {...navigation} run={run} resultSet={resultSet} backendUrl={backendUrl} query={query} onQueryChange={setQuery} onSubmit={submit} onResultPage={(page) => run && loadResult(run, page)} onBackToProcess={() => setView('workspace')} />
+  else if (view === 'results') screen = <ResultsScreen {...navigation} run={run} resultSet={resultSet} selectedResultSetId={selectedResultSetId} resultLoading={resultLoading} resultError={resultError} backendUrl={backendUrl} query={query} onQueryChange={setQuery} onSubmit={submit} onSelectResult={(id) => run && loadResult(run, 1, id)} onResultPage={(page) => run && loadResult(run, page, selectedResultSetId)} onBackToProcess={() => setView('workspace')} />
   else if (view === 'review') screen = <ReviewScreen {...navigation} run={run} onApprove={() => decideReview(true)} onReject={(comment) => decideReview(false, comment)} />
   else screen = <SettingsScreen {...navigation} backendUrl={backendUrl} agentId={agentId} agents={bootstrap?.agents || []} humanReview={humanReview} connected={connected} pingRunning={pingRunning} pingSteps={pingSteps} onBackendUrlChange={(value) => { localStorage.setItem('data-agent.backend-url', value); setBackendUrl(value) }} onAgentIdChange={() => undefined} onHumanReviewChange={setHumanReview} onPing={ping} />
 

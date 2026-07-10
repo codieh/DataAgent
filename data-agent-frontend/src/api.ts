@@ -37,7 +37,7 @@ export const api = {
   run: (baseUrl: string, id: string) => request<AnalysisRun>(baseUrl, `/api/v1/runs/${id}`),
   cancelRun: (baseUrl: string, id: string) => request(baseUrl, `/api/v1/runs/${id}/cancel`, { method: 'POST' }),
   retryRun: (baseUrl: string, id: string) => request<RunAccepted>(baseUrl, `/api/v1/runs/${id}/retry`, { method: 'POST' }),
-  resultSet: (baseUrl: string, id: string, page = 1, pageSize = 20) =>
+  resultSet: (baseUrl: string, id: string, page = 1, pageSize = 50) =>
     request<ResultSet>(baseUrl, `/api/v1/result-sets/${id}?page=${page}&page_size=${pageSize}`),
   approve: (baseUrl: string, id: string, comment = '') =>
     request<Review>(baseUrl, `/api/v1/reviews/${id}/approve`, { method: 'POST', body: JSON.stringify({ comment }) }),

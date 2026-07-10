@@ -1,5 +1,7 @@
 export type AppView = 'welcome' | 'workspace' | 'results' | 'review' | 'settings'
 
+export type TableDensity = 'comfortable' | 'compact'
+
 export type AgentProfile = { id: string; name: string; description: string; isDefault: boolean }
 export type Datasource = { id: string; name: string; type: string; status: string; isDefault: boolean }
 export type Bootstrap = {
@@ -75,12 +77,13 @@ export type Finding = { id: string; title: string; description: string; severity
 export type Metric = { id: string; label: string; value: unknown; formattedValue: string; unit?: string; description?: string }
 export type ChartSpec = {
   id: string
-  type: 'line' | 'bar' | 'pie'
+  type: 'line' | 'bar' | 'pie' | 'scatter'
   title: string
-  resultSetId: string
+  resultSetId?: string
   xField: string
   yFields: string[]
   seriesField?: string | null
+  data?: Array<Record<string, unknown>>
 }
 export type Analysis = { title: string; summary: string; findings: Finding[]; metrics: Metric[]; charts: ChartSpec[] }
 export type Review = {

@@ -9,15 +9,22 @@ dependencies = [
     "chromadb>=1.0.0",
     "fastapi>=0.115.0",
     "greenlet>=3.1.1",
+    "langchain-core>=1.0.0",
+    "langchain-text-splitters>=1.0.0",
     "langgraph>=1.0.0",
     "langgraph-checkpoint-sqlite>=3.0.0",
     "pymysql>=1.1.1",
     "pydantic-settings>=2.6.0",
     "sqlglot>=26.0.0",
     "sqlalchemy[asyncio]>=2.0.36",
+    "tokenizers>=0.23.0",
     "uvicorn[standard]>=0.32.0",
     "openai>=2.0.0",
+    "openpyxl>=3.1.0",
 ]
+
+[project.scripts]
+data-agent-index-knowledge = "app.retrieval.index_cli:main"
 
 [dependency-groups]
 dev = [

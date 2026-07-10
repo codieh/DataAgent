@@ -4,8 +4,8 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build && electron-builder",
+    "dev": "env -u ELECTRON_RUN_AS_NODE vite",
+    "build": "env -u ELECTRON_RUN_AS_NODE sh -c \"tsc && vite build && electron-builder\"",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview"
   },

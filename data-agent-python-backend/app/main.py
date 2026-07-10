@@ -1,3 +1,10 @@
+"""FastAPI 应用入口。
+
+负责创建应用实例、注册路由与中间件、配置跨域（CORS），并通过 lifespan 在
+启动/关闭时初始化数据库、图运行时、任务注册表，并恢复被中断的分析任务。
+同时配置了 HTTP 请求级日志与根日志器。
+"""
+
 from contextlib import asynccontextmanager
 import logging
 from time import perf_counter
@@ -12,6 +19,7 @@ from app.application import recover_interrupted_runs, task_registry
 from app.application.executor import graph_runtime
 from app.config import get_settings
 from app.infrastructure.persistence.database import close_database, initialize_database
+from app.observability.logging_setup import configure_logging
 
 
 logger = logging.getLogger(__name__)
@@ -19,15 +27,22 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    # 统一配置根日志，确保模型输入/输出与工具调用日志可见。
+    configure_logging(
+        file_path=settings.log_file_path if settings.log_file_enabled else None,
+        file_max_bytes=settings.log_file_max_bytes,
+        file_backup_count=settings.log_file_backup_count,
+    )
     logger.info(
         "application configuration: llmProvider=openai model=%s baseUrl=%s apiKeyConfigured=%s "
-        "llmRawResponseLogging=%s llmThinkingEnabled=%s productDatabaseDriver=%s",
+        "llmRawResponseLogging=%s llmThinkingEnabled=%s productDatabaseDriver=%s logFile=%s",
         settings.llm_model,
         settings.llm_base_url,
         bool(settings.llm_api_key.strip()),
         settings.llm_log_responses,
         settings.llm_thinking_enabled,
         settings.product_database_url.split(":", 1)[0],
+        str(settings.log_file_path) if settings.log_file_enabled else "disabled",
     )
     await initialize_database()
     await graph_runtime.startup()

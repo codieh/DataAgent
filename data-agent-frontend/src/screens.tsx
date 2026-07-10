@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react'
-import type { AgentProfile, AnalysisRun, AppView, Conversation, ConversationDetail, PingStep, ResultSet, RunEvent } from './types'
+import { useEffect, useMemo, useState } from 'react'
+import type { AgentProfile, AnalysisRun, AppView, Conversation, ConversationDetail, PingStep, QueryResult, ResultSet, RunEvent, TableDensity } from './types'
 import { Sidebar, TitleBar } from './components/AppChrome'
 import { Composer } from './components/Composer'
 import { Icon } from './components/Icon'
@@ -17,6 +17,8 @@ type Navigation = {
 const stageLabels: Record<string, string> = {
   intent: '理解问题', knowledge_recall: '召回业务知识', schema_recall: '读取数据结构', planner: '制定分析计划',
   sql_generate: '生成查询', sql_validate: '安全检查', human_feedback: '等待人工确认', sql_execute: '执行查询',
+  input_guard: '检查请求安全', agent_decide: '决定下一步分析', agent_schema_search: '检索相关数据表',
+  agent_schema_inspect: '查看表结构', agent_knowledge_search: '检索业务知识',
   result: '整理结果', chitchat: '生成回复',
 }
 
@@ -87,35 +89,184 @@ export function WorkspaceScreen(props: Navigation & {
   </div>
 }
 
-function ResultChart({ run, resultSet }: { run: AnalysisRun; resultSet: ResultSet | null }) {
-  const chart = run.analysis?.charts[0]
+function ResultChart({ run, resultSet, selectedResultSetId }: { run: AnalysisRun; resultSet: ResultSet | null; selectedResultSetId: string | null }) {
+  const chart = run.analysis?.charts.find((item) => item.resultSetId === selectedResultSetId)
+    || run.analysis?.charts.find((item) => !item.resultSetId)
   const points = useMemo(() => {
-    if (!chart || !resultSet?.rows.length) return ''
-    const values = resultSet.rows.map((row) => Number(row[chart.yFields[0]])).filter(Number.isFinite)
+    const rows = chart?.data?.length ? chart.data : resultSet?.rows
+    if (!chart || !rows?.length) return ''
+    const values = rows.map((row) => Number(row[chart.yFields[0]])).filter(Number.isFinite)
     if (!values.length) return ''
     const min = Math.min(...values), max = Math.max(...values), span = max - min || 1
     return values.map((value, index) => `${24 + index / Math.max(1, values.length - 1) * 716},${238 - (value - min) / span * 176}`).join(' ')
   }, [chart, resultSet])
-  return <div className="trend-chart"><div className="chart-title"><strong>{chart?.title || '查询结果概览'}</strong><span><i /> {chart?.yFields.join(' / ') || '暂无图表建议'}</span></div>{points ? <svg viewBox="0 0 770 270" role="img">{[55, 95, 135, 175, 215].map((y) => <line key={y} x1="24" x2="740" y1={y} y2={y} className="chart-grid-line" />)}<polyline points={points} className="sales-line" /></svg> : <div className="chart-watermark">{resultSet?.totalRows || 0}</div>}</div>
+  const rowCount = chart?.data?.length || resultSet?.totalRows || 0
+  return <div className="trend-chart"><div className="chart-title"><strong>{chart?.title || '查询结果概览'}</strong><span><i /> {chart?.yFields.join(' / ') || '暂无图表建议'}</span></div>{points ? <svg viewBox="0 0 770 270" role="img">{[55, 95, 135, 175, 215].map((y) => <line key={y} x1="24" x2="740" y1={y} y2={y} className="chart-grid-line" />)}<polyline points={points} className="sales-line" /></svg> : <div className="chart-watermark">{rowCount}</div>}</div>
+}
+
+type ColumnHint = { min: number; max: number; align: 'left' | 'right'; numeric: boolean; date: boolean; wide: boolean }
+
+const NUMERIC_TYPES = new Set(['integer', 'int', 'bigint', 'smallint', 'tinyint', 'decimal', 'numeric', 'real', 'double', 'float', 'number', 'money', 'currency', 'percent', 'ratio', 'long'])
+const DATE_TYPES = new Set(['date', 'datetime', 'timestamp', 'time', 'timestamptz'])
+
+function describeColumn(column: { name: string; label?: string; dataType?: string }): ColumnHint {
+  const name = column.name.toLowerCase()
+  const label = (column.label || column.name).toLowerCase()
+  const dt = (column.dataType || '').toLowerCase()
+  const numeric = NUMERIC_TYPES.has(dt)
+  const date = DATE_TYPES.has(dt)
+  const wide = /(name|名称|描述|地址|address|addr|desc|description|remark|备注|memo|title|标题|content|内容|detail|详情|summary|摘要|note|说明|info|comment|评论)/.test(`${label}${name}`)
+  const short = name.endsWith('_id') || /(^id$|^no$|^num$|^qty$|^count$|^序号$|^编号$|^数量$|^行号$|^rowid$|uuid|code$|编码)/.test(`${label}${name}`)
+  let min = 130
+  let max = 260
+  if (short) { min = 84; max = 200 }
+  else if (wide) { min = 200; max = 320 }
+  else if (numeric) { min = 104; max = 220 }
+  else if (date) { min = 140; max = 240 }
+  return { min, max, align: numeric ? 'right' : 'left', numeric, date, wide }
+}
+
+function ResultSetSwitcher({ queries, selectedId, onSelect }: { queries: QueryResult[]; selectedId: string | null; onSelect: (id: string) => void }) {
+  return <nav className="result-set-switcher" aria-label="本次分析产生的数据结果">{queries.map((item, index) => <button type="button" className={item.resultSetId === selectedId ? 'is-active' : ''} key={item.id} onClick={() => onSelect(item.resultSetId!)}><span>结果 {index + 1}</span><strong>{item.rowCount} 行</strong><small>{item.stepId || `查询 ${index + 1}`}</small></button>)}</nav>
+}
+
+function FieldPanel({ columns, visible, onToggle, onClose }: { columns: ResultSet['columns']; visible: string[]; onToggle: (name: string) => void; onClose: () => void }) {
+  return <div className="field-panel">
+    <div className="field-panel-head"><span>显示字段 · {visible.length}/{columns.length}</span><button type="button" onClick={onClose} aria-label="收起字段面板"><Icon name="chevron-down" size={14} /></button></div>
+    <div className="field-panel-list">
+      {columns.map((column) => {
+        const checked = visible.includes(column.name)
+        return <label key={column.name} className="field-option">
+          <input type="checkbox" checked={checked} onChange={() => onToggle(column.name)} />
+          <span className="field-option-label" title={column.label || column.name}>{column.label || column.name}</span>
+          <span className="field-option-type">{column.dataType}</span>
+        </label>
+      })}
+    </div>
+  </div>
+}
+
+function DataTable({ columns, rows, visible, density }: { columns: ResultSet['columns']; rows: Array<Record<string, unknown>>; visible: string[]; density: TableDensity }) {
+  const shown = useMemo(() => columns.filter((column) => visible.includes(column.name)), [columns, visible])
+  return <div className="result-table-scroll">
+    <table className={`density-${density}`}>
+      <thead><tr>{shown.map((column) => {
+        const hint = describeColumn(column)
+        return <th key={column.name} style={{ minWidth: hint.min, maxWidth: hint.max, textAlign: hint.align }} title={column.label || column.name}>{column.label || column.name}</th>
+      })}</tr></thead>
+      <tbody>
+        {rows.length === 0
+          ? <tr><td className="result-table-empty" colSpan={Math.max(1, shown.length)}>当前查询没有可预览的数据。</td></tr>
+          : rows.map((row, index) => <tr key={index}>{shown.map((column) => {
+            const hint = describeColumn(column)
+            const raw = row[column.name]
+            const text = raw == null ? '—' : String(raw)
+            return <td key={column.name} style={{ minWidth: hint.min, maxWidth: hint.max, textAlign: hint.align }} title={text}>{text}</td>
+          })}</tr>)}
+      </tbody>
+    </table>
+  </div>
+}
+
+function FullscreenTable(props: {
+  resultSet: ResultSet | null; selectedResultSetId: string | null
+  successfulQueries: QueryResult[]; visible: string[]; density: TableDensity
+  fieldPanelOpen: boolean; resultLoading: boolean; resultError: string | null
+  onSelectResult: (id: string) => void; onToggleColumn: (name: string) => void
+  onToggleDensity: () => void; onToggleFieldPanel: () => void; onClose: () => void
+}) {
+  const { resultSet, selectedResultSetId, successfulQueries, visible, density, fieldPanelOpen, resultLoading, resultError, onSelectResult, onToggleColumn, onToggleDensity, onToggleFieldPanel, onClose } = props
+  return <div className="table-fullscreen-overlay" role="dialog" aria-modal="true" aria-label="数据预览">
+    <div className="fullscreen-bar">
+      <div className="fullscreen-title"><Icon name="table" size={16} /><strong>数据预览</strong>{resultSet ? <span>{resultSet.totalRows} 行 · 显示 {visible.length}/{resultSet.columns.length} 列</span> : null}</div>
+      <div className="fullscreen-tools">
+        {successfulQueries.length > 1 ? <ResultSetSwitcher queries={successfulQueries} selectedId={selectedResultSetId} onSelect={onSelectResult} /> : null}
+        <button type="button" className={fieldPanelOpen ? 'is-active' : ''} onClick={onToggleFieldPanel}><Icon name="columns" size={15} />显示字段</button>
+        <button type="button" onClick={onToggleDensity}><Icon name="more" size={15} />{density === 'comfortable' ? '舒适' : '紧凑'}</button>
+        <button type="button" onClick={onClose}><Icon name="minimize" size={15} />退出全屏</button>
+      </div>
+    </div>
+    <div className="fullscreen-body">
+      {fieldPanelOpen && resultSet ? <FieldPanel columns={resultSet.columns} visible={visible} onToggle={onToggleColumn} onClose={onToggleFieldPanel} /> : null}
+      {resultLoading
+        ? <div className="result-table-scroll"><p className="result-table-state">正在加载结果…</p></div>
+        : resultError
+          ? <div className="result-table-scroll"><p className="result-table-state is-error">结果加载失败：{resultError}</p></div>
+          : resultSet
+            ? <DataTable columns={resultSet.columns} rows={resultSet.rows} visible={visible} density={density} />
+            : <div className="result-table-scroll"><p className="result-table-state">当前查询没有可预览的数据。</p></div>}
+    </div>
+  </div>
 }
 
 export function ResultsScreen(props: Navigation & {
-  run: AnalysisRun | null; resultSet: ResultSet | null; backendUrl: string; query: string
+  run: AnalysisRun | null; resultSet: ResultSet | null; selectedResultSetId: string | null
+  resultLoading: boolean; resultError: string | null; backendUrl: string; query: string
   onQueryChange: (value: string) => void; onSubmit: () => void; onResultPage: (page: number) => void
+  onSelectResult: (resultSetId: string) => void
   onBackToProcess: () => void
 }) {
-  const { run, resultSet, backendUrl, query, onQueryChange, onSubmit } = props
+  const { run, resultSet, backendUrl } = props
   const [tab, setTab] = useState<'table' | 'sql' | 'evidence'>('table')
+  const [visibleColumns, setVisibleColumns] = useState<string[]>([])
+  const [showAllFindings, setShowAllFindings] = useState(false)
+  const [density, setDensity] = useState<TableDensity>('comfortable')
+  const [fieldPanelOpen, setFieldPanelOpen] = useState(false)
+  const [fullscreen, setFullscreen] = useState(false)
+
+  useEffect(() => {
+    if (resultSet) setVisibleColumns(resultSet.columns.map((column) => column.name))
+  }, [resultSet?.id])
+
   if (!run?.analysis) return <WorkspaceScreen {...props} conversation={null} events={[]} connected status="结果尚未生成" onStop={() => undefined} onRetry={() => undefined} onViewResults={() => undefined} />
   const analysis = run.analysis
+  const successfulQueries = run.queries.filter((item) => item.resultSetId)
+  const selectedQuery = successfulQueries.find((item) => item.resultSetId === props.selectedResultSetId)
+
+  function toggleColumn(name: string) {
+    setVisibleColumns((current) => {
+      if (current.includes(name)) return current.length === 1 ? current : current.filter((item) => item !== name)
+      return [...current, name]
+    })
+  }
+
+  const tableArea = props.resultLoading
+    ? <div className="result-table-scroll"><p className="result-table-state">正在加载结果…</p></div>
+    : props.resultError
+      ? <div className="result-table-scroll"><p className="result-table-state is-error">结果加载失败：{props.resultError}</p></div>
+      : resultSet
+        ? <DataTable columns={resultSet.columns} rows={resultSet.rows} visible={visibleColumns} density={density} />
+        : <div className="result-table-scroll"><p className="result-table-state">当前查询没有可预览的数据。</p></div>
+
   return <div className="app-frame"><TitleBar connected title={run.question} /><div className="app-shell results-shell">{sidebar(props)}<main className="results-canvas">
-    <header className="results-header"><p><span><Icon name="check" size={14} /></span>分析完成 · {run.stages.length} 个步骤 · {formatDuration(run.durationMs)}</p><div className="results-title-row"><div><h1>{analysis.title}</h1><p>{analysis.summary}</p></div><div className="result-actions"><button onClick={() => navigator.clipboard.writeText(analysis.summary)}><Icon name="copy" size={15} />复制结论</button><a href={`${backendUrl}/api/v1/runs/${run.id}/export?format=csv`}><Icon name="download" size={15} />导出</a></div></div></header>
-    <section className="result-analysis-grid"><ResultChart run={run} resultSet={resultSet} /><aside className="key-findings"><h2>关键发现</h2>{analysis.findings.map((finding, index) => <div className="finding" key={finding.id}><span>{index + 1}</span><p><strong>{finding.title}</strong><br />{finding.description}</p></div>)}{analysis.metrics[0] ? <div className="key-metric"><p>{analysis.metrics[0].label}</p><strong>{analysis.metrics[0].formattedValue}</strong><span>{analysis.metrics[0].description}</span></div> : null}</aside></section>
-    <section className="result-data-panel"><div className="data-tabs"><button className={tab === 'table' ? 'is-active' : ''} onClick={() => setTab('table')}>数据表</button><button className={tab === 'sql' ? 'is-active' : ''} onClick={() => setTab('sql')}>SQL</button><button className={tab === 'evidence' ? 'is-active' : ''} onClick={() => setTab('evidence')}>分析依据</button></div>
-      {tab === 'table' ? <table><thead><tr>{resultSet?.columns.map((column) => <th key={column.name}>{column.label || column.name}</th>)}</tr></thead><tbody>{resultSet?.rows.map((row, index) => <tr key={index}>{resultSet.columns.map((column) => <td key={column.name}>{String(row[column.name] ?? '—')}</td>)}</tr>)}</tbody></table> : <pre className="result-code">{tab === 'sql' ? run.queries.map((item) => item.sql).join('\n\n') : [...(run.retrieval?.documents || []), ...(run.retrieval?.evidences || [])].map((item) => `${item.title}\n${item.content}`).join('\n\n') || '本次分析未引用额外知识。'}</pre>}
+    <header className="results-header"><p><span><Icon name="check" size={14} /></span>分析完成 · {run.stages.length} 个步骤 · {formatDuration(run.durationMs)}</p><div className="results-title-row"><div><h1>{analysis.title}</h1><p>{analysis.summary}</p></div><div className="result-actions"><button onClick={() => navigator.clipboard.writeText(analysis.summary)}><Icon name="copy" size={15} />复制结论</button>{props.selectedResultSetId ? <a href={`${backendUrl}/api/v1/result-sets/${encodeURIComponent(props.selectedResultSetId)}/export?format=csv`}><Icon name="download" size={15} />下载数据</a> : null}</div></div></header>
+    <section className="result-analysis-grid"><ResultChart run={run} resultSet={resultSet} selectedResultSetId={props.selectedResultSetId} /><aside className="key-findings"><h2>关键发现{analysis.findings.length > 3 ? <span className="findings-count">{showAllFindings ? analysis.findings.length : `前 3 / ${analysis.findings.length}`}</span> : null}</h2>{analysis.findings.slice(0, showAllFindings ? undefined : 3).map((finding, index) => <div className="finding" key={finding.id}><span>{index + 1}</span><div className="finding-body"><strong className="finding-title" title={finding.title}>{finding.title}</strong><span className="finding-desc" title={finding.description}>{finding.description}</span></div></div>)}{analysis.findings.length > 3 ? <button type="button" className="findings-toggle" onClick={() => setShowAllFindings((value) => !value)}>{showAllFindings ? '收起' : `查看全部 ${analysis.findings.length} 条`}</button> : null}{analysis.metrics[0] ? <div className="key-metric"><p>{analysis.metrics[0].label}</p><strong>{analysis.metrics[0].formattedValue}</strong><span>{analysis.metrics[0].description}</span></div> : null}</aside></section>
+    {successfulQueries.length > 1 ? <ResultSetSwitcher queries={successfulQueries} selectedId={props.selectedResultSetId} onSelect={props.onSelectResult} /> : null}
+    <section className="result-data-panel"><div className="data-tabs"><button className={tab === 'table' ? 'is-active' : ''} onClick={() => setTab('table')}>数据表</button><button className={tab === 'sql' ? 'is-active' : ''} onClick={() => setTab('sql')}>当前 SQL</button><button className={tab === 'evidence' ? 'is-active' : ''} onClick={() => setTab('evidence')}>分析依据</button></div>
+      {tab === 'table' ? <div className="data-table-body">
+        <div className="data-table-toolbar">
+          <span className="data-table-count">{resultSet ? `共 ${resultSet.columns.length} 列 · 显示 ${visibleColumns.length} 列` : ''}</span>
+          <div className="data-table-tools">
+            <button type="button" className={fieldPanelOpen ? 'is-active' : ''} onClick={() => setFieldPanelOpen((value) => !value)}><Icon name="columns" size={15} />显示字段</button>
+            <button type="button" onClick={() => setDensity((value) => value === 'comfortable' ? 'compact' : 'comfortable')}><Icon name="more" size={15} />{density === 'comfortable' ? '舒适' : '紧凑'}</button>
+            <button type="button" onClick={() => setFullscreen(true)}><Icon name="expand" size={15} />全屏</button>
+          </div>
+        </div>
+        {fieldPanelOpen && resultSet ? <FieldPanel columns={resultSet.columns} visible={visibleColumns} onToggle={toggleColumn} onClose={() => setFieldPanelOpen(false)} /> : null}
+        {tableArea}
+      </div> : <pre className="result-code">{tab === 'sql' ? selectedQuery?.sql || '当前结果没有关联 SQL。' : [...(run.retrieval?.documents || []), ...(run.retrieval?.evidences || [])].map((item) => `${item.title}\n${item.content}`).join('\n\n') || '本次分析未引用额外知识。'}</pre>}
       <div className="table-footer"><span>共 {resultSet?.totalRows || 0} 行{resultSet?.truncated ? '（已截断）' : ''}</span><span><button disabled={!resultSet || resultSet.page <= 1} onClick={() => props.onResultPage((resultSet?.page || 1) - 1)}>‹</button> 第 {resultSet?.page || 1} 页 <button disabled={!resultSet || resultSet.page * resultSet.pageSize >= resultSet.totalRows} onClick={() => props.onResultPage((resultSet?.page || 1) + 1)}>›</button></span></div></section>
-    <div className="result-composer"><Composer compact value={query} placeholder="继续追问这份结果…" onChange={onQueryChange} onSubmit={onSubmit} /></div>
-  </main><aside className="results-toolrail"><button type="button" onClick={props.onBackToProcess}><Icon name="chart" /><span>过程</span></button><button type="button"><Icon name="database" /><span>载荷</span></button><button type="button"><Icon name="wave" /><span>事件</span></button></aside></div></div>
+    {/* <div className="result-composer"><Composer compact value={query} placeholder="继续追问这份结果…" onChange={onQueryChange} onSubmit={onSubmit} /></div> */}
+  </main><aside className="results-toolrail"><button type="button" onClick={props.onBackToProcess}><Icon name="chart" /><span>过程</span></button><button type="button"><Icon name="database" /><span>载荷</span></button><button type="button"><Icon name="wave" /><span>事件</span></button></aside></div>
+    {fullscreen ? <FullscreenTable
+      resultSet={resultSet} selectedResultSetId={props.selectedResultSetId}
+      successfulQueries={successfulQueries} visible={visibleColumns} density={density}
+      fieldPanelOpen={fieldPanelOpen} resultLoading={props.resultLoading} resultError={props.resultError}
+      onSelectResult={props.onSelectResult} onToggleColumn={toggleColumn}
+      onToggleDensity={() => setDensity((value) => value === 'comfortable' ? 'compact' : 'comfortable')}
+      onToggleFieldPanel={() => setFieldPanelOpen((value) => !value)} onClose={() => setFullscreen(false)}
+    /> : null}
+  </div>
 }
 
 export function ReviewScreen(props: Navigation & { run: AnalysisRun | null; onApprove: () => void; onReject: (comment: string) => void }) {

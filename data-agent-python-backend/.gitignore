@@ -7,4 +7,5 @@ data/*.db-shm
 data/*.db-wal
 data/results/
 data/exports/
-
+data/python-analysis/
+data/datasets/

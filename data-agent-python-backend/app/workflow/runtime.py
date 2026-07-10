@@ -1,4 +1,13 @@
+"""分析工作流运行时（编排与生命周期管理）。
+
+``GraphRuntime`` 负责装配所有基础设施依赖（数据库、LLM、检索器、数据集存储、
+结果历史、Python 沙箱、记忆服务、上下文构建器等），构建并编译 LangGraph，
+并对外提供：启动/关闭、流式执行（``stream``）、人工审核恢复（``resume``）、
+读取当前状态（``state``）。检查点使用本地 SQLite 持久化，保证可中断恢复。
+"""
+
 from collections.abc import AsyncIterator
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -7,33 +16,74 @@ from langgraph.types import Command
 from sqlalchemy.engine import make_url
 
 from app.config import Settings
+from app.analysis import AnalysisDatasetStore, PythonAnalysisService, ResultHistoryService, create_python_sandbox
 from app.infrastructure.datasource.sql import BusinessDatabase
 from app.infrastructure.llm.openai import OpenAiChatClient
+from app.memory import ContextBuilder, ConversationSummarizer, LongTermMemoryExtractor, MemoryProvider
 from app.retrieval import KnowledgeRetriever
 from app.workflow.graph import build_analysis_graph
+from app.workflow.context_builder import AgentContextBuilder
+
+
+logger = logging.getLogger(__name__)
 
 
 class GraphRuntime:
+    """LangGraph 分析工作流的运行时。
+
+    在构造时装配依赖并创建各服务对象；在 ``startup`` 中建立检查点、编译图；
+    ``shutdown`` 释放连接。线程粒度由调用方以 ``run_id`` 作为 thread_id 控制。
+    """
+
     def __init__(self, settings: Settings):
         self.settings = settings
         self.database = BusinessDatabase(settings)
         self.llm = OpenAiChatClient(settings)
         self.retriever = KnowledgeRetriever(settings)
+        self.dataset_store = AnalysisDatasetStore(settings)
+        self.result_history = ResultHistoryService(settings, self.dataset_store)
+        self.agent_context_builder = AgentContextBuilder(settings, self.result_history)
+        self.python_sandbox = create_python_sandbox(settings)
+        self.python_analysis = PythonAnalysisService(settings, self.llm, self.python_sandbox)
+        self.memory_provider = MemoryProvider(settings)
+        self.conversation_summarizer = ConversationSummarizer(settings, self.llm)
+        self.context_builder = ContextBuilder(settings, self.memory_provider, self.conversation_summarizer)
+        self.memory_extractor = LongTermMemoryExtractor(settings, self.llm, self.memory_provider)
         self._checkpointer_context = None
         self._checkpointer = None
         self.graph = None
 
     async def startup(self) -> None:
+        """初始化运行时：清理过期数据集、建立 SQLite 检查点并编译 LangGraph。"""
+        expired_datasets = await self.dataset_store.cleanup()
+        orphaned_files = await self.dataset_store.cleanup_orphans()
+        logger.info(
+            "dataset startup cleanup completed: expired=%d orphanedFiles=%d",
+            expired_datasets,
+            orphaned_files,
+        )
+        # 检查点目录与业务库同目录：若未配置或内存库，则回退到 ./data/app.db
         database_path = make_url(self.settings.database_url).database
         if not database_path or database_path == ":memory:":
             database_path = str(Path.cwd() / "data" / "app.db")
         checkpoint_path = Path(database_path).with_name("checkpoints.db")
         checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
         self._checkpointer_context = AsyncSqliteSaver.from_conn_string(str(checkpoint_path))
+        # 进入异步上下文，获得可复用的检查点 saver
         self._checkpointer = await self._checkpointer_context.__aenter__()
-        self.graph = build_analysis_graph(self.llm, self.database, self.retriever).compile(checkpointer=self._checkpointer)
+        # 装配节点并编译图，绑定检查点以支持中断/恢复
+        self.graph = build_analysis_graph(
+            self.llm,
+            self.database,
+            self.retriever,
+            self.python_analysis,
+            self.dataset_store,
+            self.result_history,
+            self.agent_context_builder,
+        ).compile(checkpointer=self._checkpointer)
 
     async def shutdown(self) -> None:
+        """释放资源：关闭数据库连接、LLM（可选）与检查点上下文，并将图置空。"""
         await self.database.close()
         close_llm = getattr(self.llm, "close", None)
         if close_llm is not None:
@@ -43,6 +93,7 @@ class GraphRuntime:
         self.graph = None
 
     async def stream(self, run_id: str, state: dict[str, Any]) -> AsyncIterator[tuple[str, Any]]:
+        """以 ``run_id`` 作为 thread_id 流式执行工作流，逐块产出（custom/updates）。"""
         if self.graph is None:
             raise RuntimeError("LangGraph runtime is not started")
         config = {"configurable": {"thread_id": run_id}}
@@ -50,6 +101,7 @@ class GraphRuntime:
             yield item
 
     async def resume(self, run_id: str, approved: bool, comment: str) -> AsyncIterator[tuple[str, Any]]:
+        """在人工审核中断后恢复执行：把审批结果作为 Command.resume 回灌到图。"""
         if self.graph is None:
             raise RuntimeError("LangGraph runtime is not started")
         config = {"configurable": {"thread_id": run_id}}
@@ -58,7 +110,17 @@ class GraphRuntime:
             yield item
 
     async def state(self, run_id: str) -> dict[str, Any]:
+        """读取某次运行（thread_id）的当前图状态快照。"""
         if self.graph is None:
             raise RuntimeError("LangGraph runtime is not started")
         snapshot = await self.graph.aget_state({"configurable": {"thread_id": run_id}})
         return dict(snapshot.values)
+
+    async def delete_checkpoints(self, run_ids: list[str]) -> int:
+        """删除指定 Run 的全部 LangGraph checkpoint 与 pending writes。"""
+        if self._checkpointer is None:
+            raise RuntimeError("LangGraph checkpointer 尚未启动")
+        unique_run_ids = list(dict.fromkeys(run_ids))
+        for run_id in unique_run_ids:
+            await self._checkpointer.adelete_thread(run_id)
+        return len(unique_run_ids)

@@ -11,12 +11,15 @@ export type IconName =
   | 'chevron-down'
   | 'chevron-right'
   | 'code'
+  | 'columns'
   | 'copy'
   | 'database'
   | 'download'
+  | 'expand'
   | 'external'
   | 'info'
   | 'menu'
+  | 'minimize'
   | 'more'
   | 'pause'
   | 'plus'
@@ -42,12 +45,15 @@ const paths: Record<IconName, JSX.Element> = {
   'chevron-down': <path d="m6 9 6 6 6-6" />,
   'chevron-right': <path d="m9 6 6 6-6 6" />,
   code: <><path d="m8 9-3 3 3 3M16 9l3 3-3 3M14 5l-4 14" /></>,
+  columns: <><rect x="3" y="4" width="5" height="16" rx="1" /><rect x="10" y="4" width="5" height="16" rx="1" /><rect x="17" y="4" width="4" height="16" rx="1" /></>,
   copy: <><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M15 9V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h3" /></>,
   database: <><ellipse cx="12" cy="5" rx="7" ry="3" /><path d="M5 5v7c0 1.7 3.1 3 7 3s7-1.3 7-3V5M5 12v7c0 1.7 3.1 3 7 3s7-1.3 7-3v-7" /></>,
   download: <><path d="M12 3v12m0 0 4-4m-4 4-4-4" /><path d="M4 19h16" /></>,
+  expand: <><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></>,
   external: <><path d="M14 4h6v6M20 4l-9 9" /><path d="M18 13v6H5V6h6" /></>,
   info: <><circle cx="12" cy="12" r="9" /><path d="M12 11v5M12 8h.01" /></>,
   menu: <><path d="M4 7h16M4 12h16M4 17h16" /></>,
+  minimize: <><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5" /></>,
   more: <><circle cx="5" cy="12" r="1" fill="currentColor" stroke="none" /><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none" /><circle cx="19" cy="12" r="1" fill="currentColor" stroke="none" /></>,
   pause: <><path d="M9 7v10M15 7v10" /><circle cx="12" cy="12" r="9" /></>,
   plus: <path d="M12 5v14M5 12h14" />,

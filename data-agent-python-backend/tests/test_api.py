@@ -1,27 +1,74 @@
+"""通过 FastAPI TestClient 对完整 HTTP API 进行端到端测试。
+
+本文件用 FakeLlm / FakeDatabase 替换真实的 LLM 与数据库依赖，覆盖：
+- 一次完整分析运行（agent 工作流）产出的前端契约；
+- 提示词注入拦截；
+- 纯聊天走统一 Agent 且不触发 SQL；
+- 长期记忆写入（rewrite_core_memory）；
+- 人工审核流程（等待 → 通过 / 驳回后重新规划）；
+- 会话的增改查删以及删除时取消运行中的任务；
+- 新建会话将长期记忆以隐藏系统消息注入。
+"""
+
 import os
+import json
+import sqlite3
 import time
 from pathlib import Path
 from types import SimpleNamespace
 
 
 TEST_DATABASE = Path("/tmp/data-agent-python-backend-test.db")
+# 测试开始前清理上次遗留的数据库文件（含 SQLite 共享内存 / WAL 附属文件）
 for suffix in ("", "-shm", "-wal"):
     Path(f"{TEST_DATABASE}{suffix}").unlink(missing_ok=True)
+# 强制使用临时 SQLite 数据库并压缩轮询间隔
 os.environ["DATA_AGENT_DATABASE_URL"] = f"sqlite+aiosqlite:///{TEST_DATABASE}"
 os.environ["DATA_AGENT_WORKFLOW_STEP_DELAY_SECONDS"] = "0.001"
 os.environ["DATA_AGENT_SSE_POLL_INTERVAL_SECONDS"] = "0.001"
 os.environ["DATA_AGENT_RETRIEVAL_BACKEND"] = "bm25"
 
 from fastapi.testclient import TestClient  # noqa: E402
+from langchain_core.messages import AIMessage  # noqa: E402
 
 from app.main import app  # noqa: E402
 from app.application.executor import graph_runtime  # noqa: E402
+from app.application.tasks import task_registry  # noqa: E402
 
 
+# 用确定性假 LLM 替代真实模型：依据 system prompt 关键字返回固定的工具调用 / 结构化输出，
+# 从而让整条 agent 工作流无需外部 API 即可稳定执行。
 class FakeLlm:
-    async def complete_json(self, system: str, user: str, *, max_tokens: int | None = None) -> dict:
+    async def complete_json(self, system: str, user: str) -> dict:
         if "classification" in system:
             return {"classification": "DATA_ANALYSIS", "contextualized_query": "分析最近30天销量变化"}
+        if "Data Analyst Agent" in system:
+            payload = __import__("json").loads(user)
+            if not payload.get("schema", {}).get("tables"):
+                return {
+                    "action": "search_schema",
+                    "reasonSummary": "先查询相关表结构",
+                    "arguments": {"query": payload["query"]},
+                }
+            if payload.get("activeResult", {}).get("rowCount", 0):
+                return {
+                    "action": "finish",
+                    "reasonSummary": "已有足够的真实查询结果",
+                    "finalAnswer": "查询完成",
+                }
+            return {
+                "action": "execute_sql",
+                "reasonSummary": "执行订单趋势聚合查询",
+                "arguments": {
+                    "sql": "SELECT order_date, COUNT(order_date) AS order_count, SUM(total_amount) AS sales_amount "
+                    "FROM orders GROUP BY order_date ORDER BY order_date LIMIT 200"
+                },
+                "plan": {
+                    "goal": "分析销量趋势",
+                    "selected_tables": ["orders"],
+                    "steps": [{"id": "step_01", "title": "统计每日销量", "objective": "按日期聚合"}],
+                },
+            }
         if "selected_tables" in system:
             return {
                 "goal": "分析销量趋势",
@@ -72,13 +119,82 @@ class FakeLlm:
             ],
         }
 
-    async def complete(self, system: str, user: str, *, max_tokens: int | None = None) -> str:
+    async def complete(self, system: str, user: str) -> str:
         return "你好，可以向我提出数据分析问题。"
 
-    async def complete_model(self, output_type, system: str, user: str, *, max_tokens: int | None = None):
-        return output_type.model_validate(await self.complete_json(system, user, max_tokens=max_tokens))
+    async def complete_messages(self, system: str, messages: list[dict]) -> str:
+        return await self.complete(system, messages[-1]["content"])
+
+    async def complete_model(self, output_type, system: str, user: str):
+        if output_type.__name__ == "CoreMemoryRewriteOutput":
+            payload = __import__("json").loads(user)
+            return output_type(
+                content="# 用户偏好\n\n- 销售趋势默认按季度展示。",
+                changed=True,
+                summary="已记录销售趋势展示偏好",
+            )
+        return output_type.model_validate(await self.complete_json(system, user))
+
+    async def complete_messages_model(
+        self, output_type, system: str, messages: list[dict]
+    ):
+        if "Data Analyst Agent" in system:
+            raise AssertionError("Agent 必须使用原生 Tool Calling，不能继续解析动作 JSON")
+        return await self.complete_model(output_type, system, messages[-1]["content"])
+
+    async def complete_tool_messages(self, system, messages, *, tools):
+        payload_message = next(item for item in reversed(messages) if isinstance(item, dict))
+        payload = __import__("json").loads(payload_message["content"])
+        if payload["query"] == "你好":
+            return AIMessage(content="你好，可以直接聊天，也可以让我分析业务数据。")
+        if "记住" in payload["query"]:
+            if not any(item.get("tool") == "rewrite_core_memory" for item in payload.get("observations", [])):
+                return AIMessage(
+                    content="记录长期偏好",
+                    tool_calls=[{
+                        "id": "functions.rewrite_core_memory:0",
+                        "name": "rewrite_core_memory",
+                        "args": {"instruction": "销售趋势默认按季度展示"},
+                    }],
+                )
+            return AIMessage(content="已经记住：销售趋势默认按季度展示。")
+        if not payload.get("plan"):
+            return AIMessage(
+                content="先记录分析计划",
+                tool_calls=[{
+                    "id": "functions.update_analysis_plan:0",
+                    "name": "update_analysis_plan",
+                    "args": {
+                        "goal": "分析销量趋势",
+                        "steps": [{"id": "step_01", "title": "统计每日销量", "objective": "按日期聚合"}],
+                    },
+                }],
+            )
+        if not payload.get("schema", {}).get("tables"):
+            return AIMessage(
+                content="检索真实表结构",
+                tool_calls=[{
+                    "id": "functions.search_schema:0",
+                    "name": "search_schema",
+                    "args": {"query": payload["query"]},
+                }],
+            )
+        if not payload.get("activeResult"):
+            return AIMessage(
+                content="执行订单趋势查询",
+                tool_calls=[{
+                    "id": "functions.execute_sql:0",
+                    "name": "execute_sql",
+                    "args": {
+                        "sql": "SELECT order_date, COUNT(order_date) AS order_count, SUM(total_amount) AS sales_amount "
+                        "FROM orders GROUP BY order_date ORDER BY order_date LIMIT 200",
+                    },
+                }],
+            )
+        return AIMessage(content="查询完成，已有足够的真实结果。")
 
 
+# 用假数据库替代真实数据库：提供固定的 orders 表结构与查询结果，无需实际建表与数据。
 class FakeDatabase:
     settings = SimpleNamespace(sql_row_limit=200)
 
@@ -96,7 +212,7 @@ class FakeDatabase:
             ]
         }
 
-    async def execute_select(self, sql: str) -> tuple[list[dict], list[dict]]:
+    async def execute_select(self, sql: str, *, row_limit: int | None = None) -> tuple[list[dict], list[dict]]:
         return (
             [
                 {"name": "order_date", "label": "日期", "dataType": "date"},
@@ -114,11 +230,13 @@ class FakeDatabase:
         return None
 
 
+# 将运行时的 LLM 与数据库依赖替换为假实现
 graph_runtime.llm = FakeLlm()
 graph_runtime.database = FakeDatabase()
 
 
 def wait_for_status(client: TestClient, run_id: str, expected: set[str], timeout: float = 3.0) -> dict:
+    """轮询运行状态接口，直到 run 进入 expected 中的某个终态（或超时抛错）。"""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         response = client.get(f"/api/v1/runs/{run_id}")
@@ -130,6 +248,7 @@ def wait_for_status(client: TestClient, run_id: str, expected: set[str], timeout
     raise AssertionError(f"run {run_id} did not reach {expected}")
 
 
+# 创建会话并返回会话 ID（断言 201 创建成功）
 def create_conversation(client: TestClient) -> str:
     response = client.post("/api/v1/conversations", json={"title": "新建分析"})
     assert response.status_code == 201, response.text
@@ -137,6 +256,9 @@ def create_conversation(client: TestClient) -> str:
 
 
 def test_complete_run_populates_frontend_contract() -> None:
+    """验证一次完整分析运行会产出符合前端契约的结果：健康检查、bootstrap、运行完成、
+    结果集分页、消息列表、工具调用记录、SSE 事件与多种导出格式均正常。
+    """
     with TestClient(app) as client:
         assert client.get("/api/v1/health").json()["status"] == "ok"
         bootstrap = client.get("/api/v1/bootstrap").json()
@@ -160,6 +282,8 @@ def test_complete_run_populates_frontend_contract() -> None:
         assert run["analysis"]["metrics"]
         assert run["analysis"]["charts"]
         assert all(stage["status"] == "completed" for stage in run["stages"])
+        # 当前实现已移除独立的“意图识别”阶段
+        assert all(stage["name"] != "intent" for stage in run["stages"])
 
         result_set_id = run["queries"][0]["resultSetId"]
         result_set = client.get(f"/api/v1/result-sets/{result_set_id}?page=1&page_size=3")
@@ -170,15 +294,36 @@ def test_complete_run_populates_frontend_contract() -> None:
         conversation = client.get(f"/api/v1/conversations/{conversation_id}").json()
         assert [message["role"] for message in conversation["messages"]] == ["user", "assistant"]
 
+        with sqlite3.connect(TEST_DATABASE) as connection:
+            calls = connection.execute(
+                "SELECT tool_name, arguments_json, result_json, status FROM tool_calls "
+                "WHERE run_id = ? ORDER BY sequence",
+                (run_id,),
+            ).fetchall()
+        # 工具调用顺序应与期望一致：先规划、再检索 schema、最后执行 SQL
+        assert [item[0] for item in calls] == ["update_analysis_plan", "search_schema", "execute_sql"]
+        # search_schema 工具入参为原始查询
+        assert json.loads(calls[1][1]) == {"query": "分析最近30天销量变化"}
+        # search_schema 结果已被压缩为 schemaRef 引用
+        assert json.loads(calls[1][2])["schemaRef"] == "state.schema"
+        # 所有工具调用均成功
+        assert all(item[3] == "success" for item in calls)
+
         events = client.get(f"/api/v1/runs/{run_id}/events").text
         assert "event: complete" in events
         assert '"type":"run.completed"' in events
+        assert '"type":"run.behavior_classified"' in events
 
         assert client.get(f"/api/v1/runs/{run_id}/export?format=csv").status_code == 200
         assert client.get(f"/api/v1/runs/{run_id}/export?format=markdown").status_code == 200
+        raw_export = client.get(f"/api/v1/result-sets/{result_set_id}/export?format=csv")
+        assert raw_export.status_code == 200
+        assert raw_export.content.startswith(b"order_date,order_count,sales_amount")
+        assert b"2026-07-01" in raw_export.content
 
 
 def test_prompt_injection_is_blocked_before_llm_and_sql() -> None:
+    """验证包含提示词注入的查询会在调用 LLM / 执行 SQL 之前被拦截，resultMode 为 blocked_prompt_injection。"""
     with TestClient(app) as client:
         conversation_id = create_conversation(client)
         accepted = client.post(
@@ -193,7 +338,42 @@ def test_prompt_injection_is_blocked_before_llm_and_sql() -> None:
         assert run["analysis"]["title"] == "请求已拦截"
 
 
+def test_plain_conversation_uses_unified_agent_without_sql() -> None:
+    """验证普通闲聊走统一 Agent 路径，不触发任何 SQL 查询，结果模式为 conversation。"""
+    with TestClient(app) as client:
+        conversation_id = create_conversation(client)
+        accepted = client.post(f"/api/v1/conversations/{conversation_id}/runs", json={"query": "你好"})
+        run = wait_for_status(client, accepted.json()["runId"], {"completed"})
+
+        assert run["resultMode"] == "conversation"
+        assert run["queries"] == []
+        assert "直接聊天" in run["analysis"]["summary"]
+
+
+def test_rewrite_core_memory_tool_updates_single_cross_conversation_block() -> None:
+    """验证 rewrite_core_memory 工具会把用户偏好写入跨会话的核心记忆，且仅产生这一条工具调用。"""
+    with TestClient(app) as client:
+        conversation_id = create_conversation(client)
+        accepted = client.post(
+            f"/api/v1/conversations/{conversation_id}/runs",
+            json={"query": "记住，以后销售趋势默认按季度展示"},
+        )
+        run = wait_for_status(client, accepted.json()["runId"], {"completed"})
+
+        with sqlite3.connect(TEST_DATABASE) as connection:
+            memory = connection.execute(
+                "SELECT content FROM user_core_memory WHERE profile_id = 'default'"
+            ).fetchone()
+            calls = connection.execute(
+                "SELECT tool_name FROM tool_calls WHERE run_id = ? ORDER BY sequence",
+                (run["id"],),
+            ).fetchall()
+        assert "按季度" in memory[0]
+        assert calls == [("rewrite_core_memory",)]
+
+
 def test_human_review_contains_query_and_resumes_same_run() -> None:
+    """验证开启人工审核后：run 先进入 waiting_review，审核中包含查询与计划；通过后在同一 run 内继续完成。"""
     with TestClient(app) as client:
         conversation_id = create_conversation(client)
         accepted = client.post(
@@ -218,6 +398,7 @@ def test_human_review_contains_query_and_resumes_same_run() -> None:
 
 
 def test_rejected_review_replans_and_resumes_same_run() -> None:
+    """验证审核被驳回后：生成新的 review 并携带反馈，重新规划；最终仍在同一个 run 内完成。"""
     with TestClient(app) as client:
         conversation_id = create_conversation(client)
         accepted = client.post(
@@ -243,13 +424,13 @@ def test_rejected_review_replans_and_resumes_same_run() -> None:
         approved = client.post(f"/api/v1/reviews/{second_review_id}/approve", json={"comment": "调整后可以执行"})
         assert approved.status_code == 200
         completed = wait_for_status(client, run_id, {"completed"})
-        assert any(stage["name"] == "simple_plan" for stage in completed["stages"])
-        assert any(stage["name"] == "planner" for stage in completed["stages"])
+        assert sum(stage["name"] == "agent_decide" for stage in completed["stages"]) >= 3
         assert completed["id"] == run_id
         assert all(stage["status"] == "completed" for stage in completed["stages"])
 
 
 def test_conversation_update_search_and_delete() -> None:
+    """验证会话的更新标题、按关键字搜索列表、删除以及删除后不可再访问。"""
     with TestClient(app) as client:
         conversation_id = create_conversation(client)
         updated = client.patch(f"/api/v1/conversations/{conversation_id}", json={"title": "销售趋势"})
@@ -260,3 +441,88 @@ def test_conversation_update_search_and_delete() -> None:
         deleted = client.delete(f"/api/v1/conversations/{conversation_id}")
         assert deleted.status_code == 200
         assert client.get(f"/api/v1/conversations/{conversation_id}").status_code == 404
+
+
+def test_new_conversation_injects_core_memory_as_hidden_system_message() -> None:
+    """验证新建会话时，用户核心记忆会被写入数据库中的隐藏 system 消息（对普通消息列表不可见）。"""
+    with TestClient(app) as client:
+        with sqlite3.connect(TEST_DATABASE) as connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO user_core_memory(profile_id, content, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)",
+                ("default", "# 用户偏好\n\n- 默认使用中文回答。"),
+            )
+            connection.commit()
+
+        conversation_id = create_conversation(client)
+        detail = client.get(f"/api/v1/conversations/{conversation_id}").json()
+        assert detail["messages"] == []
+
+        with sqlite3.connect(TEST_DATABASE) as connection:
+            hidden = connection.execute(
+                "SELECT role, content FROM messages WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchall()
+        assert hidden == [("system", "<user_core_memory>\n# 用户偏好\n\n- 默认使用中文回答。\n</user_core_memory>")]
+
+
+def test_delete_conversation_cancels_active_runs(monkeypatch) -> None:
+    """验证删除会话时，会调用任务注册表取消该会话下仍在运行的任务。"""
+    # 记录被取消的 run_id，替换真实的取消逻辑
+    cancelled = []
+
+    async def cancel_and_wait(run_id: str) -> None:
+        cancelled.append(run_id)
+
+    monkeypatch.setattr(task_registry, "cancel_and_wait", cancel_and_wait)
+    with TestClient(app) as client:
+        conversation_id = create_conversation(client)
+        accepted = client.post(
+            f"/api/v1/conversations/{conversation_id}/runs",
+            json={"query": "分析最近30天销量变化"},
+        )
+        run_id = accepted.json()["runId"]
+
+        deleted = client.delete(f"/api/v1/conversations/{conversation_id}")
+
+        assert deleted.status_code == 200
+        assert run_id in cancelled
+
+
+def test_delete_conversation_cleans_result_files_and_graph_checkpoints() -> None:
+    """删除会话后，应清理其 CSV 结果文件和各 Run 的 LangGraph checkpoint。"""
+    with TestClient(app) as client:
+        conversation_id = create_conversation(client)
+        accepted = client.post(
+            f"/api/v1/conversations/{conversation_id}/runs",
+            json={"query": "统计订单数量"},
+        )
+        run_id = accepted.json()["runId"]
+        run = wait_for_status(client, run_id, {"completed"})
+        assert run["queries"]
+
+        with sqlite3.connect(TEST_DATABASE) as connection:
+            file_paths = [
+                Path(row[0])
+                for row in connection.execute(
+                    "SELECT file_path FROM result_sets WHERE run_id = ? AND file_path IS NOT NULL",
+                    (run_id,),
+                ).fetchall()
+            ]
+        checkpoint_database = TEST_DATABASE.with_name("checkpoints.db")
+        with sqlite3.connect(checkpoint_database) as connection:
+            checkpoint_count = connection.execute(
+                "SELECT COUNT(*) FROM checkpoints WHERE thread_id = ?", (run_id,)
+            ).fetchone()[0]
+
+        assert file_paths and all(path.exists() for path in file_paths)
+        assert checkpoint_count > 0
+
+        deleted = client.delete(f"/api/v1/conversations/{conversation_id}")
+
+        assert deleted.status_code == 200
+        assert all(not path.exists() for path in file_paths)
+        with sqlite3.connect(checkpoint_database) as connection:
+            remaining = connection.execute(
+                "SELECT COUNT(*) FROM checkpoints WHERE thread_id = ?", (run_id,)
+            ).fetchone()[0]
+        assert remaining == 0
