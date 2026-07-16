@@ -173,7 +173,7 @@
 .entry-meta { display: flex; align-items: center; gap: 24px; margin-bottom: 13px; font-size: 11px; }
 .entry-meta strong { font-size: 12px; }
 .entry-meta span { color: #858680; }
-.user-entry { min-height: 116px; padding-bottom: 34px; border-bottom: 1px solid var(--line-soft); }
+.user-entry { min-height: 116px; padding-top: 34px; border-top: 1px solid var(--line-soft); }
 .user-entry p { margin: 0; font-size: 14px; font-weight: 550; }
 .agent-entry { padding: 36px 0 24px; }
 .agent-entry h1 { margin: 0 0 18px; font-size: 25px; letter-spacing: -.035em; }
@@ -508,3 +508,102 @@
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+/* ============================================================================
+   .markdown-body —— Markdown 渲染容器的样式
+   ----------------------------------------------------------------------------
+   react-markdown 会把 markdown 文本解析成普通的 HTML 标签
+   （# → <h1>，**xxx** → <strong>，- → <ul><li> 等）。
+   浏览器对这些标签有默认样式，但在不同场景下会显得「不协调」，
+   所以这里统一兜个底，让 AI 回复里的标题、列表、代码块都好看。
+   ============================================================================ */
+
+.markdown-body { font-size: 13px; line-height: 1.85; color: #253b33; word-break: break-word; }
+.markdown-body > :first-child { margin-top: 0; }
+.markdown-body > :last-child { margin-bottom: 0; }
+
+/* 标题：逐级缩小，避免在对话流里太突兀 */
+.markdown-body h1 { margin: 18px 0 10px; font-size: 18px; font-weight: 600; }
+.markdown-body h2 { margin: 16px 0 8px; font-size: 16px; font-weight: 600; }
+.markdown-body h3 { margin: 14px 0 6px; font-size: 14px; font-weight: 600; }
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6 { margin: 12px 0 6px; font-size: 13px; font-weight: 600; }
+
+/* 段落：上下间距，让阅读节奏舒服 */
+.markdown-body p { margin: 8px 0; }
+
+/* 列表：缩进 + 间距；嵌套时也保持对齐 */
+.markdown-body ul,
+.markdown-body ol { margin: 8px 0; padding-left: 22px; }
+.markdown-body li { margin: 4px 0; }
+.markdown-body li > ul,
+.markdown-body li > ol { margin: 4px 0 0; }
+
+/* 强调、删除线 */
+.markdown-body strong { font-weight: 600; }
+.markdown-body em { font-style: italic; }
+.markdown-body del { color: #858680; }
+
+/* 链接：用主题绿，方便识别 */
+.markdown-body a { color: var(--forest, #144d3c); text-decoration: underline; text-underline-offset: 2px; }
+.markdown-body a:hover { opacity: .8; }
+
+/* 行内代码：浅底色 + 等宽字体 */
+.markdown-body code {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(20, 77, 60, .08);
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 12px;
+  color: #144d3c;
+}
+
+/* 代码块：深一点的底，左右滚动避免撑破布局 */
+.markdown-body pre {
+  margin: 10px 0;
+  padding: 12px 14px;
+  border-radius: 6px;
+  background: #0f1a17;
+  color: #d6e0d8;
+  overflow-x: auto;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.markdown-body pre code { padding: 0; background: transparent; color: inherit; font-size: inherit; }
+
+/* 引用块：左侧绿条 + 浅底，跟 .streaming-answer 风格统一 */
+.markdown-body blockquote {
+  margin: 10px 0;
+  padding: 6px 14px;
+  border-left: 2px solid var(--forest, #144d3c);
+  background: rgba(20, 77, 60, .045);
+  color: #4a5a52;
+}
+.markdown-body blockquote > :first-child { margin-top: 4px; }
+.markdown-body blockquote > :last-child { margin-bottom: 4px; }
+
+/* 分隔线 */
+.markdown-body hr { margin: 14px 0; border: 0; border-top: 1px solid var(--line-soft, #e5e6e1); }
+
+/* 表格：紧凑、有边框、表头加粗 */
+.markdown-body table {
+  margin: 10px 0;
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 12px;
+}
+.markdown-body th,
+.markdown-body td {
+  padding: 6px 10px;
+  border: 1px solid var(--line-soft, #e5e6e1);
+  text-align: left;
+  vertical-align: top;
+}
+.markdown-body th { background: rgba(20, 77, 60, .06); font-weight: 600; }
+
+/* 任务列表（Gfm 扩展）：去掉默认圆点，让 checkbox 单独显示 */
+.markdown-body li input[type="checkbox"] { margin-right: 6px; }
+.markdown-body li:has(> input[type="checkbox"]) { list-style: none; margin-left: -18px; }
+
