@@ -25,7 +25,6 @@ for suffix in ("", "-shm", "-wal"):
 # 强制使用临时 SQLite 数据库并压缩轮询间隔
 os.environ["DATA_AGENT_DATABASE_URL"] = f"sqlite+aiosqlite:///{TEST_DATABASE}"
 os.environ["DATA_AGENT_WORKFLOW_STEP_DELAY_SECONDS"] = "0.001"
-os.environ["DATA_AGENT_SSE_POLL_INTERVAL_SECONDS"] = "0.001"
 os.environ["DATA_AGENT_RETRIEVAL_BACKEND"] = "bm25"
 
 from fastapi.testclient import TestClient  # noqa: E402

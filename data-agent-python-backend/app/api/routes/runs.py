@@ -110,13 +110,59 @@ async def stream_run_events(
     async def event_stream():
         sequence = resume_sequence
         live_sequence = 0
-        heartbeat_elapsed = 0.0
-        async with run_live_event_broker.subscribe(run_id) as live_queue:
+        async with run_live_event_broker.subscribe(run_id) as subscription:
+            # 订阅必须早于数据库补发，期间产生的持久事件会同时出现在两处，依靠 seq 去重。
+            async with session_factory() as session:
+                repository = Repository(session)
+                events = await repository.list_events(run_id, sequence)
+                current_run = await repository.get_run(run_id)
+            for event in events:
+                response = event_response(event)
+                sequence = max(sequence, response.seq)
+                yield _persistent_sse(response)
+            if current_run and (
+                current_run.status in TERMINAL_STATUSES or current_run.status == "waiting_review"
+            ):
+                return
+
             while True:
-                # 先发送瞬时 Token 事件；它们不携带 SSE id，避免影响持久事件断线续传游标。
-                while not live_queue.empty():
+                if await request.is_disconnected():
+                    return
+                try:
+                    live = await asyncio.wait_for(
+                        subscription.queue.get(), timeout=settings.sse_heartbeat_seconds
+                    )
+                except TimeoutError:
+                    yield ": heartbeat\n\n"
+                    continue
+                if live.get("kind") == "overflow":
+                    # 让客户端明确重连；Last-Event-ID 会补回持久事件，最终快照补回 Summary。
                     live_sequence += 1
-                    live = live_queue.get_nowait()
+                    error = {
+                        "eventId": f"live-{run_id}-{live_sequence}",
+                        "conversationId": run.conversation_id,
+                        "runId": run_id,
+                        "seq": -live_sequence,
+                        "type": "stream.overflow",
+                        "stage": None,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "data": {
+                            "code": "sse_consumer_too_slow",
+                            "message": "事件消费速度过慢，请重新连接事件流。",
+                        },
+                    }
+                    yield format_sse("error", json.dumps(error, ensure_ascii=False))
+                    return
+                if live.get("kind") == "persistent":
+                    event_seq = int(live["seq"])
+                    if event_seq <= sequence:
+                        continue
+                    sequence = event_seq
+                    yield _persistent_payload_sse(live)
+                    if live["type"] in {"run.completed", "run.failed", "run.cancelled", "review.required"}:
+                        return
+                else:
+                    live_sequence += 1
                     payload = {
                         "eventId": f"live-{run_id}-{live_sequence}",
                         "conversationId": run.conversation_id,
@@ -128,37 +174,35 @@ async def stream_run_events(
                         "data": live.get("data", {}),
                     }
                     yield format_sse("message", json.dumps(payload, ensure_ascii=False))
-                    heartbeat_elapsed = 0.0
-                if await request.is_disconnected():
-                    return
-                async with session_factory() as session:
-                    repository = Repository(session)
-                    events = await repository.list_events(run_id, sequence)
-                    current_run = await repository.get_run(run_id)
-                for event in events:
-                    response = event_response(event)
-                    sequence = max(sequence, response.seq)
-                    if response.type in {"run.completed", "review.required"}:
-                        event_name = "complete"
-                    elif response.type == "run.failed":
-                        event_name = "error"
-                    else:
-                        event_name = "message"
-                    yield format_sse(event_name, response.model_dump_json(by_alias=True), str(response.seq))
-                    heartbeat_elapsed = 0.0
-                if current_run and current_run.status in TERMINAL_STATUSES and not events and live_queue.empty():
-                    return
-                if current_run and current_run.status == "waiting_review" and not events and live_queue.empty():
-                    return
-                await asyncio.sleep(settings.sse_poll_interval_seconds)
-                heartbeat_elapsed += settings.sse_poll_interval_seconds
-                if heartbeat_elapsed >= settings.sse_heartbeat_seconds:
-                    yield ": heartbeat\n\n"
-                    heartbeat_elapsed = 0.0
 
     return StreamingResponse(
         event_stream(),
         media_type="text/event-stream",
         # 关闭代理缓冲，保证事件实时到达；禁用缓存
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+def _event_name(event_type: str) -> str:
+    if event_type in {"run.completed", "review.required"}:
+        return "complete"
+    if event_type in {"run.failed", "run.cancelled"}:
+        return "error"
+    return "message"
+
+
+def _persistent_sse(response) -> str:
+    return format_sse(
+        _event_name(response.type),
+        response.model_dump_json(by_alias=True),
+        str(response.seq),
+    )
+
+
+def _persistent_payload_sse(payload: dict) -> str:
+    data = {key: value for key, value in payload.items() if key != "kind"}
+    return format_sse(
+        _event_name(str(payload["type"])),
+        json.dumps(data, ensure_ascii=False),
+        str(payload["seq"]),
     )

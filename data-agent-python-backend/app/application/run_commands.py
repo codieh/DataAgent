@@ -9,6 +9,7 @@
 """
 
 from app.application.executor import workflow
+from app.application.live_events import run_live_event_broker
 from app.application.tasks import task_registry
 from app.domain.errors import ResourceNotFoundError
 from app.infrastructure.persistence.models import utc_now
@@ -132,7 +133,7 @@ class ReviewCommandService:
         run.status = "running"
         run.result_mode = None
         await self.repository.save_run(run)
-        await self.repository.add_event(
+        event = await self.repository.add_event(
             run_id=run.id,
             conversation_id=run.conversation_id,
             event_type="stage.completed",
@@ -143,10 +144,10 @@ class ReviewCommandService:
                 "message": "审核通过，继续执行" if approved else "已根据审核意见重新规划",
             },
         )
+        run_live_event_broker.publish_persistent(event)
         # 根据决策方向驱动不同的图恢复入口。
         if approved:
             task_registry.start(run.id, workflow.resume_after_review(run.id))
         else:
             task_registry.start(run.id, workflow.replan_after_rejection(run.id, comment or ""))
         return review
-

@@ -799,7 +799,7 @@ MySQL结果上限控制；完整数据写 CSV；Graph State 只保存结果引�
 | `analysis_dataset_max_disk_mb` | 512 MB | 结果目录配额，也是当前单文件限制 |
 | `python_sandbox_timeout_seconds` | 30 秒 | Python 容器执行超时 |
 | `python_analysis_max_repairs` | 2 次 | Python 代码最大修复次数 |
-| `sse_poll_interval_seconds` | 0.1 秒 | SSE 事件库轮询间隔 |
+| `sse_heartbeat_seconds` | 10 秒 | SSE 无事件时的心跳间隔；实时事件由进程内 Broker 主动唤醒 |
 | `sse_heartbeat_seconds` | 10 秒 | SSE 心跳间隔 |
 | MySQL 连接池 | 5 + 5 overflow | 单进程业务库连接容量 |
 

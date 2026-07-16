@@ -178,7 +178,7 @@ class GraphAnalysisExecutor:
             return
         if str(payload.get("type", "")).startswith("final_answer."):
             # Token 增量不落库，直接交给当前 SSE 订阅者；最终结果由 Run 快照持久化。
-            run_live_event_broker.publish(run_id, payload)
+            run_live_event_broker.publish_transient(run_id, payload)
             return
         # 其他 custom 事件目前只处理阶段开始。
         if payload.get("type") != "stage.started":
@@ -706,13 +706,15 @@ class GraphAnalysisExecutor:
         data: dict[str, Any],
     ) -> None:
         """统一的领域事件落库入口：写入事件表，供前端 SSE/轮询订阅。"""
-        await repository.add_event(
+        event = await repository.add_event(
             run_id=run.id,
             conversation_id=run.conversation_id,
             event_type=event_type,
             stage=stage,
             data=_json_safe(data),
         )
+        # 必须在事务提交成功后广播，保证客户端收到的持久事件一定可以从 SQLite 补发。
+        run_live_event_broker.publish_persistent(event)
 
 
 def _json_safe(value: Any) -> Any:

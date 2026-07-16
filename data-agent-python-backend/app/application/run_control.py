@@ -3,6 +3,7 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.tasks import TERMINAL_STATUSES, task_registry
+from app.application.live_events import run_live_event_broker
 from app.domain.errors import ResourceNotFoundError
 from app.infrastructure.persistence.models import elapsed_ms, utc_now
 from app.infrastructure.persistence.repository import Repository
@@ -35,13 +36,14 @@ class WorkflowControlService:
         run.completed_at = utc_now()
         run.duration_ms = elapsed_ms(run.started_at, run.completed_at)
         await self.repository.save_run(run)
-        await self.repository.add_event(
+        event = await self.repository.add_event(
             run_id=run.id,
             conversation_id=run.conversation_id,
             event_type="run.cancelled",
             stage=run.current_stage,
             data={"status": "cancelled", "runUrl": f"/api/v1/runs/{run.id}"},
         )
+        run_live_event_broker.publish_persistent(event)
         # 等待后台任务真正结束，避免返回后 LangGraph 继续写入 checkpoint。
         await task_registry.cancel_and_wait(run.id)
         return run
