@@ -430,6 +430,11 @@
 .ping-timeline strong { font-size: 9px; }
 .ping-timeline small { font-family: var(--mono); font-size: 8px; }
 .diagnostic-warning { margin-top: 14px; padding: 12px 15px; border: 1px solid rgba(200, 95, 54, .55); border-radius: 5px; color: #ae542f; font-size: 9px; line-height: 1.6; }
+.streaming-answer { position: relative; margin: 18px 0; padding: 18px 20px; border-left: 2px solid var(--forest); background: rgba(20, 77, 60, .045); }
+.streaming-answer p { margin: 0; white-space: pre-wrap; color: #253b33; font-size: 13px; line-height: 1.9; }
+.streaming-answer.is-complete { background: transparent; }
+.streaming-answer i { display: inline-block; width: 7px; height: 14px; margin-left: 4px; background: var(--forest); vertical-align: -2px; animation: stream-cursor 1s steps(1) infinite; }
+@keyframes stream-cursor { 50% { opacity: 0; } }
 .stream-monitor { display: grid; grid-template-rows: auto auto auto minmax(0, 1fr) auto; min-width: 0; min-height: 0; padding: 0 22px; color: #bfcac1; background: #111d19; font-family: var(--mono); }
 .stream-monitor > header { display: flex; justify-content: space-between; align-items: center; height: 56px; border-bottom: 1px solid rgba(255, 255, 255, .12); font-size: 11px; letter-spacing: .12em; }
 .stream-monitor > header b { display: flex; align-items: center; gap: 8px; color: #72bb7e; font-size: 10px; font-weight: 400; }

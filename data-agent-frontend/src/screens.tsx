@@ -70,19 +70,25 @@ function ExecutionInspector({ run, events }: { run: AnalysisRun | null; events: 
 
 export function WorkspaceScreen(props: Navigation & {
   query: string; conversation: ConversationDetail | null; run: AnalysisRun | null; events: RunEvent[]
+  streamingAnswer: string
   connected: boolean; status: string; onQueryChange: (value: string) => void; onSubmit: () => void; onStop: () => void
   onRetry: () => void
   onViewResults: () => void
 }) {
-  const { query, conversation, run, events, connected, status, onQueryChange, onSubmit, onStop } = props
+  const { query, conversation, run, events, streamingAnswer, connected, status, onQueryChange, onSubmit, onStop } = props
   const running = run ? ['queued', 'running'].includes(run.status) : false
+  // 当前 Run 的助手消息由运行卡片统一展示；同一 Run 的用户输入必须保留。
+  const visibleMessages = (conversation?.messages || []).filter(
+    (message) => !(message.runId === run?.id && message.role === 'assistant'),
+  )
+  const displayedSummary = run?.analysis?.summary || streamingAnswer
   return <div className="app-frame">
     <TitleBar title={conversation?.title || run?.question || '新建分析'} connected={connected} />
     <div className="app-shell workspace-shell">
       {sidebar(props)}
       <main className="conversation-workspace"><div className="conversation-scroll">
-        {(conversation?.messages || []).map((message) => <article className={`conversation-entry ${message.role === 'user' ? 'user-entry' : 'agent-entry'}`} key={message.id}><div className="entry-meta"><strong>{message.role === 'user' ? '用户' : 'DataAgent'}</strong><span>{parseServerTime(message.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</span></div><p>{message.content}</p></article>)}
-        {run ? <article className="conversation-entry agent-entry"><div className="entry-meta"><strong>DataAgent</strong><span>{run.status}</span></div><h1>{run.analysis?.title || (running ? '正在分析数据' : '本次分析')}</h1><p className="current-action">当前步骤：{stageLabels[run.currentStage || ''] || status}</p>{run.error ? <><p className="diagnostic-warning">{run.error.message}</p><button type="button" onClick={props.onRetry}>重新运行</button></> : null}{run.analysis ? <button className="view-result-button" type="button" onClick={props.onViewResults}>查看分析结果 <Icon name="arrow-right" size={14} /></button> : null}{run.retrieval?.tables.length ? <section className="selected-tables"><div className="artifact-heading"><strong>已选择的数据表</strong></div><div className="table-artifact">{run.retrieval.tables.map((table) => <span key={table.name}><Icon name="table" size={16} />{table.displayName || table.name}</span>)}</div></section> : null}{run.queries.length ? <details className="sql-disclosure"><summary><span><Icon name="code" size={16} /> SQL 查询（{run.queries.length} 条）</span><Icon name="chevron-down" size={14} /></summary>{run.queries.map((item) => <pre key={item.id}>{item.sql}</pre>)}</details> : null}</article> : null}
+        {visibleMessages.map((message) => <article className={`conversation-entry ${message.role === 'user' ? 'user-entry' : 'agent-entry'}`} key={message.id}><div className="entry-meta"><strong>{message.role === 'user' ? '用户' : 'DataAgent'}</strong><span>{parseServerTime(message.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</span></div><p>{message.content}</p></article>)}
+        {run ? <article className="conversation-entry agent-entry"><div className="entry-meta"><strong>DataAgent</strong><span>{run.status}</span></div><h1>{run.analysis?.title || (streamingAnswer ? '正在生成分析结论' : running ? '正在分析数据' : '本次分析')}</h1><p className="current-action">当前步骤：{stageLabels[run.currentStage || ''] || status}</p>{displayedSummary ? <section className={`streaming-answer ${run.analysis ? 'is-complete' : ''}`} aria-live="polite"><p>{displayedSummary}</p>{!run.analysis ? <i aria-hidden="true" /> : null}</section> : null}{run.error ? <><p className="diagnostic-warning">{run.error.message}</p><button type="button" onClick={props.onRetry}>重新运行</button></> : null}{run.analysis ? <button className="view-result-button" type="button" onClick={props.onViewResults}>查看图表与数据 <Icon name="arrow-right" size={14} /></button> : null}{run.retrieval?.tables.length ? <section className="selected-tables"><div className="artifact-heading"><strong>已选择的数据表</strong></div><div className="table-artifact">{run.retrieval.tables.map((table) => <span key={table.name}><Icon name="table" size={16} />{table.displayName || table.name}</span>)}</div></section> : null}{run.queries.length ? <details className="sql-disclosure"><summary><span><Icon name="code" size={16} /> SQL 查询（{run.queries.length} 条）</span><Icon name="chevron-down" size={14} /></summary>{run.queries.map((item) => <pre key={item.id}>{item.sql}</pre>)}</details> : null}</article> : null}
       </div><div className="workspace-composer"><Composer compact value={query} running={running} placeholder="继续提出分析问题…" onChange={onQueryChange} onSubmit={onSubmit} onStop={onStop} /></div></main>
       <ExecutionInspector run={run} events={events} />
     </div>
@@ -201,6 +207,7 @@ function FullscreenTable(props: {
 
 export function ResultsScreen(props: Navigation & {
   run: AnalysisRun | null; resultSet: ResultSet | null; selectedResultSetId: string | null
+  streamingAnswer: string
   resultLoading: boolean; resultError: string | null; backendUrl: string; query: string
   onQueryChange: (value: string) => void; onSubmit: () => void; onResultPage: (page: number) => void
   onSelectResult: (resultSetId: string) => void
@@ -218,7 +225,7 @@ export function ResultsScreen(props: Navigation & {
     if (resultSet) setVisibleColumns(resultSet.columns.map((column) => column.name))
   }, [resultSet?.id])
 
-  if (!run?.analysis) return <WorkspaceScreen {...props} conversation={null} events={[]} connected status="结果尚未生成" onStop={() => undefined} onRetry={() => undefined} onViewResults={() => undefined} />
+  if (!run?.analysis) return <WorkspaceScreen {...props} conversation={null} events={[]} streamingAnswer={props.streamingAnswer} connected status="结果尚未生成" onStop={() => undefined} onRetry={() => undefined} onViewResults={() => undefined} />
   const analysis = run.analysis
   const successfulQueries = run.queries.filter((item) => item.resultSetId)
   const selectedQuery = successfulQueries.find((item) => item.resultSetId === props.selectedResultSetId)

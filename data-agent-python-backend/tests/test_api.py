@@ -39,6 +39,10 @@ from app.application.tasks import task_registry  # noqa: E402
 # 用确定性假 LLM 替代真实模型：依据 system prompt 关键字返回固定的工具调用 / 结构化输出，
 # 从而让整条 agent 工作流无需外部 API 即可稳定执行。
 class FakeLlm:
+    async def stream_complete(self, system: str, user: str):
+        for part in ["最近一周订单数和", "销售额整体呈上升趋势。"]:
+            yield part
+
     async def complete_json(self, system: str, user: str) -> dict:
         if "classification" in system:
             return {"classification": "DATA_ANALYSIS", "contextualized_query": "分析最近30天销量变化"}
@@ -142,11 +146,14 @@ class FakeLlm:
             raise AssertionError("Agent 必须使用原生 Tool Calling，不能继续解析动作 JSON")
         return await self.complete_model(output_type, system, messages[-1]["content"])
 
-    async def complete_tool_messages(self, system, messages, *, tools):
+    async def complete_tool_messages(self, system, messages, *, tools, on_text_delta=None):
         payload_message = next(item for item in reversed(messages) if isinstance(item, dict))
         payload = __import__("json").loads(payload_message["content"])
         if payload["query"] == "你好":
-            return AIMessage(content="你好，可以直接聊天，也可以让我分析业务数据。")
+            content = "你好，可以直接聊天，也可以让我分析业务数据。"
+            if on_text_delta:
+                on_text_delta(content)
+            return AIMessage(content=content)
         if "记住" in payload["query"]:
             if not any(item.get("tool") == "rewrite_core_memory" for item in payload.get("observations", [])):
                 return AIMessage(
@@ -157,7 +164,10 @@ class FakeLlm:
                         "args": {"instruction": "销售趋势默认按季度展示"},
                     }],
                 )
-            return AIMessage(content="已经记住：销售趋势默认按季度展示。")
+            content = "已经记住：销售趋势默认按季度展示。"
+            if on_text_delta:
+                on_text_delta(content)
+            return AIMessage(content=content)
         if not payload.get("plan"):
             return AIMessage(
                 content="先记录分析计划",
@@ -191,7 +201,10 @@ class FakeLlm:
                     },
                 }],
             )
-        return AIMessage(content="查询完成，已有足够的真实结果。")
+        content = "查询完成，已有足够的真实结果。"
+        if on_text_delta:
+            on_text_delta(content)
+        return AIMessage(content=content)
 
 
 # 用假数据库替代真实数据库：提供固定的 orders 表结构与查询结果，无需实际建表与数据。

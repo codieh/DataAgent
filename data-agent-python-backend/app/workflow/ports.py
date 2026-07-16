@@ -6,7 +6,8 @@
 带原生工具调用的 ``complete_tool_messages``。
 """
 
-from typing import Any, Protocol, TypeVar
+from collections.abc import AsyncIterator
+from typing import Any, Callable, Protocol, TypeVar
 
 from pydantic import BaseModel
 from langchain_core.messages import AIMessage
@@ -31,6 +32,8 @@ class LlmClient(Protocol):
         self, system: str, messages: list[dict[str, str]]
     ) -> str: ...
 
+    def stream_complete(self, system: str, user: str) -> AsyncIterator[str]: ...
+
     async def complete_json(
         self, system: str, user: str
     ) -> dict[str, Any]: ...
@@ -52,4 +55,5 @@ class LlmClient(Protocol):
         messages: list[Any],
         *,
         tools: list[dict[str, Any]],
+        on_text_delta: Callable[[str], None] | None = None,
     ) -> AIMessage: ...

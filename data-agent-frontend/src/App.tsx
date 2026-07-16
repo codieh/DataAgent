@@ -53,6 +53,7 @@ function App() {
   const [resultLoading, setResultLoading] = useState(false)             // 结果是否在加载
   const [resultError, setResultError] = useState<string | null>(null)   // 结果加载报错
   const [events, setEvents] = useState<RunEvent[]>([])                 // 实时事件流
+  const [streamingAnswer, setStreamingAnswer] = useState('')          // 最终结论的实时文本
   const [query, setQuery] = useState('')                               // 输入框文字
   const [humanReview, setHumanReview] = useState(false)                // 是否开启人工审核
   const [connected, setConnected] = useState(false)                    // 后端是否连上
@@ -126,7 +127,7 @@ function App() {
     }
   }
 
-  // 拉取某次运行的最新快照，并按状态决定跳到哪个页面。
+  // 拉取某次运行的最新快照。完成后留在会话页，详情页只由用户主动进入。
   async function refreshRun(runId: string, navigate = true) {
     const nextRun = await api.run(backendUrl, runId)
     // startTransition：把这次 setState 标记为「低优先级」。
@@ -135,7 +136,6 @@ function App() {
     if (navigate && nextRun.status === 'waiting_review') setView('review')
     if (nextRun.status === 'completed') {
       await loadResult(nextRun, 1, selectedResultSetIdRef.current)
-      if (navigate) setView('results')
     }
     if (navigate && (nextRun.status === 'failed' || nextRun.status === 'cancelled')) setView('workspace')
     return nextRun
@@ -151,6 +151,10 @@ function App() {
         // 去重：如果已有同 seq 的事件就不动，否则追加；slice(-240) 最多保留最近 240 条，防止内存膨胀。
         setEvents((current) => current.some((item) => item.seq === event.seq) ? current : [...current, event].slice(-240))
         if (event.type === 'stage.started') setStatus(String(event.data.message || '正在分析'))
+        if (event.type === 'final_answer.started') setStreamingAnswer('')
+        if (event.type === 'final_answer.delta') {
+          setStreamingAnswer((current) => current + String(event.data.delta || ''))
+        }
         // 某些事件代表「运行状态变了」，需要去拉最新快照刷新界面。
         if (event.type === 'artifact.created' || event.type === 'review.required' || event.type.startsWith('run.')) {
           void refreshRun(runId)
@@ -173,6 +177,7 @@ function App() {
     const text = query.trim()
     if (!text) return  // 空输入直接返回（防御性编程）
     setError(null)
+    setStreamingAnswer('')
     setStatus('正在创建分析任务')
     setView('workspace')
     let target = conversation
@@ -316,8 +321,8 @@ function App() {
   // 这就是「单页应用(SPA)」的核心思路：URL 不变，靠 state(view) 切换显示的组件。
   let screen
   if (view === 'welcome') screen = <WelcomeScreen {...navigation} query={query} connected={connected} prompts={bootstrap?.recommendedQuestions || []} error={error} onQueryChange={setQuery} onSubmit={submit} />
-  else if (view === 'workspace') screen = <WorkspaceScreen {...navigation} query={query} conversation={conversation} run={run} events={events} connected={connected} status={status} onQueryChange={setQuery} onSubmit={submit} onStop={cancelRun} onRetry={retryRun} onViewResults={() => setView('results')} />
-  else if (view === 'results') screen = <ResultsScreen {...navigation} run={run} resultSet={resultSet} selectedResultSetId={selectedResultSetId} resultLoading={resultLoading} resultError={resultError} backendUrl={backendUrl} query={query} onQueryChange={setQuery} onSubmit={submit} onSelectResult={(id) => run && loadResult(run, 1, id)} onResultPage={(page) => run && loadResult(run, page, selectedResultSetId)} onBackToProcess={() => setView('workspace')} />
+  else if (view === 'workspace') screen = <WorkspaceScreen {...navigation} query={query} conversation={conversation} run={run} events={events} streamingAnswer={streamingAnswer} connected={connected} status={status} onQueryChange={setQuery} onSubmit={submit} onStop={cancelRun} onRetry={retryRun} onViewResults={() => setView('results')} />
+  else if (view === 'results') screen = <ResultsScreen {...navigation} run={run} resultSet={resultSet} selectedResultSetId={selectedResultSetId} streamingAnswer={streamingAnswer} resultLoading={resultLoading} resultError={resultError} backendUrl={backendUrl} query={query} onQueryChange={setQuery} onSubmit={submit} onSelectResult={(id) => run && loadResult(run, 1, id)} onResultPage={(page) => run && loadResult(run, page, selectedResultSetId)} onBackToProcess={() => setView('workspace')} />
   else if (view === 'review') screen = <ReviewScreen {...navigation} run={run} onApprove={() => decideReview(true)} onReject={(comment) => decideReview(false, comment)} />
   else screen = <SettingsScreen {...navigation} backendUrl={backendUrl} agentId={agentId} agents={bootstrap?.agents || []} humanReview={humanReview} connected={connected} pingRunning={pingRunning} pingSteps={pingSteps} onBackendUrlChange={(value) => { localStorage.setItem('data-agent.backend-url', value); setBackendUrl(value) }} onAgentIdChange={() => undefined} onHumanReviewChange={setHumanReview} onPing={ping} />
 

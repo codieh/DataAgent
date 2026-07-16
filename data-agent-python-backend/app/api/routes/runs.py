@@ -6,6 +6,8 @@
 """
 
 import asyncio
+import json
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Header, Query, Request, status
 from fastapi.responses import StreamingResponse
@@ -16,6 +18,7 @@ from app.api.schemas import AnalysisRunResponse, OperationResponse, RunAccepted,
 from app.application import RunViewService, TERMINAL_STATUSES, WorkflowControlService
 from app.application.run_commands import RunCommandService
 from app.application.executor import graph_runtime
+from app.application.live_events import run_live_event_broker
 from app.config import get_settings
 from app.infrastructure.persistence.database import session_factory
 from app.infrastructure.persistence.repository import Repository
@@ -106,39 +109,52 @@ async def stream_run_events(
 
     async def event_stream():
         sequence = resume_sequence
+        live_sequence = 0
         heartbeat_elapsed = 0.0
-        while True:
-            # 客户端断开立即结束生成器，释放服务端资源
-            if await request.is_disconnected():
-                return
-            async with session_factory() as session:
-                repository = Repository(session)
-                events = await repository.list_events(run_id, sequence)
-                run = await repository.get_run(run_id)
-            for event in events:
-                response = event_response(event)
-                # 推进游标到本事件序号，确保不重复推送
-                sequence = max(sequence, response.seq)
-                if response.type in {"run.completed", "review.required"}:
-                    event_name = "complete"
-                elif response.type == "run.failed":
-                    event_name = "error"
-                else:
-                    event_name = "message"
-                yield format_sse(event_name, response.model_dump_json(by_alias=True), str(response.seq))
-                heartbeat_elapsed = 0.0
-            # 运行已终止且无新事件：正常结束流
-            if run and run.status in TERMINAL_STATUSES and not events:
-                return
-            # 进入等待人工评审且无新事件：结束流，交由评审接口推进
-            if run and run.status == "waiting_review" and not events:
-                return
-            # 无新事件时按轮询间隔休眠，累计到心跳阈值则发心跳保活
-            await asyncio.sleep(settings.sse_poll_interval_seconds)
-            heartbeat_elapsed += settings.sse_poll_interval_seconds
-            if heartbeat_elapsed >= settings.sse_heartbeat_seconds:
-                yield ": heartbeat\n\n"
-                heartbeat_elapsed = 0.0
+        async with run_live_event_broker.subscribe(run_id) as live_queue:
+            while True:
+                # 先发送瞬时 Token 事件；它们不携带 SSE id，避免影响持久事件断线续传游标。
+                while not live_queue.empty():
+                    live_sequence += 1
+                    live = live_queue.get_nowait()
+                    payload = {
+                        "eventId": f"live-{run_id}-{live_sequence}",
+                        "conversationId": run.conversation_id,
+                        "runId": run_id,
+                        "seq": -live_sequence,
+                        "type": live["type"],
+                        "stage": live.get("stage"),
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "data": live.get("data", {}),
+                    }
+                    yield format_sse("message", json.dumps(payload, ensure_ascii=False))
+                    heartbeat_elapsed = 0.0
+                if await request.is_disconnected():
+                    return
+                async with session_factory() as session:
+                    repository = Repository(session)
+                    events = await repository.list_events(run_id, sequence)
+                    current_run = await repository.get_run(run_id)
+                for event in events:
+                    response = event_response(event)
+                    sequence = max(sequence, response.seq)
+                    if response.type in {"run.completed", "review.required"}:
+                        event_name = "complete"
+                    elif response.type == "run.failed":
+                        event_name = "error"
+                    else:
+                        event_name = "message"
+                    yield format_sse(event_name, response.model_dump_json(by_alias=True), str(response.seq))
+                    heartbeat_elapsed = 0.0
+                if current_run and current_run.status in TERMINAL_STATUSES and not events and live_queue.empty():
+                    return
+                if current_run and current_run.status == "waiting_review" and not events and live_queue.empty():
+                    return
+                await asyncio.sleep(settings.sse_poll_interval_seconds)
+                heartbeat_elapsed += settings.sse_poll_interval_seconds
+                if heartbeat_elapsed >= settings.sse_heartbeat_seconds:
+                    yield ": heartbeat\n\n"
+                    heartbeat_elapsed = 0.0
 
     return StreamingResponse(
         event_stream(),

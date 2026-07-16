@@ -4,6 +4,287 @@
 
 如果你以前主要写 Java，可以把本项目先理解为：FastAPI 类似 Web 接口框架，Pydantic 类似运行时 DTO 校验器，SQLAlchemy 类似 ORM，LangGraph 类似带持久化状态的工作流引擎。但这些只是帮助入门的类比，不代表它们完全等价。
 
+> **第一次阅读时，不要从头读到尾。**
+>
+> 先只读下面的“零基础第一遍”。能够用自己的话讲完一次请求后，再把后面的章节当作字典查询。第一次看不懂`ASGI`、`Annotated`、`Protocol`、`Reducer`和`Checkpoint BLOB`都很正常。
+
+---
+
+## 零基础第一遍：先看懂一次请求
+
+### 0.1 先不要管框架，项目只做了这件事
+
+用户问：
+
+```text
+统计各销售渠道的订单量
+```
+
+后端依次完成：
+
+```text
+接收问题
+→ 保存问题
+→ 启动后台分析任务
+→ 让模型决定需要查询哪些表
+→ 检索 orders 等表的结构
+→ 生成 SQL
+→ 检查 SQL 是否安全
+→ 查询 MySQL
+→ 总结查询结果
+→ 保存结果并通知前端
+```
+
+先记住这个故事即可。FastAPI、LangGraph、SQLAlchemy都只是帮助代码完成其中某一段工作的工具。
+
+### 0.2 一张图认识主要文件
+
+```text
+app/main.py
+  启动后端
+       ↓
+app/api/routes/runs.py
+  接收“创建分析任务”的HTTP请求
+       ↓
+app/application/run_commands.py
+  保存问题和run，并启动后台任务
+       ↓
+app/application/executor.py
+  驱动整次分析，保存每个阶段的进度
+       ↓
+app/workflow/nodes/analysis.py
+  执行模型决策、SQL校验、SQL执行和结果总结
+       ↓
+app/infrastructure/
+  真正访问OpenAI、SQLite和MySQL
+```
+
+第一遍只需要认识这六个位置，不需要浏览整个`app/`目录。
+
+### 0.3 读代码前只学六种写法
+
+#### 写法一：变量
+
+```python
+question = "统计各渠道订单量"
+run_id = "run_01"
+```
+
+`=`表示给一个名称绑定一个值。这里可以先把Python变量理解成Java的局部变量。
+
+#### 写法二：列表和字典
+
+```python
+tables = ["orders", "order_items"]
+
+run = {
+    "id": "run_01",
+    "status": "running",
+}
+```
+
+- `list`是一组有顺序的值，写作`[...]`；
+- `dict`是一组“键和值”，写作`{key: value}`；
+- `tables[0]`得到`"orders"`；
+- `run["status"]`得到`"running"`。
+
+LangGraph的`AnalysisState`本质上也是一个较大的`dict`。先这样理解就足够了。
+
+#### 写法三：函数
+
+```python
+def add(a, b):
+    return a + b
+```
+
+`def`定义函数，缩进表示函数体，`return`返回结果。Python不用花括号表示代码块，而是依靠缩进。
+
+#### 写法四：类和`self`
+
+```python
+class Calculator:
+    def add(self, a, b):
+        return a + b
+
+calculator = Calculator()
+result = calculator.add(1, 2)
+```
+
+`class`定义类，`self`就是“当前这个对象”，大致相当于Java的`this`。调用`calculator.add(1, 2)`时，不需要手工传入`self`。
+
+#### 写法五：`async`和`await`
+
+```python
+async def load_run(run_id):
+    run = await database.find(run_id)
+    return run
+```
+
+第一遍只记一句：
+
+> `await`表示“这个操作可能要等网络或数据库，我先等它完成，但不要把整个服务器卡住”。
+
+`await`通常不会创建新线程。更准确的事件循环原理放在后面的异步章节，第一次不用掌握。
+
+#### 写法六：`@`装饰器
+
+```python
+@router.get("/runs/{run_id}")
+async def get_run(run_id):
+    ...
+```
+
+第一遍可以直接翻译成：
+
+> 当收到`GET /runs/某个ID`时，FastAPI调用下面的`get_run()`函数。
+
+暂时不需要理解装饰器内部如何实现。
+
+### 0.4 尝试读懂一个真实路由
+
+项目中的创建run接口可以简化成：
+
+```python
+@router.post("/conversations/{conversation_id}/runs")
+async def create_run(conversation_id, body, session):
+    service = RunCommandService(session)
+    run = await service.create(
+        conversation_id=conversation_id,
+        query=body.query,
+    )
+    return run
+```
+
+不要逐字符研究，先把它翻译成中文：
+
+1. 收到创建分析run的POST请求；
+2. FastAPI把会话ID、请求正文和数据库Session交给函数；
+3. 函数创建`RunCommandService`；
+4. Service保存用户问题并创建run；
+5. 接口把run信息返回前端。
+
+此时Agent不一定已经分析完。接口会先返回`run_id`，真正分析由后台Task继续执行。
+
+### 0.5 为什么要先返回`run_id`
+
+一次Agent分析可能需要几十秒。如果浏览器一直等待同一个普通请求，容易超时，也不方便取消和显示过程。
+
+因此项目分成两部分：
+
+```text
+请求A：创建run
+返回：run_id=run_01
+
+请求B：订阅run_01的SSE事件
+持续收到：正在检索 → 正在生成SQL → 正在执行 → 已完成
+```
+
+`run_id`只是一次分析任务的编号，不是Python线程ID。
+
+### 0.6 后台任务是什么
+
+创建run后，项目会执行类似代码：
+
+```python
+task = asyncio.create_task(executor.run(run_id))
+```
+
+可以先理解为：
+
+- `executor.run(run_id)`描述“如何完成这次分析”；
+- `create_task()`把它登记为后台工作；
+- HTTP接口不用等分析结束就能返回；
+- `TaskRegistry`用一个字典保存正在运行的Task，便于取消任务；
+- Task只存在于当前Python进程，服务重启后Task对象就不存在了。
+
+它不是Java线程，也不是RabbitMQ任务。
+
+### 0.7 LangGraph State是什么
+
+分析期间需要记住很多中间数据：
+
+```python
+state = {
+    "run_id": "run_01",
+    "query": "统计各渠道订单量",
+    "selected_tables": ["orders"],
+    "sql": "SELECT sales_channel, COUNT(*) ...",
+    "rows": [],
+}
+```
+
+这个字典就是状态。每个工作流节点读取旧状态，返回自己修改的部分：
+
+```python
+return {
+    "sql": generated_sql,
+    "pending_sql_validation": True,
+}
+```
+
+LangGraph负责把返回内容合并进去，再运行下一个节点。
+
+第一遍不需要理解Reducer。只记住：**State是运行过程中的共享草稿，不等于数据库表。**
+
+### 0.8 State、SQLite和checkpoint为什么有三个
+
+用“写报告”类比：
+
+| 项目概念 | 类比 | 用途 |
+|---|---|---|
+| `AnalysisState` | 当前桌面上摊开的草稿 | 节点之间传递中间结果 |
+| `app.db` | 正式档案柜 | 保存会话、消息、run、SQL和结果 |
+| `checkpoints.db` | 写作软件的自动恢复记录 | 人工审核暂停后恢复LangGraph |
+
+State里有SQL，不代表SQL已经保存到`app.db`；写入checkpoint，也不等于已经产生正式业务记录。执行器负责把重要状态转换成正式记录。
+
+### 0.9 出错时先找哪一层
+
+第一次调试不要马上阅读全部源码。拿到`run_id`后按顺序检查：
+
+```text
+analysis_runs：run当前是什么状态
+stage_runs：失败发生在哪个阶段
+tool_calls：模型调用了什么工具
+queries：生成了什么SQL，安全检查是否通过
+run_events：前端应该收到什么事件
+日志：查看同一个runId对应的traceback
+```
+
+这比从报错文本猜原因可靠得多。
+
+### 0.10 第一遍达到什么程度就可以停
+
+如果你能用自己的话回答下面六题，就已经完成第一遍：
+
+1. FastAPI在哪里接收请求？
+2. 为什么创建run接口会先返回，而不是等待Agent结束？
+3. `asyncio.Task`和线程是不是一回事？
+4. `AnalysisState`保存什么？
+5. `app.db`和`checkpoints.db`有什么区别？
+6. 前端为什么能看到分析进度？
+
+答不上来时，只回看本章对应小节。不要急着进入后面的SQLAlchemy、Protocol和事件循环细节。
+
+---
+
+## 后续章节怎么使用
+
+下面不是必须顺序读完的课程，而是遇到问题时查询的手册：
+
+| 你现在不懂什么 | 阅读章节 |
+|---|---|
+| 不认识Python写法 | 第2、3章 |
+| 不理解`await`、Task和线程 | 第4章 |
+| 不理解HTTP如何进入代码 | 第5章 |
+| 不理解数据库对象和事务 | 第6章 |
+| 不理解LangGraph和checkpoint | 第7章 |
+| 不理解ReAct与工具调用 | 第8章 |
+| 不知道数据保存在哪里 | 第9、10章 |
+| 不知道如何测试 | 第11、12章 |
+
+阅读原则是：先知道一段代码“在做什么”，再研究它“为什么这样实现”。
+
 ---
 
 ## 1. 先建立项目地图

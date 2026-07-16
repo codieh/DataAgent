@@ -40,6 +40,22 @@ class FakeSdkClient:
 
     async def close(self):
         self.closed = True
+
+
+class FakeAsyncStream:
+    """模拟 OpenAI SDK 的异步流，确保测试验证的是真实增量消费路径。"""
+
+    def __init__(self, chunks):
+        self._chunks = iter(chunks)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        try:
+            return next(self._chunks)
+        except StopIteration:
+            raise StopAsyncIteration
 def response(text: str, finish_reason: str = "stop"):
     return SimpleNamespace(
         choices=[SimpleNamespace(message=SimpleNamespace(content=text), finish_reason=finish_reason)]
@@ -53,6 +69,53 @@ def tool_response(name: str, arguments: str):
     )
     message = SimpleNamespace(content="", tool_calls=[tool_call])
     return SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason="tool_calls")])
+
+
+def stream_chunk(text: str = "", finish_reason: str | None = None):
+    return SimpleNamespace(
+        choices=[SimpleNamespace(delta=SimpleNamespace(content=text), finish_reason=finish_reason)]
+    )
+
+
+@pytest.mark.asyncio
+async def test_stream_complete_yields_provider_deltas(monkeypatch) -> None:
+    """最终文本必须按 SDK 返回的增量产出，而不是等完整响应后人工切字符串。"""
+    monkeypatch.setenv("DATA_AGENT_LLM_API_KEY", "test-key")
+    sdk = FakeSdkClient(FakeAsyncStream([
+        stream_chunk("销售额"),
+        stream_chunk("持续增长"),
+        stream_chunk(finish_reason="stop"),
+    ]))
+    client = OpenAiChatClient(Settings(), client=sdk)
+
+    chunks = [chunk async for chunk in client.stream_complete("system", "question")]
+
+    assert chunks == ["销售额", "持续增长"]
+    assert sdk.chat.completions.calls[0]["stream"] is True
+
+
+@pytest.mark.asyncio
+async def test_stream_tool_messages_yields_final_text_deltas(monkeypatch) -> None:
+    """Agent 直接结束时，用户可见正文应在完整响应结束前逐段交给 SSE 回调。"""
+    monkeypatch.setenv("DATA_AGENT_LLM_API_KEY", "test-key")
+    sdk = FakeSdkClient(FakeAsyncStream([
+        stream_chunk("第一段"),
+        stream_chunk("第二段"),
+        stream_chunk(finish_reason="stop"),
+    ]))
+    client = OpenAiChatClient(Settings(), client=sdk)
+    deltas: list[str] = []
+
+    message = await client.complete_tool_messages(
+        "system",
+        [{"role": "user", "content": "question"}],
+        tools=[{"name": "search_schema", "description": "search", "parameters": {"type": "object"}}],
+        on_text_delta=deltas.append,
+    )
+
+    assert deltas == ["第一段", "第二段"]
+    assert message.content == "第一段第二段"
+    assert message.tool_calls == []
 
 
 @pytest.mark.asyncio

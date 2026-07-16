@@ -10,6 +10,7 @@
 模块级辅助函数负责上下文投影、观察记录、结果清洗与合并等纯逻辑。
 """
 
+import asyncio
 import json
 from datetime import date, datetime, time
 from decimal import Decimal
@@ -26,12 +27,13 @@ from app.retrieval import KnowledgeRetriever
 from app.security import PromptInjectionGuard
 from app.workflow.prompts import (
     AGENT_SYSTEM,
-    RESULT_SYSTEM,
+    RESULT_STRUCTURE_SYSTEM,
+    RESULT_SUMMARY_SYSTEM,
 )
 from app.workflow.state import AnalysisState
 from app.workflow.tools import AnalysisToolRegistry
 from app.workflow.ports import LlmClient
-from app.workflow.outputs import AnalysisOutput
+from app.workflow.outputs import AnalysisStructureOutput
 from app.workflow.context_builder import AgentContextBuilder
 from app.memory.core import CoreMemoryService
 
@@ -110,11 +112,23 @@ class AnalysisNodes:
         if self.agent_context_builder is None:
             raise RuntimeError("AgentContextBuilder 未配置")
         context = await self.agent_context_builder.build(state)
+        writer = get_stream_writer()
+        streamed_final = False
+
+        def on_text_delta(delta: str) -> None:
+            """只有模型直接回答时才会收到文本增量；工具调用的 content 被协议要求为空。"""
+            nonlocal streamed_final
+            if not streamed_final:
+                writer({"type": "final_answer.started", "stage": "agent_decide", "data": {}})
+                streamed_final = True
+            writer({"type": "final_answer.delta", "stage": "agent_decide", "data": {"delta": delta}})
+
         # 让 LLM 以原生工具调用方式决定下一步动作
         response = await self.llm.complete_tool_messages(
             AGENT_SYSTEM,
             context.messages,
             tools=self.tool_registry.specifications(),
+            on_text_delta=on_text_delta,
         )
         tool_call = response.tool_calls[0] if response.tool_calls else None
         # 没有工具调用即视为结束本轮 Agent 循环
@@ -161,6 +175,19 @@ class AnalysisNodes:
             updates["final_answer"] = str(response.content or "") or (
                 "分析已结束，但模型没有返回可展示的结论。"
             )
+            # 真实流式响应结束后发送完成标记；本地护栏生成的固定文本则一次性发布。
+            if not streamed_final:
+                writer({"type": "final_answer.started", "stage": "agent_decide", "data": {}})
+                writer({
+                    "type": "final_answer.delta",
+                    "stage": "agent_decide",
+                    "data": {"delta": updates["final_answer"]},
+                })
+            writer({
+                "type": "final_answer.completed",
+                "stage": "agent_decide",
+                "data": {"text": updates["final_answer"]},
+            })
             if not state.get("query_results"):
                 updates["result_mode"] = state.get("result_mode") or "conversation"
         return updates
@@ -334,8 +361,7 @@ class AnalysisNodes:
         三种分支：
         - 存在 ``error``：返回拦截/未执行占位分析；
         - 无数据行但有 ``final_answer``：直接返回模型结论（澄清/对话模式）；
-        - 有数据行：读取历史结果、构造 payload、调用 RESULT_SYSTEM 产出 AnalysisOutput，
-          并合并 Python 分析产生的指标/发现/图表。
+        - 有数据行：并行流式生成总结、生成结构化指标与图表，再合并 Python 分析产物。
         """
         _progress("result", "正在整理分析结果")
         if state.get("error"):
@@ -384,14 +410,34 @@ class AnalysisNodes:
             inspected_results,
         )
         payload["python_analyses"] = [item.get("result", {}) for item in state.get("python_analyses", [])]
-        # 让 LLM 基于“全部查询结果”生成结构化分析
-        analysis = await self.llm.complete_model(
-            AnalysisOutput,
-            RESULT_SYSTEM,
-            json.dumps(payload, ensure_ascii=False, default=_json_default),
-        )
+        serialized_payload = json.dumps(payload, ensure_ascii=False, default=_json_default)
+        writer = get_stream_writer()
+
+        async def stream_summary() -> str:
+            """流式生成用户可见总结，并把增量交给 LangGraph custom stream。"""
+            writer({"type": "final_answer.started", "stage": "result", "data": {}})
+            parts: list[str] = []
+            async for delta in self.llm.stream_complete(RESULT_SUMMARY_SYSTEM, serialized_payload):
+                parts.append(delta)
+                writer({"type": "final_answer.delta", "stage": "result", "data": {"delta": delta}})
+            summary = "".join(parts).strip()
+            if not summary:
+                raise RuntimeError("最终分析总结为空")
+            writer({"type": "final_answer.completed", "stage": "result", "data": {"text": summary}})
+            return summary
+
+        # TaskGroup 保证任一路失败时立即取消另一路，避免失败后仍继续消耗模型请求。
+        async with asyncio.TaskGroup() as tasks:
+            summary_task = tasks.create_task(stream_summary())
+            structure_task = tasks.create_task(self.llm.complete_model(
+                AnalysisStructureOutput,
+                RESULT_STRUCTURE_SYSTEM,
+                serialized_payload,
+            ))
+        summary, structure = summary_task.result(), structure_task.result()
+        analysis = {"summary": summary, **structure.model_dump(by_alias=True)}
         normalized = _normalize_analysis(
-            analysis.model_dump(by_alias=True),
+            analysis,
             [
                 column
                 # 以本次所有结果集的列作为图表字段的合法来源，避免编造不存在的字段

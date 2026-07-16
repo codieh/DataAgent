@@ -8,8 +8,9 @@ Token 用量、错误与耗时等可观测信息都从这里统一输出到日�
 import json
 import logging
 import re
+from collections.abc import AsyncIterator
 from time import perf_counter
-from typing import Any, TypeVar
+from typing import Any, Callable, TypeVar
 
 import openai
 from openai import AsyncOpenAI
@@ -66,13 +67,75 @@ class OpenAiChatClient:
             raise InvalidOperationError("LLM 返回内容中没有文本结果。")
         return content
 
+    async def stream_complete(self, system: str, user: str) -> AsyncIterator[str]:
+        """流式生成纯文本；仅在收到服务端增量后向调用方产出，不伪造逐字效果。"""
+        run_id = current_run_id.get()
+        operation = "final_answer_stream"
+        messages = [{"role": "user", "content": user}]
+        input_tokens_estimate = _estimate_request_tokens(system, messages, "")
+        if input_tokens_estimate > self.settings.max_context_size:
+            raise InvalidOperationError(
+                f"LLM 上下文约 {input_tokens_estimate} Token，超过输入预算 {self.settings.max_context_size} Token。"
+            )
+        request = {
+            "model": self.settings.llm_model,
+            "temperature": self.settings.llm_temperature,
+            "messages": [{"role": "system", "content": system}, *messages],
+            "extra_body": {
+                "thinking": {"type": "enabled" if self.settings.llm_thinking_enabled else "disabled"}
+            },
+            "stream": True,
+        }
+        started = perf_counter()
+        logger.info(
+            "llm stream started: runId=%s operation=%s model=%s estimatedInputTokens=%d",
+            run_id,
+            operation,
+            self.settings.llm_model,
+            input_tokens_estimate,
+        )
+        chunks: list[str] = []
+        finish_reason = None
+        try:
+            stream = await self._client().chat.completions.create(**request)
+            async for chunk in stream:
+                for choice in getattr(chunk, "choices", None) or []:
+                    finish_reason = choice.finish_reason or finish_reason
+                    content = getattr(choice.delta, "content", None)
+                    if content:
+                        chunks.append(content)
+                        yield content
+        except openai.AuthenticationError as error:
+            logger.exception("llm stream authentication failed: runId=%s operation=%s", run_id, operation)
+            raise InvalidOperationError("LLM 认证失败（401）：请检查 API Key 与 Base URL。") from error
+        except openai.APIError as error:
+            logger.exception("llm stream failed: runId=%s operation=%s", run_id, operation)
+            raise InvalidOperationError(f"LLM 流式请求失败：{error.__class__.__name__}") from error
+        text = "".join(chunks)
+        if not text:
+            raise InvalidOperationError("LLM 流式响应中没有文本结果。")
+        if finish_reason == "length":
+            raise InvalidOperationError("LLM 输出达到 Token 上限，结果不完整。")
+        logger.info(
+            "llm stream completed: runId=%s operation=%s model=%s finishReason=%s outputChars=%d durationMs=%d",
+            run_id,
+            operation,
+            self.settings.llm_model,
+            finish_reason,
+            len(text),
+            int((perf_counter() - started) * 1000),
+        )
+
     async def complete_tool_messages(
         self,
         system: str,
         messages: list[Any],
         *,
         tools: list[dict[str, Any]],
+        on_text_delta: Callable[[str], None] | None = None,
     ) -> AIMessage:
+        if on_text_delta is not None:
+            return await self._stream_tool_messages(system, messages, tools, on_text_delta)
         choice, _response = await self._request(
             system,
             messages,
@@ -97,6 +160,106 @@ class OpenAiChatClient:
                 }
             )
         return AIMessage(content=choice.message.content or "", tool_calls=tool_calls)
+
+    async def _stream_tool_messages(
+        self,
+        system: str,
+        messages: list[Any],
+        tools: list[dict[str, Any]],
+        on_text_delta: Callable[[str], None],
+    ) -> AIMessage:
+        """流式消费 Agent 响应，同时组装可能被拆成多段的原生 Tool Call。"""
+        run_id = current_run_id.get()
+        normalized_messages = trim_tool_results(
+            _normalize_messages(messages, allow_tool_messages=True),
+            self.settings.context_tool_result_max_tokens,
+        )
+        openai_tools = _openai_tools(tools)
+        tool_schema_text = json.dumps(openai_tools, ensure_ascii=False)
+        input_tokens_estimate = _estimate_request_tokens(system, normalized_messages, tool_schema_text)
+        if input_tokens_estimate > self.settings.max_context_size:
+            raise InvalidOperationError(
+                f"LLM 上下文约 {input_tokens_estimate} Token，超过输入预算 {self.settings.max_context_size} Token。"
+            )
+        request = {
+            "model": self.settings.llm_model,
+            "temperature": self.settings.llm_temperature,
+            "messages": [{"role": "system", "content": system}, *normalized_messages],
+            "extra_body": {
+                "thinking": {"type": "enabled" if self.settings.llm_thinking_enabled else "disabled"}
+            },
+            "tools": openai_tools,
+            "tool_choice": "auto",
+            "parallel_tool_calls": False,
+            "stream": True,
+        }
+        started = perf_counter()
+        logger.info(
+            "llm agent stream started: runId=%s model=%s estimatedInputTokens=%d",
+            run_id,
+            self.settings.llm_model,
+            input_tokens_estimate,
+        )
+        content_parts: list[str] = []
+        calls: dict[int, dict[str, str]] = {}
+        finish_reason = None
+        try:
+            stream = await self._client().chat.completions.create(**request)
+            async for chunk in stream:
+                for choice in getattr(chunk, "choices", None) or []:
+                    finish_reason = choice.finish_reason or finish_reason
+                    delta = choice.delta
+                    content = getattr(delta, "content", None)
+                    if content:
+                        content_parts.append(content)
+                        on_text_delta(content)
+                    for call in getattr(delta, "tool_calls", None) or []:
+                        item = calls.setdefault(call.index, {"id": "", "name": "", "arguments": ""})
+                        if call.id:
+                            item["id"] += call.id
+                        function = getattr(call, "function", None)
+                        if function is not None:
+                            item["name"] += getattr(function, "name", None) or ""
+                            item["arguments"] += getattr(function, "arguments", None) or ""
+        except openai.AuthenticationError as error:
+            logger.exception("llm agent stream authentication failed: runId=%s", run_id)
+            raise InvalidOperationError("LLM 认证失败（401）：请检查 API Key 与 Base URL。") from error
+        except openai.APIError as error:
+            logger.exception("llm agent stream failed: runId=%s", run_id)
+            raise InvalidOperationError(f"LLM 流式请求失败：{error.__class__.__name__}") from error
+
+        content = "".join(content_parts)
+        if calls and content:
+            raise InvalidOperationError("LLM 同时返回了工具调用和用户可见文本，违反 Agent 输出协议。")
+        if finish_reason == "length":
+            raise InvalidOperationError("LLM 输出达到 Token 上限，结果不完整。")
+        tool_calls = []
+        for index in sorted(calls):
+            call = calls[index]
+            try:
+                arguments = json.loads(call["arguments"] or "{}")
+            except json.JSONDecodeError as error:
+                raise InvalidOperationError(f"工具 {call['name']} 的参数不是有效 JSON：{error.msg}") from error
+            if not call["id"] or not call["name"] or not isinstance(arguments, dict):
+                raise InvalidOperationError("LLM 返回了不完整的工具调用。")
+            tool_calls.append({
+                "id": call["id"],
+                "name": call["name"],
+                "args": arguments,
+                "type": "tool_call",
+            })
+        if not content and not tool_calls:
+            raise InvalidOperationError("LLM 流式响应既没有文本也没有工具调用。")
+        logger.info(
+            "llm agent stream completed: runId=%s model=%s finishReason=%s outputChars=%d toolCalls=%d durationMs=%d",
+            run_id,
+            self.settings.llm_model,
+            finish_reason,
+            len(content),
+            len(tool_calls),
+            int((perf_counter() - started) * 1000),
+        )
+        return AIMessage(content=content, tool_calls=tool_calls)
 
     async def _request(
         self,

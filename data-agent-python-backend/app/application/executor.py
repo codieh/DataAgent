@@ -23,6 +23,7 @@ from typing import Any
 from langchain_core.messages import AIMessage, ToolMessage
 
 from app.config import get_settings
+from app.application.live_events import run_live_event_broker
 from app.infrastructure.persistence.database import session_factory
 from app.infrastructure.persistence.models import AnalysisRunModel, elapsed_ms, utc_now
 from app.infrastructure.persistence.repository import Repository
@@ -173,8 +174,14 @@ class GraphAnalysisExecutor:
 
         首次出现某阶段时创建对应的 stage_run 并记录，后续重复到达仅更新映射。
         """
-        # 忽略非 stage.started 类型的自定义事件。
-        if not isinstance(payload, dict) or payload.get("type") != "stage.started":
+        if not isinstance(payload, dict):
+            return
+        if str(payload.get("type", "")).startswith("final_answer."):
+            # Token 增量不落库，直接交给当前 SSE 订阅者；最终结果由 Run 快照持久化。
+            run_live_event_broker.publish(run_id, payload)
+            return
+        # 其他 custom 事件目前只处理阶段开始。
+        if payload.get("type") != "stage.started":
             return
         stage = str(payload.get("stage") or "unknown")
         message = str(payload.get("message") or "正在处理")

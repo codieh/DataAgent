@@ -88,11 +88,10 @@ class ChartOutput(WorkflowOutput):
     data: list[dict[str, Any]] = Field(default_factory=list)
 
 
-class AnalysisOutput(WorkflowOutput):
-    """最终分析报告：标题、总结、发现、指标与图表的集合。"""
+class AnalysisStructureOutput(WorkflowOutput):
+    """最终报告的结构化部分；可见总结由独立流式请求生成。"""
 
     title: str = "分析结果"
-    summary: str = ""
     findings: list[FindingOutput] = Field(default_factory=list)
     metrics: list[MetricOutput] = Field(default_factory=list)
     charts: list[ChartOutput] = Field(default_factory=list)
