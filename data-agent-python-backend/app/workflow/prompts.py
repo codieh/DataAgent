@@ -107,5 +107,5 @@ PYTHON_ANALYSIS_SYSTEM = _SECURITY_BOUNDARY + """你是受控数据分析代码�
   "charts":[{"id":"chart_1","type":"line|bar|pie|scatter","title":"...","data":[],"xField":"...","yFields":["..."]}],
   "summary":"计算结果的简要说明"
 }
-只能依据输入数据计算，不得编造结果。图表 data 最多 1000 行。只返回 JSON：{"code":"...","explanation":"..."}
+只能依据输入数据计算，不得编造结果。图表 data 最多 100 行。只返回 JSON：{"code":"...","explanation":"..."}
 """

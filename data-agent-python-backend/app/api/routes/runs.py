@@ -15,6 +15,7 @@ from app.api.presenters import event_response, run_response
 from app.api.schemas import AnalysisRunResponse, OperationResponse, RunAccepted, RunCreate
 from app.application import RunViewService, TERMINAL_STATUSES, WorkflowControlService
 from app.application.run_commands import RunCommandService
+from app.application.executor import graph_runtime
 from app.config import get_settings
 from app.infrastructure.persistence.database import session_factory
 from app.infrastructure.persistence.repository import Repository
@@ -62,6 +63,8 @@ async def cancel_run(run_id: str, session: SessionDependency) -> OperationRespon
     run = await WorkflowControlService(session).cancel(run_id)
     # 取消成功状态为 cancelled，否则表示任务已经结束无法取消
     message = "任务已取消" if run.status == "cancelled" else "任务已经结束"
+    if run.status == "cancelled":
+        await graph_runtime.delete_checkpoints([run.id])
     return OperationResponse(ok=True, status=run.status, message=message)
 
 

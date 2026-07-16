@@ -42,6 +42,6 @@ class WorkflowControlService:
             stage=run.current_stage,
             data={"status": "cancelled", "runUrl": f"/api/v1/runs/{run.id}"},
         )
-        # 取消后台 asyncio 任务，及时释放执行资源。
-        task_registry.cancel(run.id)
+        # 等待后台任务真正结束，避免返回后 LangGraph 继续写入 checkpoint。
+        await task_registry.cancel_and_wait(run.id)
         return run

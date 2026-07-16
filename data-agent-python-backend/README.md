@@ -13,6 +13,15 @@ DataAgent 的主后端服务，基于 FastAPI、LangGraph 和 OpenAI Python SDK 
 - 会话历史、长期记忆和自动上下文压缩
 - REST 持久化结果与可断线恢复的 SSE 事件流
 
+## 文档导航
+
+| 文档 | 适合什么时候读 |
+| --- | --- |
+| [Python 零基础读代码指南](./docs/python-beginner-guide.md) | 还不熟悉Python、异步、FastAPI、SQLAlchemy和pytest |
+| [代码级理解手册](./docs/dataagent-deep-dive.md) | 想完整理解架构、数据流、RAG、记忆、任务取消和数据库设计 |
+| [调试与故障排查手册](./docs/debug-playbook.md) | 需要按`run_id`定位LLM、检索、SQL、SSE和Docker问题 |
+| [校招面试问题与参考回答](./docs/interview-question-bank.md) | 准备项目介绍和代码追问 |
+
 ## 运行要求
 
 - Python 3.11+
@@ -96,7 +105,7 @@ flowchart TD
     PYTHON --> RESULT["结构化结果总结"]
 ```
 
-Agent 默认最多循环 6 次、执行 3 条 SQL、修复 2 次 SQL。限制可在 `app/config.py` 中调整，避免开放式循环无限消耗时间和 Token。
+当前本地开发配置最多允许50轮Agent决策、50次Schema检索、50次SQL执行和50次SQL修复，属于便于调试的宽松上限，不是推荐的生产参数。限制可在`app/config.py`中调整；正式环境应根据评测结果同时约束总耗时、Token和成本。
 
 ## 上下文管理
 
@@ -166,7 +175,7 @@ docker build -t data-agent-python-sandbox:latest sandbox/python
 - 单个数据集最多 5 万行
 - 数据集保留 7 天
 - 数据目录最大 512 MB
-- SQLite 和 LangGraph State 只保存最多 200 行预览
+- SQLite结果集和LangGraph State默认保存前50行预览，Agent上下文最多投影20行
 - 代码、执行日志和分析结果保存为 `python_analysis` Artifact
 
 ## API 概览
@@ -200,8 +209,8 @@ docker build -t data-agent-python-sandbox:latest sandbox/python
 | `DATA_AGENT_CONTEXT_COMPACT_THRESHOLD` | `0.8` | 会话记忆触发持久化摘要的比例 |
 | `DATA_AGENT_CONTEXT_COMPACT_PRESERVE_RATIO` | `0.3` | 持久化摘要时保留的近期原文比例 |
 | `DATA_AGENT_CONTEXT_TOOL_RESULT_MAX_TOKENS` | `20000` | 单条工具结果预算 |
-| `DATA_AGENT_SQL_ROW_LIMIT` | `200` | SQL 默认最大返回行数 |
-| `DATA_AGENT_SQL_TIMEOUT_SECONDS` | `10` | SQL 执行超时 |
+| `DATA_AGENT_SQL_ROW_LIMIT` | `50000` | SQL执行和完整结果最大行数 |
+| `DATA_AGENT_SQL_TIMEOUT_SECONDS` | `30` | SQL执行超时 |
 | `DATA_AGENT_RETRIEVAL_BACKEND` | `chroma` | 知识检索实现 |
 
 ## 测试

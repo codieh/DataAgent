@@ -4,7 +4,8 @@
 
 - 运行创建支持「幂等键」（防重复创建）与「重试」关联（``retry_of_run_id``）。
 - 阶段支持创建/完成/失败三种状态转换，并自动计算耗时（``duration_ms``）。
-- ``save_run`` 通过自增 ``version`` 实现乐观锁，防止并发写覆盖。
+- ``save_run`` 会自增 ``version`` 记录保存版本；当前没有按旧版本执行条件更新，
+  因此它还不能检测并发写覆盖，不属于完整乐观锁实现。
 
 阶段 ``attempt`` 由同 ``(run_id, stage)`` 已有最大尝试次数 +1 推导，支持重试。
 """
@@ -67,7 +68,11 @@ class RunRepository(RepositoryBase):
         return list((await self.session.scalars(statement)).all())
 
     async def save_run(self, run: AnalysisRunModel) -> AnalysisRunModel:
-        """保存运行变更：版本号自增（乐观锁），提交并刷新。"""
+        """保存运行变更：版本计数自增，提交并刷新。
+
+        注意：当前没有比较旧版本或检查受影响行数，只记录版本变化，不提供
+        乐观并发冲突检测。
+        """
         run.version += 1
         await self.session.commit()
         await self.session.refresh(run)

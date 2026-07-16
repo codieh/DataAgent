@@ -140,6 +140,10 @@ class Settings(BaseSettings):
     analysis_dataset_preview_rows: int = 50
     analysis_dataset_ttl_hours: int = 168
     analysis_dataset_max_disk_mb: int = 512
+    # 失败运行的 checkpoint 暂时保留用于排查，超过该时长后清理。
+    checkpoint_failed_ttl_hours: int = 24
+    # 运行中定期清理终态及孤儿 checkpoint 的间隔。
+    checkpoint_cleanup_interval_seconds: int = 3600
 
     @model_validator(mode="after")
     def validate_context_budgets(self):

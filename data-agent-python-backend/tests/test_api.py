@@ -321,6 +321,13 @@ def test_complete_run_populates_frontend_contract() -> None:
         assert raw_export.content.startswith(b"order_date,order_count,sales_amount")
         assert b"2026-07-01" in raw_export.content
 
+        checkpoint_database = TEST_DATABASE.with_name("checkpoints.db")
+        with sqlite3.connect(checkpoint_database) as connection:
+            checkpoint_count = connection.execute(
+                "SELECT COUNT(*) FROM checkpoints WHERE thread_id = ?", (run_id,)
+            ).fetchone()[0]
+        assert checkpoint_count == 0
+
 
 def test_prompt_injection_is_blocked_before_llm_and_sql() -> None:
     """验证包含提示词注入的查询会在调用 LLM / 执行 SQL 之前被拦截，resultMode 为 blocked_prompt_injection。"""
@@ -492,26 +499,33 @@ def test_delete_conversation_cleans_result_files_and_graph_checkpoints() -> None
     """删除会话后，应清理其 CSV 结果文件和各 Run 的 LangGraph checkpoint。"""
     with TestClient(app) as client:
         conversation_id = create_conversation(client)
-        accepted = client.post(
+        completed_accepted = client.post(
             f"/api/v1/conversations/{conversation_id}/runs",
             json={"query": "统计订单数量"},
         )
-        run_id = accepted.json()["runId"]
-        run = wait_for_status(client, run_id, {"completed"})
-        assert run["queries"]
+        completed_run_id = completed_accepted.json()["runId"]
+        completed_run = wait_for_status(client, completed_run_id, {"completed"})
+        assert completed_run["queries"]
+
+        review_accepted = client.post(
+            f"/api/v1/conversations/{conversation_id}/runs",
+            json={"query": "统计订单数量", "humanReviewEnabled": True},
+        )
+        review_run_id = review_accepted.json()["runId"]
+        wait_for_status(client, review_run_id, {"waiting_review"})
 
         with sqlite3.connect(TEST_DATABASE) as connection:
             file_paths = [
                 Path(row[0])
                 for row in connection.execute(
                     "SELECT file_path FROM result_sets WHERE run_id = ? AND file_path IS NOT NULL",
-                    (run_id,),
+                    (completed_run_id,),
                 ).fetchall()
             ]
         checkpoint_database = TEST_DATABASE.with_name("checkpoints.db")
         with sqlite3.connect(checkpoint_database) as connection:
             checkpoint_count = connection.execute(
-                "SELECT COUNT(*) FROM checkpoints WHERE thread_id = ?", (run_id,)
+                "SELECT COUNT(*) FROM checkpoints WHERE thread_id = ?", (review_run_id,)
             ).fetchone()[0]
 
         assert file_paths and all(path.exists() for path in file_paths)
@@ -523,6 +537,33 @@ def test_delete_conversation_cleans_result_files_and_graph_checkpoints() -> None
         assert all(not path.exists() for path in file_paths)
         with sqlite3.connect(checkpoint_database) as connection:
             remaining = connection.execute(
-                "SELECT COUNT(*) FROM checkpoints WHERE thread_id = ?", (run_id,)
+                "SELECT COUNT(*) FROM checkpoints WHERE thread_id = ?", (review_run_id,)
             ).fetchone()[0]
         assert remaining == 0
+
+
+def test_cancelled_run_deletes_checkpoint() -> None:
+    """等待人工审核的 Run 被取消后，应立即删除对应 checkpoint。"""
+    with TestClient(app) as client:
+        conversation_id = create_conversation(client)
+        accepted = client.post(
+            f"/api/v1/conversations/{conversation_id}/runs",
+            json={"query": "统计订单数量", "humanReviewEnabled": True},
+        )
+        run_id = accepted.json()["runId"]
+        wait_for_status(client, run_id, {"waiting_review"})
+        checkpoint_database = TEST_DATABASE.with_name("checkpoints.db")
+        with sqlite3.connect(checkpoint_database) as connection:
+            before = connection.execute(
+                "SELECT COUNT(*) FROM checkpoints WHERE thread_id = ?", (run_id,)
+            ).fetchone()[0]
+        assert before > 0
+
+        cancelled = client.post(f"/api/v1/runs/{run_id}/cancel")
+
+        assert cancelled.status_code == 200
+        with sqlite3.connect(checkpoint_database) as connection:
+            after = connection.execute(
+                "SELECT COUNT(*) FROM checkpoints WHERE thread_id = ?", (run_id,)
+            ).fetchone()[0]
+        assert after == 0

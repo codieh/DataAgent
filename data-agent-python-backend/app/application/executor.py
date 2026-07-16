@@ -641,6 +641,13 @@ class GraphAnalysisExecutor:
                 "result",
                 {"behavior": behavior},
             )
+        # 图已经完整结束，展示与审计数据均已落入 app.db，此时 checkpoint 不再承担恢复职责。
+        try:
+            await self.runtime.delete_checkpoints([run_id])
+            logger.info("completed run checkpoints deleted: runId=%s", run_id)
+        except Exception:
+            # 不把已成功的分析改写为 failed；定时清理会重试，异常必须留在日志中。
+            logger.exception("completed run checkpoint cleanup failed: runId=%s", run_id)
 
     async def _fail(self, run_id: str, error: Exception) -> None:
         """运行异常失败的收尾：标记失败终态、结算耗时并补全未决调用/阶段。"""

@@ -7,12 +7,16 @@
 """
 
 from collections.abc import AsyncIterator
+import asyncio
+from contextlib import suppress
+from datetime import timedelta
 import logging
 from pathlib import Path
 from typing import Any
 
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.types import Command
+from sqlalchemy import or_, and_, select
 from sqlalchemy.engine import make_url
 
 from app.config import Settings
@@ -23,6 +27,8 @@ from app.memory import ContextBuilder, ConversationSummarizer, LongTermMemoryExt
 from app.retrieval import KnowledgeRetriever
 from app.workflow.graph import build_analysis_graph
 from app.workflow.context_builder import AgentContextBuilder
+from app.infrastructure.persistence.database import session_factory
+from app.infrastructure.persistence.models import AnalysisRunModel, utc_now
 
 
 logger = logging.getLogger(__name__)
@@ -51,6 +57,7 @@ class GraphRuntime:
         self.memory_extractor = LongTermMemoryExtractor(settings, self.llm, self.memory_provider)
         self._checkpointer_context = None
         self._checkpointer = None
+        self._checkpoint_cleanup_task: asyncio.Task[None] | None = None
         self.graph = None
 
     async def startup(self) -> None:
@@ -71,6 +78,8 @@ class GraphRuntime:
         self._checkpointer_context = AsyncSqliteSaver.from_conn_string(str(checkpoint_path))
         # 进入异步上下文，获得可复用的检查点 saver
         self._checkpointer = await self._checkpointer_context.__aenter__()
+        cleanup_stats = await self.cleanup_terminal_checkpoints()
+        logger.info("checkpoint startup cleanup completed: %s", cleanup_stats)
         # 装配节点并编译图，绑定检查点以支持中断/恢复
         self.graph = build_analysis_graph(
             self.llm,
@@ -81,9 +90,17 @@ class GraphRuntime:
             self.result_history,
             self.agent_context_builder,
         ).compile(checkpointer=self._checkpointer)
+        self._checkpoint_cleanup_task = asyncio.create_task(
+            self._checkpoint_cleanup_loop(), name="checkpoint-cleanup"
+        )
 
     async def shutdown(self) -> None:
         """释放资源：关闭数据库连接、LLM（可选）与检查点上下文，并将图置空。"""
+        if self._checkpoint_cleanup_task is not None:
+            self._checkpoint_cleanup_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._checkpoint_cleanup_task
+            self._checkpoint_cleanup_task = None
         await self.database.close()
         close_llm = getattr(self.llm, "close", None)
         if close_llm is not None:
@@ -124,3 +141,50 @@ class GraphRuntime:
         for run_id in unique_run_ids:
             await self._checkpointer.adelete_thread(run_id)
         return len(unique_run_ids)
+
+    async def cleanup_terminal_checkpoints(self) -> dict[str, int]:
+        """清理完成/取消、过期失败以及已无 Run 记录的 checkpoint。"""
+        if self._checkpointer is None:
+            raise RuntimeError("LangGraph checkpointer 尚未启动")
+        failed_cutoff = utc_now() - timedelta(hours=self.settings.checkpoint_failed_ttl_hours)
+        async with session_factory() as session:
+            known_run_ids = set((await session.scalars(select(AnalysisRunModel.id))).all())
+            terminal_ids = set(
+                (
+                    await session.scalars(
+                        select(AnalysisRunModel.id).where(
+                            or_(
+                                AnalysisRunModel.status.in_(["completed", "cancelled"]),
+                                and_(
+                                    AnalysisRunModel.status == "failed",
+                                    AnalysisRunModel.completed_at.is_not(None),
+                                    AnalysisRunModel.completed_at <= failed_cutoff,
+                                ),
+                            )
+                        )
+                    )
+                ).all()
+            )
+        checkpoint_run_ids: set[str] = set()
+        async for checkpoint in self._checkpointer.alist(None):
+            thread_id = checkpoint.config.get("configurable", {}).get("thread_id")
+            if thread_id:
+                checkpoint_run_ids.add(str(thread_id))
+        orphan_ids = checkpoint_run_ids - known_run_ids
+        targets = sorted((terminal_ids & checkpoint_run_ids) | orphan_ids)
+        await self.delete_checkpoints(targets)
+        return {
+            "deletedThreads": len(targets),
+            "terminalThreads": len(terminal_ids & checkpoint_run_ids),
+            "orphanThreads": len(orphan_ids),
+        }
+
+    async def _checkpoint_cleanup_loop(self) -> None:
+        """运行期间定时回收超过保留期的失败 checkpoint。"""
+        while True:
+            await asyncio.sleep(self.settings.checkpoint_cleanup_interval_seconds)
+            try:
+                stats = await self.cleanup_terminal_checkpoints()
+                logger.info("checkpoint periodic cleanup completed: %s", stats)
+            except Exception:
+                logger.exception("checkpoint periodic cleanup failed")
