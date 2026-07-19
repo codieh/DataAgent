@@ -105,6 +105,37 @@ async def test_conversation_history_fts_searches_messages_and_returns_readable_c
 
 
 @pytest.mark.asyncio
+async def test_current_conversation_search_returns_message_and_surrounding_context() -> None:
+    """摘要不会删除原始消息；当前会话搜索应定位消息并恢复前后语境，同时排除当前 Run。"""
+    await initialize_database()
+    async with session_factory() as session:
+        repository = Repository(session)
+        conversation = await repository.create_conversation(
+            title="销售口径讨论", agent_id="agent", datasource_id="sales"
+        )
+        await repository.add_message(
+            conversation_id=conversation.id, run_id="run_old", role="user", content="销售额统计需要排除退款成功订单"
+        )
+        matched = await repository.add_message(
+            conversation_id=conversation.id, run_id="run_old", role="assistant", content="确认，后续销售额默认排除退款成功订单。"
+        )
+        current = await repository.add_message(
+            conversation_id=conversation.id, run_id="run_current", role="user", content="我之前说的退款规则是什么"
+        )
+
+        matches = await repository.search_current_conversation_history(
+            conversation.id, "退款成功订单", 5, exclude_run_id="run_current"
+        )
+        context = await repository.read_message_context(conversation.id, matched.id, 1, 1)
+
+    assert matches
+    assert all(item["messageId"] != current.id for item in matches)
+    assert any(item["messageId"] == matched.id for item in matches)
+    assert [item["role"] for item in context["messages"]] == ["user", "assistant", "user"]
+    assert context["messages"][1]["matched"] is True
+
+
+@pytest.mark.asyncio
 async def test_dataset_cleanup_removes_unreferenced_csv_files(tmp_path) -> None:
     """启动清理应删除没有 result_sets 记录引用的遗留 CSV。"""
     settings = get_settings().model_copy(update={"analysis_dataset_dir": tmp_path})

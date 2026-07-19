@@ -234,8 +234,69 @@ class AnalysisToolRegistry:
             )
 
         @tool(
+            "search_current_conversation",
+            description="用户提到当前会话前面、之前、刚才说过的内容时，按关键词搜索本会话被摘要覆盖或不在近期窗口中的原始消息。",
+        )
+        async def search_current_conversation(
+            query: str,
+            state: Annotated[AnalysisState, InjectedState],
+            tool_call_id: Annotated[str, InjectedToolCallId],
+            limit: int = 5,
+        ) -> Command:
+            async with session_factory() as session:
+                matches = await Repository(session).search_current_conversation_history(
+                    state["conversation_id"],
+                    query,
+                    min(max(limit, 1), 10),
+                    exclude_run_id=state.get("run_id"),
+                )
+            observation = {
+                "tool": "search_current_conversation",
+                "ok": bool(matches),
+                "summary": f"在当前会话找到 {len(matches)} 条历史消息",
+                "resultCount": len(matches),
+            }
+            return _command(
+                tool_call_id,
+                observation,
+                tool_content={**observation, "matches": matches},
+                observations=[*state.get("observations", []), observation],
+            )
+
+        @tool(
+            "read_message_context",
+            description="根据 search_current_conversation 返回的消息编号，读取该消息及前后对话，恢复原始语境。",
+        )
+        async def read_message_context(
+            message_id: str,
+            state: Annotated[AnalysisState, InjectedState],
+            tool_call_id: Annotated[str, InjectedToolCallId],
+            before: int = 2,
+            after: int = 2,
+        ) -> Command:
+            async with session_factory() as session:
+                result = await Repository(session).read_message_context(
+                    state["conversation_id"],
+                    message_id,
+                    min(max(before, 0), 10),
+                    min(max(after, 0), 10),
+                )
+            observation = {
+                "tool": "read_message_context",
+                "ok": bool(result["messages"]),
+                "summary": f"读取命中消息附近的 {len(result['messages'])} 条原始消息",
+                "messageId": message_id,
+            }
+            return _command(
+                tool_call_id,
+                observation,
+                tool_content={**observation, **result},
+                observations=[*state.get("observations", []), observation],
+            )
+
+        @tool(
             "search_conversation_history",
-            description="用户提到以前、上次或其他会话时，按关键词搜索历史会话标题和消息，返回候选会话目录。",
+            description="用户明确提到其他会话或上一次会话时，按关键词搜索跨会话历史，返回候选会话目录。当前会话内查找应使用 search_current_conversation。",
         )
         async def search_conversation_history(
             query: str,
@@ -421,6 +482,8 @@ class AnalysisToolRegistry:
             execute_sql,
             search_analysis_history,
             inspect_query_result,
+            search_current_conversation,
+            read_message_context,
             search_conversation_history,
             read_conversation_history,
             analyze_dataframe,

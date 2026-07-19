@@ -11,7 +11,7 @@
 from datetime import timedelta
 from typing import Any
 
-from sqlalchemy import delete, select, text
+from sqlalchemy import and_, delete, or_, select, text
 
 from app.infrastructure.persistence.models import (
     ConversationModel,
@@ -198,6 +198,125 @@ class ConversationRepository(RepositoryBase):
             if len(matches) >= limit:
                 break
         return matches
+
+    async def search_current_conversation_history(
+        self,
+        conversation_id: str,
+        query: str,
+        limit: int,
+        *,
+        exclude_run_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """在当前会话的原始消息中搜索，返回消息级命中而不是会话目录。
+
+        被摘要覆盖的消息仍保留在 ``messages`` 与 FTS5 中，因此可以按需恢复细节。
+        ``exclude_run_id`` 用于排除当前问题及其回答，避免查询命中自身。
+        """
+        terms = [term.replace('"', "") for term in query.split() if len(term.replace('"', "")) >= 3]
+        if not terms or not self.session.bind or self.session.bind.dialect.name != "sqlite":
+            return []
+        expression = " AND ".join(f'"{term}"' for term in terms)
+        exclude_clause = ""
+        parameters: dict[str, Any] = {
+            "query": expression,
+            "conversation_id": conversation_id,
+            "limit": max(1, limit),
+        }
+        if exclude_run_id:
+            exclude_clause = """AND message_id NOT IN (
+                SELECT id FROM messages WHERE run_id = :exclude_run_id
+            )"""
+            parameters["exclude_run_id"] = exclude_run_id
+        result = await self.session.execute(
+            text(f"""SELECT message_id, role,
+                snippet(conversation_history_fts, 4, '', '', '…', 40) AS snippet
+            FROM conversation_history_fts
+            WHERE conversation_history_fts MATCH :query
+              AND conversation_id = :conversation_id
+              {exclude_clause}
+            ORDER BY rank LIMIT :limit"""),
+            parameters,
+        )
+        rows = list(result)
+        message_ids = [str(row.message_id) for row in rows]
+        if not message_ids:
+            return []
+        messages = {
+            message.id: message
+            for message in (
+                await self.session.scalars(select(MessageModel).where(MessageModel.id.in_(message_ids)))
+            ).all()
+        }
+        # FTS rank 顺序必须保留，不能由 SQLAlchemy 的 IN 查询顺序覆盖。
+        snippets = {str(row.message_id): str(row.snippet) for row in rows}
+        return [
+            {
+                "messageId": message_id,
+                "role": messages[message_id].role,
+                "snippet": snippets[message_id],
+                "createdAt": messages[message_id].created_at.isoformat(),
+            }
+            for message_id in message_ids
+            if message_id in messages
+        ]
+
+    async def read_message_context(
+        self,
+        conversation_id: str,
+        message_id: str,
+        before: int,
+        after: int,
+    ) -> dict[str, Any]:
+        """读取当前会话中命中消息及其前后原始对话，恢复指代与语境。"""
+        target = await self.session.get(MessageModel, message_id)
+        if (
+            target is None
+            or target.conversation_id != conversation_id
+            or target.role not in {"user", "assistant"}
+        ):
+            return {"messageId": message_id, "messages": []}
+        before_statement = (
+            select(MessageModel)
+            .where(
+                MessageModel.conversation_id == conversation_id,
+                MessageModel.role.in_(["user", "assistant"]),
+                or_(
+                    MessageModel.created_at < target.created_at,
+                    and_(MessageModel.created_at == target.created_at, MessageModel.id < target.id),
+                ),
+            )
+            .order_by(MessageModel.created_at.desc(), MessageModel.id.desc())
+            .limit(max(0, before))
+        )
+        after_statement = (
+            select(MessageModel)
+            .where(
+                MessageModel.conversation_id == conversation_id,
+                MessageModel.role.in_(["user", "assistant"]),
+                or_(
+                    MessageModel.created_at > target.created_at,
+                    and_(MessageModel.created_at == target.created_at, MessageModel.id > target.id),
+                ),
+            )
+            .order_by(MessageModel.created_at.asc(), MessageModel.id.asc())
+            .limit(max(0, after))
+        )
+        previous = list(reversed(list((await self.session.scalars(before_statement)).all())))
+        following = list((await self.session.scalars(after_statement)).all())
+        messages = [*previous, target, *following]
+        return {
+            "messageId": message_id,
+            "messages": [
+                {
+                    "id": message.id,
+                    "role": message.role,
+                    "content": message.content,
+                    "createdAt": message.created_at.isoformat(),
+                    "matched": message.id == message_id,
+                }
+                for message in messages
+            ],
+        }
 
     async def read_conversation_history(self, conversation_id: str, limit: int) -> dict[str, Any]:
         """读取用于喂给模型的对话上下文：标题、摘要与最近 ``limit`` 条 user/assistant 消息。

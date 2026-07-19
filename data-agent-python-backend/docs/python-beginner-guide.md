@@ -266,6 +266,35 @@ run_events：前端应该收到什么事件
 
 答不上来时，只回看本章对应小节。不要急着进入后面的SQLAlchemy、Protocol和事件循环细节。
 
+### 0.11 一次问题为什么会写很多行数据库
+
+数据库不是“一个问题存成一行大JSON”。同一个问题会拆成不同职责的记录：
+
+```text
+用户问“按渠道统计订单量”
+
+conversations：这是哪段长期会话
+messages：用户原话是什么
+analysis_runs：这次分析整体成功还是失败
+stage_runs：检索、SQL、总结各阶段是否成功
+tool_calls：模型实际调用了哪些工具
+queries：真正尝试执行了什么SQL
+result_sets：结果有哪些列、前50行是什么、完整CSV在哪
+run_events：前端依次应该看到哪些进度
+artifacts：最终报告、表结构和查询预览等展示产物
+```
+
+拆开保存的价值是能够回答不同问题：
+
+- 想显示历史对话，查`messages`；
+- 想判断任务是否结束，查`analysis_runs`；
+- 想定位失败阶段，查`stage_runs`；
+- 想确认模型有没有乱调用工具，查`tool_calls`；
+- 想复盘SQL是否安全，查`queries`；
+- 想断线恢复前端进度，按`run_events.seq`继续读取。
+
+它们通过`conversation_id`和`run_id`串起来。一个会话有多个run，一个run又有多个阶段、事件、工具调用和SQL记录。
+
 ---
 
 ## 后续章节怎么使用
@@ -622,7 +651,13 @@ async def event_stream():
 1. LangGraph的`graph.astream(...)`逐步产生节点更新；
 2. FastAPI的`StreamingResponse`逐帧产生SSE文本。
 
-二者不是同一条内存流。执行器先把图更新写入`run_events`，SSE接口再轮询数据库并发送给前端。
+二者不是同一条流。当前实现分为：
+
+1. 阶段、工具完成和run终态等重要事件先写入`run_events`，提交成功后再通过进程内Broker立即通知SSE；
+2. 浏览器断线重连时，根据`Last-Event-ID`从数据库补回缺少的持久事件；
+3. 最终回答的Token增量只通过Broker实时发送，不逐Token写数据库；最终完整文本会进入消息、Artifact和run快照。
+
+所以它既不是持续轮询SQLite，也不是把所有信息都只放在内存里。
 
 ### 4.5 `async with`和资源释放
 
@@ -843,6 +878,12 @@ WAL不是“无限并发写”。SQLite仍然只有一个写入者，多任务�
 
 MySQL引擎设置了连接池、连接探活、只读Session和超时；SQLite引擎负责应用元数据。它们不是同一个DataSource。
 
+### 6.7 修改ORM类不等于修改了旧数据库
+
+启动时的`Base.metadata.create_all()`只负责创建缺失的表，不会自动修改已经存在的表。例如你在`AnalysisRunModel`中新增一个字段，旧`app.db`不会凭空多出这一列。
+
+当前项目还没有接入数据库迁移工具。开发环境可以在确认数据可丢弃后重建SQLite，但正式数据不能靠“删除数据库再启动”升级，应使用有版本、可审计的迁移脚本。
+
 ---
 
 ## 7. LangGraph在项目里做了什么
@@ -945,6 +986,55 @@ LangGraph从对应快照继续，而不是从用户问题重新执行全部节�
 ### 8.4 Pydantic结构化输出
 
 最终分析要求模型输出[`AnalysisOutput`](../app/workflow/outputs.py)结构。LLM返回JSON后，Pydantic检查字段类型并生成对象。模型输出不是天然可信数据，仍需验证和归一化。
+
+### 8.5 初学者怎样理解12个工具
+
+先把工具当成Agent可以按下的12个按钮：
+
+| 按钮 | 按下后真正做什么 |
+|---|---|
+| `update_analysis_plan` | 把目标和步骤写进State，不会自动执行步骤 |
+| `ask_clarification` | 把一条追问作为本次run的正常结果 |
+| `search_schema` | 从真实MySQL结构里模糊查相关表 |
+| `inspect_tables` | 按准确表名读取完整字段和外键 |
+| `retrieve_knowledge` | 搜索GMV、退款等业务口径文档 |
+| `execute_sql` | 只提交候选SQL，暂时不访问MySQL数据 |
+| `search_analysis_history` | 搜索当前会话以前的查询结果目录 |
+| `inspect_query_result` | 根据Dataset ID分页读取具体历史数据 |
+| `search_conversation_history` | 搜索其他历史会话的目录 |
+| `read_conversation_history` | 读取选中会话的摘要和最近消息 |
+| `search_current_conversation` | 搜索当前会话中未进入近期窗口的原始消息 |
+| `read_message_context` | 读取命中消息及其前后对话，恢复原始语境 |
+| `analyze_dataframe` | 在Docker中用Python分析已有SQL结果 |
+| `rewrite_core_memory` | 改写跨会话保存的核心偏好文档 |
+
+以`execute_sql`为例，实际不是：
+
+```text
+模型调用execute_sql → 数据库立即执行
+```
+
+而是：
+
+```text
+模型调用execute_sql
+→ 工具把SQL放进AnalysisState
+→ sql_validate用SQLGlot检查
+→ 可选人工审核
+→ sql_execute才访问MySQL
+→ 结果写CSV、result_sets和queries
+→ 模型观察结果后决定继续还是结束
+```
+
+阅读任意工具时只回答五个问题：
+
+1. 模型需要提供哪些参数？
+2. LangGraph偷偷注入了哪些参数？
+3. 它调用了哪个真实服务？
+4. 它修改了哪些State字段？
+5. 失败时是返回`ok=false`，还是让整个run失败？
+
+每个工具的代码级答案见[`dataagent-deep-dive.md`的第8章](./dataagent-deep-dive.md#8-原生tool-calling如何工作)。
 
 ---
 

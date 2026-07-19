@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from app.config import Settings
 from app.domain.errors import InvalidOperationError
 from app.infrastructure.llm.openai import LlmConfigurationError, OpenAiChatClient
+from app.observability.context import current_conversation_id, current_run_id
 
 
 # 用于结构化输出校验的示例模型
@@ -71,9 +72,33 @@ def tool_response(name: str, arguments: str):
     return SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason="tool_calls")])
 
 
-def stream_chunk(text: str = "", finish_reason: str | None = None):
+def stream_chunk(
+    text: str = "",
+    finish_reason: str | None = None,
+    *,
+    usage=None,
+    response_id: str = "cmpl-test",
+):
     return SimpleNamespace(
-        choices=[SimpleNamespace(delta=SimpleNamespace(content=text), finish_reason=finish_reason)]
+        id=response_id,
+        model="kimi-for-coding",
+        usage=usage,
+        choices=[SimpleNamespace(delta=SimpleNamespace(content=text), finish_reason=finish_reason)],
+    )
+
+
+def usage_chunk(*, prompt_tokens: int, completion_tokens: int, cached_tokens: int):
+    """模拟 include_usage=true 时服务端在流末发送的无 choices 用量分片。"""
+    return SimpleNamespace(
+        id="cmpl-test",
+        model="kimi-for-coding",
+        choices=[],
+        usage=SimpleNamespace(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=prompt_tokens + completion_tokens,
+            cached_tokens=cached_tokens,
+        ),
     )
 
 
@@ -92,6 +117,36 @@ async def test_stream_complete_yields_provider_deltas(monkeypatch) -> None:
 
     assert chunks == ["销售额", "持续增长"]
     assert sdk.chat.completions.calls[0]["stream"] is True
+    assert sdk.chat.completions.calls[0]["stream_options"] == {"include_usage": True}
+
+
+@pytest.mark.asyncio
+async def test_stream_logs_response_usage_and_cache_hit(monkeypatch, caplog) -> None:
+    """流式请求应记录完整回复、真实 Token 用量和 Kimi 顶层 cached_tokens。"""
+    monkeypatch.setenv("DATA_AGENT_LLM_API_KEY", "test-key")
+    sdk = FakeSdkClient(FakeAsyncStream([
+        stream_chunk("缓存回复"),
+        stream_chunk(finish_reason="stop"),
+        usage_chunk(prompt_tokens=100, completion_tokens=20, cached_tokens=80),
+    ]))
+    client = OpenAiChatClient(Settings(), client=sdk)
+    run_token = current_run_id.set("run-cache-test")
+    conversation_token = current_conversation_id.set("conversation-cache-test")
+    try:
+        with caplog.at_level("INFO", logger="app.infrastructure.llm.openai"):
+            chunks = [chunk async for chunk in client.stream_complete("system", "question")]
+    finally:
+        current_conversation_id.reset(conversation_token)
+        current_run_id.reset(run_token)
+
+    assert chunks == ["缓存回复"]
+    request = sdk.chat.completions.calls[0]
+    assert request["prompt_cache_key"] == "conversation-cache-test"
+    assert "缓存回复" in caplog.text
+    assert "cachedTokens=80" in caplog.text
+    assert "cacheStatus=hit" in caplog.text
+    assert "cacheHitRate=80.00%" in caplog.text
+    assert "promptTokens=100" in caplog.text
 
 
 @pytest.mark.asyncio

@@ -231,12 +231,19 @@ uv run pytest tests/test_llm_client.py -q
 
 ## 可观测性与调试
 
-LLM 日志包含 `runId`、操作名称、模型、请求 ID、耗时、结束原因和 Token 用量，不会记录 API Key。HTTP 请求会生成或沿用 `X-Request-ID`。
+LLM 日志包含 `runId`、`conversationId`、操作名称、模型、请求/响应 ID、首 Token 延迟、
+总耗时、结束原因、完整回复、工具调用、Token 用量和上下文缓存命中信息，不会记录 API Key。
+流式请求会开启 `include_usage`，同一会话使用稳定的 `conversationId` 作为
+`prompt_cache_key`。`cacheStatus=unknown` 表示供应商没有返回缓存统计，并不代表缓存未命中。
+HTTP 请求会生成或沿用 `X-Request-ID`。
 
 本地调试可在 `app/config.py` 中调整：
 
 ```python
 llm_log_responses: bool = True
+llm_log_io: bool = True
+llm_log_input_chars: int = 80000
+llm_log_output_chars: int = 80000
 llm_thinking_enabled: bool = False
 ```
 

@@ -75,7 +75,9 @@ flowchart LR
     EXEC --> APPDB["SQLite app.db"]
     GRAPH --> CPDB["SQLite checkpoints.db"]
     RETRIEVAL --> CHROMA["Chroma 向量索引"]
-    API -->|SSE 读取事件| APPDB
+    EXEC -->|提交后广播| BROKER["进程内 LiveEventBroker"]
+    APPDB -->|断线补发持久事件| API
+    BROKER -->|实时事件与 Token 增量| API
     API -->|text/event-stream| UI
 ```
 
@@ -387,6 +389,8 @@ Token估算不是服务端返回值，而是客户端启发式：中文大约1�
 | `inspect_query_result` | 分页读取历史数据集 | 只读 |
 | `search_conversation_history` | 搜索其他会话 | 只读 |
 | `read_conversation_history` | 读取指定历史会话消息 | 只读 |
+| `search_current_conversation` | 搜索当前会话被摘要覆盖的原始消息 | 只读 |
+| `read_message_context` | 读取命中消息及前后语境 | 只读 |
 | `analyze_dataframe` | 在Docker中分析SQL结果 | 执行隔离代码并产生分析产物 |
 | `rewrite_core_memory` | 用户明确要求时改写核心记忆 | 写SQLite |
 
@@ -412,6 +416,235 @@ Token估算不是服务端返回值，而是客户端启发式：中文大约1�
 - 有`tool_calls`：进入tools节点；
 - 无`tool_calls`：视为`finish`，进入result节点；
 - 全程没有查询结果：通常标为`conversation`模式，而不是数据分析成功。
+
+### 8.4 所有工具共用的执行机制
+
+工具函数的签名中同时存在两类参数：
+
+```python
+async def search_schema(
+    query: str,                                      # 模型生成
+    state: Annotated[AnalysisState, InjectedState], # LangGraph注入
+    tool_call_id: Annotated[str, InjectedToolCallId],# LangGraph注入
+) -> Command:
+```
+
+- `query`、`sql`、`tables`等业务参数会出现在提供给模型的JSON Schema中；
+- `state`和`tool_call_id`由LangGraph注入，不允许模型伪造；
+- `specifications()`使用`tool_call_schema`生成模型可见定义，主动排除注入参数；
+- OpenAI请求设置`parallel_tool_calls=False`，当前Agent每轮只处理一个工具调用。
+
+工具通常不直接修改传入的字典，而是通过`_command()`返回状态增量：
+
+```text
+Command
+└─ update
+   ├─ 本工具需要更新的State字段
+   └─ messages
+      └─ ToolMessage(tool_call_id=原调用ID, content=JSON结果)
+```
+
+`ToolMessage`的作用是把工具观察结果送回模型，并用`tool_call_id`证明它在回答哪一次调用。随后图从`tools`节点回到`agent_decide`，模型观察结果再决定下一步。
+
+完整审计顺序为：
+
+```text
+模型返回Tool Call
+→ Executor向tool_calls写pending记录和完整参数
+→ LoggingToolNode记录调用日志
+→ ToolNode执行工具
+→ 工具返回Command + ToolMessage
+→ Executor把ToolMessage保存到tool_calls.result_json并标记success
+→ 写tool.completed事件
+→ 根据State标记路由到agent_decide、sql_validate或result
+```
+
+如果工具抛出未处理异常，run进入`failed`，Executor会把仍为`pending`的工具调用标记为`failed`。需要注意：工具调用成功只代表“工具函数正常返回”，不代表后续业务一定成功。例如`execute_sql`工具成功仅表示候选SQL已提交，真实SQL可能在后续校验或执行阶段失败。
+
+当前还有一个审计边界：LangGraph若把参数校验错误转换成`ToolMessage(status="error")`，Executor目前没有检查该`status`，仍可能调用`complete_tool_call()`把记录保存为`success`。这不会绕过SQL安全节点，但会让`tool_calls.status`失真；后续应根据ToolMessage状态分别调用complete或fail，并补对应测试。
+
+### 8.5 `update_analysis_plan`：记录计划，不执行计划
+
+**模型参数**：`goal`、`steps`。
+
+实现过程：
+
+1. 最多接收前10个步骤；
+2. 每个步骤归一化为`id/title/objective`；
+3. 缺少ID时生成`step_01`一类编号；
+4. 如果State中存在人工驳回意见，加入`review_feedback`；
+5. 写入`state.plan`并追加observation。
+
+它不会创建独立任务、不会按照steps自动循环、也不会生成SQL。真正的下一步仍由下一轮`agent_decide`决定。计划之后会被Executor保存为`plan` Artifact，主要用于模型自我约束、前端展示和审核。
+
+### 8.6 `ask_clarification`：正常结束为追问结果
+
+**模型参数**：`question`。
+
+工具将：
+
+```text
+final_answer = question
+result_mode = need_clarification
+```
+
+图检测到该模式后从`tools`进入`result`，最终run通常是`status=completed`、`result_mode=need_clarification`。它不是抛异常，也不会创建人工审核记录。系统提示要求只有在检索Schema和知识后仍缺少决定性条件时才使用，但这项调用时机主要依赖模型遵守工具描述。
+
+### 8.7 `search_schema`：从真实库结构中召回候选表
+
+**模型参数**：`query`。
+
+实现链路：
+
+```text
+BusinessDatabase.schema_snapshot()
+→ 读取真实MySQL表、列、注释和外键
+→ KnowledgeRetriever.search_schema(query, full_schema)
+→ 每张表构造成检索文档
+→ BM25与Chroma召回并用RRF融合
+→ 取初始Top-K
+→ 补充直接外键邻居
+→ 不超过max_tables
+```
+
+写入State：
+
+- `full_schema`：完整数据库结构；
+- `schema`：当前选中的表结构；
+- `selected_tables`：表名列表；
+- `schema_reasons`：混合检索命中或关联扩展原因；
+- `schema_search_count + 1`：预算计数。
+
+首次Schema指纹变化时会把表级检索文档同步到Chroma。若召回为空，当前实现会取前若干张表兜底，因此`ok=True`不一定表示语义召回质量良好。Executor还会保存`schema_snapshot`和`retrieval` Artifact。
+
+### 8.8 `inspect_tables`：按表名补充精确结构
+
+**模型参数**：`tables: list[str]`。
+
+该工具不做模糊检索，而是从`state.full_schema`中按真实表名精确筛选；如果完整结构尚未加载，会重新调用`schema_snapshot()`。命中的表与现有`state.schema`按表名合并，更新`selected_tables`。
+
+典型用途是先通过`search_schema`找到`orders`，模型发现还需要`order_items`后再精确读取。不存在的表不会被编造，工具会返回`ok=False + 请求的表不存在`。当前匹配区分字符串内容，不会替模型纠正拼写。
+
+### 8.9 `retrieve_knowledge`：召回业务口径
+
+**模型参数**：`query`。
+
+`KnowledgeRetriever.search()`分别检索documents和evidences：有Chroma时走BM25 + 向量 + RRF，没有Chroma时走纯BM25；最后分别按配置Top-K截断。结果整体写入`state.knowledge`，Executor保存`knowledge_retrieval` Artifact。
+
+它不会读取MySQL业务行，也不会修改Schema。它解决的是“GMV包含哪些订单状态”“退款使用哪个时间字段”这类业务语义问题。
+
+### 8.10 `execute_sql`：只提交候选SQL
+
+**模型参数**：`sql`。
+
+工具本身只执行：
+
+```text
+state.sql = 模型生成的SQL
+state.pending_sql_validation = true
+```
+
+`tools`节点随后强制路由到`sql_validate`：
+
+```text
+SQLGlot解析
+→ 单条SELECT检查
+→ 系统表与危险函数检查
+→ SELECT *检查
+→ 已召回表字段白名单
+→ JOIN条件
+→ 敏感字段
+→ 强制LIMIT
+→ 可选人工审核
+→ sql_execute真正查询MySQL
+```
+
+真实执行成功后才会创建CSV Dataset、`result_sets`、`queries`和查询Artifact。`tool_calls`中`execute_sql=success`只表示候选提交成功；判断SQL是否执行成功必须继续查看`queries.status`、`query.result`事件和run状态。
+
+### 8.11 `search_analysis_history`：搜索当前会话的历史结果
+
+**模型参数**：`query`、可选`scope`、`limit`。
+
+工具把范围固定为`state.conversation_id`，最多返回10条。`ResultHistoryService`先查询`result_history_fts`，没有命中时再对`analysis_runs.question`和`queries.sql`做关系型模糊匹配。返回的是结果目录：`datasetId`、原问题、SQL、列名、行数和时间，不会一次返回全部数据行。
+
+`scope`会被归一化为`query_results/analyses/all`，但当前`ResultHistoryService.search()`尚未真正按scope分支，因此它目前是预留参数，不能宣称已经支持多种搜索范围。
+
+### 8.12 `inspect_query_result`：分页读取某个历史结果
+
+**模型参数**：`dataset_id`、可选`offset`、`limit`。
+
+工具通过`result_sets → analysis_runs`校验该Dataset属于当前会话，防止用任意ID读取其他会话结果。`limit`被限制在1到50：CSV仍存在时分页读取完整结果；CSV过期后只能读取SQLite中的预览。
+
+找不到或不属于当前会话时，它不抛顶层异常，而是返回：
+
+```json
+{"ok": false, "error": "result_not_found", "retryable": false}
+```
+
+模型应据此停止使用错误ID或重新搜索历史结果。
+
+### 8.13 `search_conversation_history`：搜索其他会话目录
+
+**模型参数**：`query`、可选`limit`。
+
+工具新建请求外的短生命周期`AsyncSession`，查询`conversation_history_fts`。检索词只保留长度至少3的部分，多词使用AND，候选按FTS rank排序后按会话去重，最多返回10个会话的ID、标题和命中片段。
+
+它只返回目录，不返回完整聊天内容。当前项目按本地单用户设计，没有用户/租户字段；如果改成多用户服务，必须先增加所有权条件，不能直接复用现有跨会话查询。
+
+### 8.14 `read_conversation_history`：读取选中的历史会话
+
+**模型参数**：`conversation_id`、可选`limit`。
+
+Repository读取目标会话的标题、滚动摘要和消息，只保留`user/assistant`角色，并取最近1到50条。工具通常应在`search_conversation_history`拿到候选ID后调用。
+
+它不会把读取内容自动写入当前会话的持久化历史，只通过本轮`ToolMessage`交给模型。当前同样没有用户所有权校验，这是单用户本地部署假设，不是生产级多租户实现。
+
+### 8.15 `analyze_dataframe`：对已有SQL结果做隔离分析
+
+**模型参数**：`objective`、可选`dataset_ids`。
+
+前置条件是当前State已经有`query_results`。实现链路：
+
+```text
+选择当前run中的Dataset
+→ 校验总行数不超过python_analysis_max_rows
+→ 优先复制完整CSV，没有CSV时写出预览
+→ LLM生成受约束Python代码
+→ 静态检查导入、文件路径和危险调用
+→ Docker无网络、非root、只读根目录、CPU/内存/PID/超时限制
+→ 读取并校验result.json
+→ 失败时把错误交给模型修复，最多配置次数
+```
+
+成功后追加到`state.python_analyses`，Executor保存`python_analysis` Artifact。工具捕获分析异常并返回`ok=False`，当前标记`retryable=False`，所以失败不一定让整个run失败，模型可以改用已有SQL结果总结。
+
+### 8.16 `rewrite_core_memory`：整块改写跨会话核心记忆
+
+**模型参数**：`instruction`。
+
+工具读取`profile_id=default`对应的当前核心记忆，把旧记忆、用户本轮原话和修改指令交给LLM生成结构化新版本，然后执行两项确定性校验：
+
+1. 正则拦截密码、API Key和访问令牌；
+2. 不超过`core_memory_max_tokens`。
+
+只有模型声明内容变化且文本确实不同才写入`user_core_memory`。新建会话时会把该记忆快照作为隐藏System Message注入；已存在会话不会自动刷新旧快照。该工具适用于“以后都按华东区统计”一类明确长期偏好，不应用于一次性查询条件。
+
+### 8.17 一张表看清每个工具之后去哪
+
+| 工具 | 主要State变化 | 下一步通常是 |
+|---|---|---|
+| `update_analysis_plan` | `plan` | `agent_decide` |
+| `ask_clarification` | `final_answer/result_mode` | `result` |
+| `search_schema` | `full_schema/schema/selected_tables` | `agent_decide` |
+| `inspect_tables` | 合并`schema/selected_tables` | `agent_decide` |
+| `retrieve_knowledge` | `knowledge` | `agent_decide` |
+| `execute_sql` | `sql/pending_sql_validation` | `sql_validate` |
+| `search_analysis_history` | 结果只在`ToolMessage` | `agent_decide` |
+| `inspect_query_result` | 数据只在`ToolMessage` | `agent_decide` |
+| `search_conversation_history` | 目录只在`ToolMessage` | `agent_decide` |
+| `read_conversation_history` | 消息只在`ToolMessage` | `agent_decide` |
+| `analyze_dataframe` | `python_analyses` | `agent_decide` |
+| `rewrite_core_memory` | SQLite核心记忆；结果在`ToolMessage` | `agent_decide` |
 
 ---
 
@@ -791,15 +1024,17 @@ Docker限制包括：
 
 ## 15. SSE、事件和前端实时性
 
-Executor不会把LangGraph内存消息直接推给某个固定浏览器连接，而是先把事件写入SQLite：
+当前SSE采用“持久事件 + 进程内实时广播”的双通道设计：
 
 ```text
-LangGraph custom/update
-→ Executor转成RunEvent
-→ 写入run_events，seq递增
-→ SSE端点轮询seq之后的新事件
-→ 格式化为text/event-stream
-→ 前端收到
+持久事件：
+LangGraph update → Executor → 写入 run_events → commit成功 → LiveEventBroker广播
+
+瞬时事件：
+LLM Token增量 → LangGraph custom stream → LiveEventBroker广播，不写run_events
+
+SSE连接：
+先订阅Broker → 再按Last-Event-ID从run_events补历史 → 接收Broker新事件 → 按seq去重
 ```
 
 常见事件包括：
@@ -828,9 +1063,14 @@ run.cancelled
 
 ### 15.2 它是不是Token级实时输出
 
-不是。当前LLM调用使用普通`chat.completions.create`，没有使用模型Token流。`text.delta`当前通常携带完整总结，而不是逐Token输出。
+当前用户可见的最终回答已经使用OpenAI兼容接口的`stream=True`接收真实文本增量，并通过`final_answer.delta`瞬时广播。工具调用、阶段状态和最终结果仍会形成持久事件或Artifact。
 
-所以准确说法是“阶段级和产物级SSE流式返回”，不能说“完整展示模型逐Token思考过程”。
+需要区分两类数据：
+
+- `final_answer.delta`是低延迟Token增量，只存在于当前进程的订阅队列中，断线期间不会逐Token补发；
+- `run_events`中的阶段事件和最终`text.delta`可以按`seq`补发，最终完整回答也能从run详情、消息和Artifact恢复。
+
+因此可以说“最终回答支持Token级流式输出，运行过程支持持久化事件续传”，但不能说“模型思考过程全部逐Token持久化”。
 
 ---
 
@@ -909,7 +1149,7 @@ FastAPI/Uvicorn事件循环
 ├── 每个分析run的asyncio.Task
 ├── OpenAI异步HTTP请求
 ├── SQLite异步会话
-├── SSE轮询协程
+├── SSE订阅与事件补发协程
 └── Checkpoint清理Task
 ```
 
@@ -934,6 +1174,19 @@ Python分析通过`asyncio.create_subprocess_exec("docker", "run", ...)`启动Do
 ## 19. 数据到底保存在哪里
 
 项目没有把所有数据塞进一个数据库，而是按职责拆分：MySQL保存销售事实，SQLite保存Agent运行和会话状态，Chroma保存向量索引，CSV保存大结果集，LangGraph自己的SQLite保存图执行快照。
+
+### 19.0 先分清四个数据边界
+
+| 边界 | 核心问题 | 权威数据源 |
+|---|---|---|
+| 销售业务 | 用户买了什么、订单金额多少、是否退款 | MySQL `product_db` |
+| Agent应用 | 用户问了什么、run进行到哪里、执行了什么SQL | SQLite `app.db` |
+| 图执行恢复 | LangGraph暂停前的State和待提交写入是什么 | SQLite `checkpoints.db` |
+| 检索与大文件 | 文档如何被搜索、完整结果保存在哪里 | Chroma、清单库、CSV |
+
+这里的“权威数据源”表示发生冲突时应该信谁。例如订单金额以MySQL为准，不能以LLM总结或Artifact为准；run状态以`analysis_runs`为准，不能以某个仍留在内存中的Task对象为准。
+
+从领域关系看，`Conversation`是一段长期会话，`AnalysisRun`是会话内的一次分析尝试。一个会话可以有多个run；一个run可以调用多个工具、执行多条SQL、产生多个结果集和Artifact。`Run`不是`Conversation`，`Query`也不是`Run`。
 
 ### 19.1 SQLite `app.db`：Agent应用数据
 
@@ -998,6 +1251,19 @@ content_type=markdown
 
 `user_core_memory`已经支持Agent显式改写，并会在新建会话时作为隐藏System Message注入；`memory_items`对应的自动抽取、向量检索和TTL淘汰尚未接入主链路。因此面试中不能说“完整的自动长期记忆已经运行”。
 
+#### FTS5全文索引不是业务主表
+
+`app.db`还包含两个SQLite FTS5虚拟表：
+
+| 虚拟表 | 一行代表什么 | 可搜索内容 |
+|---|---|---|
+| `conversation_history_fts` | 一条用户或助手消息的搜索副本 | 会话标题、消息正文 |
+| `result_history_fts` | 一个查询结果集的搜索副本 | 原问题、SQL、列名、摘要 |
+
+它们是为了模糊搜索构建的派生索引，不是权威数据源。消息正文仍以`messages`为准，查询历史仍以`analysis_runs + queries + result_sets`为准。FTS虚拟表不支持普通外键级联，因此新增消息、更新标题、写查询历史和删除会话时都要由Repository同步维护。
+
+启动时会把缺少的会话消息补入`conversation_history_fts`；结果历史目前没有完整重建流程，但搜索在FTS无命中时会再查关系表做模糊匹配。排查“数据库明明有记录但搜索不到”时，应分别检查主表和FTS索引，不能直接认定主数据丢失。
+
 主要关系如下：
 
 ```mermaid
@@ -1016,6 +1282,58 @@ erDiagram
 ```
 
 删除会话时，声明了外键和`ON DELETE CASCADE`的消息、运行等记录会一并删除。`last_run_id`、`result_set_id`和部分artifact ID属于应用层逻辑引用，当前没有数据库外键保护，排查数据一致性时需要特别注意。
+
+#### 哪些关联由数据库保证
+
+ER图表达的是领域关系，不代表每条箭头都声明了SQL外键。当前物理约束如下：
+
+| 引用字段 | 指向 | 数据库是否声明外键 | 删除父记录时 |
+|---|---|---:|---|
+| `messages.conversation_id` | `conversations.id` | 是 | 级联删除消息 |
+| `analysis_runs.conversation_id` | `conversations.id` | 是 | 级联删除run，再继续删除run子表 |
+| `memory_items.conversation_id` | `conversations.id` | 是 | 级联删除记忆记录 |
+| `conversation_summary_states.conversation_id` | `conversations.id` | 是 | 级联删除摘要游标 |
+| 各run子表的`run_id` | `analysis_runs.id` | 是 | 级联删除阶段、事件、工具、SQL、结果集等 |
+| `conversations.last_run_id` | `analysis_runs.id` | 否 | 由应用维护，可能产生悬空值 |
+| `messages.run_id` | `analysis_runs.id` | 否 | 删除单个run时数据库不会自动处理消息引用 |
+| `analysis_runs.retry_of_run_id` | `analysis_runs.id` | 否 | 只用于追溯重试来源 |
+| `conversation_summary_states.last_message_id` | `messages.id` | 否 | 只是增量摘要游标，消息不存在时代码会退回未过滤列表 |
+| `tool_calls.conversation_id`、`run_events.conversation_id` | `conversations.id` | 否 | 为读取和广播冗余保存，可由`run_id`间接推导 |
+| `queries.result_set_id` | `result_sets.id` | 否 | 依靠应用先创建结果集再写查询引用 |
+| `review_checkpoints.*_artifact_id` | `artifacts.id` | 否 | 依靠应用保证引用有效 |
+| `memory_items.source_message_id` | `messages.id` | 否，仅唯一 | 保证一条消息最多派生一条同类记录，但不保证消息存在 |
+
+“没有外键”不等于“没有关系”，只表示SQLite不会替应用检查这段关系。当前代码通过Repository查询和写入顺序维护它们，数据库本身无法完全阻止悬空引用。
+
+#### 唯一约束解决什么问题
+
+| 唯一约束 | 目的 | 当前边界 |
+|---|---|---|
+| `analysis_runs.idempotency_key` | 相同请求重试时避免重复创建run | 当前是全局唯一，不按会话或客户端分区 |
+| `stage_runs(run_id, stage, attempt)` | 同一阶段同一次尝试不重复 | `MAX(attempt)+1`并发分配仍可能竞争 |
+| `tool_calls(run_id, tool_call_id)` | 同一个模型工具调用只记录一次 | 能处理重复回放 |
+| `tool_calls(run_id, sequence)` | 保证工具调用顺序唯一 | `MAX(sequence)+1`并发分配仍可能竞争；当前工具串行执行降低了风险 |
+| `run_events(run_id, seq)` | 支持SSE严格排序和断线续传 | `seq`通过数据库原子UPDATE分配，强度高于`MAX+1` |
+| `memory_items.source_message_id` | 同一消息不重复派生记忆 | 字段不是消息外键 |
+
+其中`run_events.seq`的生成最完整：先在数据库中原子执行`event_seq = event_seq + 1`并取回新值，再在同一事务写入事件。即使同时追加事件，也不会只靠内存计数。
+
+#### Run状态机
+
+```mermaid
+stateDiagram-v2
+    [*] --> queued: 创建run
+    queued --> running: 后台Task开始
+    running --> waiting_review: SQL待人工确认
+    waiting_review --> running: approve/reject后恢复或重规划
+    running --> completed: 图正常结束
+    running --> failed: 未处理异常
+    queued --> cancelled: 用户取消
+    running --> cancelled: 用户取消
+    waiting_review --> cancelled: 用户取消
+```
+
+`completed`、`failed`、`cancelled`是终态。`result_mode`不是第二套运行状态：它描述结果语义，例如`success`、`need_clarification`、`blocked_prompt_injection`或`execution_error`。因此`status=completed`可以同时搭配`result_mode=need_clarification`，表示系统正常完成了“向用户追问”的处理。
 
 ### 19.2 MySQL `product_db`：销售业务数据
 
@@ -1052,6 +1370,106 @@ erDiagram
 4. `users.province/city`偏向用户资料，`orders.province/city`是下单时收货地址快照。分析地区销售通常应使用订单字段。
 5. 退款是独立事实，不会自动改写订单金额。计算净销售额时必须明确是否以及如何扣除`refunds.refund_amount`。
 6. `line_amount`通常等于`quantity * unit_price`；订单优惠记录在订单头，若要把优惠分摊到商品，需要定义分摊口径，不能让模型自行猜测。
+
+#### 常见问题应该使用哪张表
+
+| 用户问题 | 统计粒度 | 主要表 | 核心计算或过滤 |
+|---|---|---|---|
+| 各渠道订单量 | 一行一个渠道 | `orders` | `COUNT(*)`；默认业务规则排除`cancelled` |
+| GMV趋势 | 一行一个时间周期 | `orders` | 当前知识口径为`SUM(total_amount)`且包含全部状态 |
+| 有效销售额 | 一行一个时间周期/渠道 | `orders` | `SUM(total_amount)`并排除`cancelled` |
+| 商品销量排行 | 一行一个商品 | `order_items + orders + products` | `SUM(quantity)`并排除取消订单 |
+| 分类销售额 | 一行一个分类 | `order_items + orders + products + categories` | `SUM(line_amount)`，不能累加订单头金额 |
+| 客单价 | 一行一个分组维度 | `orders` | 有效销售额除以有效订单数，注意除零 |
+| 毛利润 | 一行一个商品/分类 | `order_items + orders` | `SUM(line_amount - quantity * unit_cost)` |
+| 退款金额 | 一行一个时间周期/原因 | `refunds` | 只统计`status='approved'`，默认时间字段为`refunds.created_at` |
+| 净销售额 | 一行一个时间周期 | `orders`与预聚合后的`refunds` | 有效销售额减已批准退款，先分别聚合再合并 |
+
+这张表体现了Schema检索和业务知识检索的分工：Schema只能告诉模型有哪些表和字段，业务知识才能说明“GMV是否含取消订单”“退款按申请时间还是下单时间”等口径。
+
+生成分析SQL前应该固定回答五个问题：
+
+1. **一行代表什么**：订单、商品、用户、渠道还是月份；
+2. **指标从哪里取**：订单头金额、明细金额、数量还是退款金额；
+3. **哪些状态有效**：是否排除`cancelled`、是否只看`approved`退款；
+4. **使用哪个时间**：下单时间、注册时间、上架时间还是退款申请时间；
+5. **是否会因JOIN重复**：一对多关联后，分子和分母是否被成倍复制。
+
+例如渠道订单量只需要订单表：
+
+```sql
+SELECT sales_channel, COUNT(*) AS order_count
+FROM orders
+WHERE status <> 'cancelled'
+GROUP BY sales_channel;
+```
+
+商品分类销售额必须进入明细粒度：
+
+```sql
+SELECT c.name, SUM(oi.line_amount) AS sales_amount
+FROM order_items AS oi
+JOIN orders AS o ON o.id = oi.order_id
+JOIN products AS p ON p.id = oi.product_id
+JOIN categories AS c ON c.id = p.category_id
+WHERE o.status <> 'cancelled'
+GROUP BY c.id, c.name;
+```
+
+时间范围推荐使用左闭右开区间，例如`order_date >= '2026-06-01' AND order_date < '2026-07-01'`。这比把月底写成`<= '2026-06-30'`更不容易遗漏当天带时分秒的数据。
+
+#### 一个重复计算的具体例子
+
+假设订单`1001`的`total_amount=300`，有两条明细：
+
+```text
+orders:       1001 | total_amount=300
+order_items:  1    | order_id=1001 | line_amount=100
+order_items:  2    | order_id=1001 | line_amount=200
+```
+
+连接后订单头会出现两次：
+
+```text
+1001 | total_amount=300 | item=1
+1001 | total_amount=300 | item=2
+```
+
+此时`SUM(orders.total_amount)=600`是错误结果。订单级销售额应直接从`orders`聚合；商品级销售额应聚合`order_items.line_amount`。如果必须同时使用多种粒度，应先分别聚合到同一粒度再JOIN。
+
+#### 当前业务模型不能可靠回答什么
+
+| 问题 | 缺少的数据 |
+|---|---|
+| 广告点击到下单的转化率 | 曝光、点击、访问会话等漏斗事实 |
+| 某天历史库存或库存周转过程 | 库存流水或每日库存快照；`products.stock`只有当前值 |
+| 支付成功率和支付耗时 | 支付流水、支付状态变化和支付时间 |
+| 订单状态停留时长 | 订单状态历史表；当前只有最终/当前状态 |
+| 多个促销叠加效果 | 订单与促销多对多明细；当前订单只有一个`promotion_id` |
+| 严格财务收入和结算 | 币种、税费、运费、结算、支付和退款到账时间 |
+| 用户地址变化历史 | 用户资料快照历史；`users`只有当前常住地 |
+
+遇到这些问题，正确行为应是说明数据不足或请求补充数据，而不是让模型根据现有字段编造答案。
+
+#### DDL与业务规则的一处真实不一致
+
+业务知识文档和演示数据生成逻辑约定“一个订单最多一条退款记录”，但当前DDL只为`refunds.order_id`建立普通索引，没有`UNIQUE`约束。因此这个规则目前由数据生成器保证，数据库本身允许同一订单出现多条退款。
+
+这会影响SQL写法：不能仅凭DDL假设订单与退款永远一对零或一。稳妥的净销售额查询仍应先按`order_id`聚合退款；如果产品规则确定永远只有一条，后续应在数据库迁移中增加唯一约束，并先清理历史重复数据。
+
+#### 索引为什么这样设计
+
+| 索引 | 服务的典型查询 |
+|---|---|
+| `orders(user_id, order_date)` | 查询某用户一段时间内的订单 |
+| `orders(order_date, status)` | 按时间范围统计有效订单 |
+| `orders(sales_channel, order_date)` | 按渠道和时间分析趋势 |
+| `orders(province, city)` | 地区销售分析 |
+| `order_items(order_id)` | 从订单查商品明细 |
+| `order_items(product_id)` | 从商品查历史销量 |
+| `refunds(status, created_at)` | 按状态和申请时间统计退款 |
+
+索引主要减少候选行扫描，不会自动修复错误的JOIN或统计口径。组合索引还受最左前缀和范围条件影响，是否真正生效需要用`EXPLAIN`验证。当前演示数据规模有限，不能仅凭本地查询很快就声称索引已经完成生产级优化。
 
 ### 19.3 `knowledge-manifest.db`：离线文档索引清单
 
@@ -1159,6 +1577,138 @@ Collection名为`data_agent_knowledge`，距离空间使用cosine。BM25与Chrom
 3. `analysis_runs.version`当前只是保存时自增的版本计数，没有按旧版本条件更新，不能称为严格乐观锁；
 4. 如果未来要求一个用例整体原子，应由应用服务控制事务，Repository写方法改为`flush()`，最后统一`commit()`并处理回滚。
 
+### 19.11 用一组具体记录串起成功场景
+
+假设已有会话`conv_01`，用户提交“按渠道统计已完成订单量”，系统创建`run_01`。下面的值是便于理解的示意，不代表字段的完整JSON。
+
+```text
+conversations
+id=conv_01 | title=按渠道统计已完成订单量 | last_run_id=run_01
+
+messages
+id=msg_01 | conversation_id=conv_01 | run_id=run_01
+role=user | content=按渠道统计已完成订单量
+
+analysis_runs
+id=run_01 | conversation_id=conv_01 | question=按渠道统计已完成订单量
+status=queued → running → completed
+result_mode=null → success
+current_stage=input_guard → agent_decide → ... → result
+```
+
+执行过程中是一对多展开：
+
+```text
+run_01
+├─ stage_runs: input_guard、agent_decide、tools、sql_validate、sql_execute、result...
+├─ run_events: seq=1、2、3...，供SSE续传
+├─ tool_calls: search_schema、execute_sql...
+├─ artifacts: retrieval、plan、query_preview、query、analysis...
+├─ queries: 本次真正尝试执行的SQL
+└─ result_sets: SQL列信息、前50行预览和CSV地址
+```
+
+成功SQL执行的写入顺序尤其重要：
+
+```text
+MySQL返回完整结果
+→ 原子写CSV临时文件并rename
+→ 写result_sets记录
+→ 写queries记录并引用result_set_id
+→ 写结果历史FTS索引
+→ 写query Artifact
+→ 最终写analysis Artifact和assistant消息
+→ run更新为completed
+→ 写run.completed事件
+→ 删除完成run的checkpoint
+```
+
+所以`result_sets`比`queries`先出现是正常的。如果后续步骤失败，可能存在“有结果集但没有成功Query记录”的中间状态，排查时不能只查一张表。
+
+### 19.12 审核、重试、取消和重启分别怎样落库
+
+#### 人工审核
+
+```text
+SQL通过安全检查
+→ review_checkpoints新增waiting记录
+→ analysis_runs.status=waiting_review
+→ result_mode=waiting_human_feedback
+→ 写review.required事件
+→ LangGraph checkpoint保留，当前Task结束
+```
+
+批准或驳回后，审核记录改为`approved/rejected`，run回到`running`，写审核事件，再使用相同`run_id/thread_id`恢复checkpoint。驳回不是新建run，而是在原run上带审核意见重新规划。
+
+#### 重试
+
+重试会新建一个run，新记录的`retry_of_run_id`指向旧run。旧run及其错误、SQL和事件不会被覆盖。当前实现还会把原问题再次写成一条新的用户消息，因此会话时间线中能看到一次新的尝试。
+
+#### 取消
+
+取消先把run持久化为`cancelled`并写`run.cancelled`事件，再向`TaskRegistry`中的协程发送取消并等待其结束，最后删除checkpoint。这个顺序保证接口返回“已取消”时，后台图不应继续正常推进。
+
+#### 服务重启
+
+`asyncio.Task`只在内存中，进程退出后无法恢复。启动补偿会把数据库中残留的`queued/running` run改为`failed + service_restarted`，而不是假装任务还在执行。`waiting_review`依靠checkpoint等待人工操作，不在这次补偿范围内。
+
+### 19.13 跨存储一致性不是数据库事务
+
+SQLite事务无法同时回滚CSV、Chroma和LangGraph checkpoint。当前采用的是“明确顺序 + 补偿清理 + 可观测错误”，不是分布式事务。
+
+| 场景 | 当前顺序 | 失败后的处理或风险 |
+|---|---|---|
+| 创建Dataset | 先原子写CSV，再提交`result_sets` | SQLite提交失败会删除刚写的CSV |
+| Dataset过期 | 先把记录降级为`sqlite`，再删CSV | 删除文件失败会暴露异常；启动时可继续清理孤儿文件 |
+| 删除会话 | 先取消Task并删除SQLite记录，再并行删CSV、记忆向量和checkpoint | 外部删除失败时数据库已删除，接口明确报错并记录残留资源 |
+| 完成run | 先保存结果和终态，再删除checkpoint | checkpoint删除失败不把成功run改成失败，日志记录并由定时清理重试 |
+| 记忆同步 | 先修改SQLite记忆，再同步Chroma | 当前自动链路未接入；显式操作若索引同步失败，需要根据日志修复漂移 |
+
+这也是为什么日志必须包含`conversation_id`、`run_id`、`result_set_id`和文件路径：跨存储问题无法只靠一次SQL事务定位。
+
+### 19.14 当前数据库设计的优点与不足
+
+#### 做得比较好的部分
+
+1. 会话与run分离，既支持多轮对话，也保留每次重试的独立审计记录；
+2. `run_events`采用数据库原子序号和唯一约束，适合断线续传；
+3. 大结果集使用“SQLite元数据和预览 + CSV完整数据”，避免应用库快速膨胀；
+4. 会话和run子表使用级联删除，核心所有权关系清楚；
+5. 工具调用、阶段、Query和Artifact分开存储，能够区分模型意图、实际执行和用户可见产物。
+
+#### 需要继续完善的部分
+
+1. 创建run等复合用例多次`commit()`，中途失败可能留下部分记录；
+2. 多个重要引用没有外键，完整性主要依赖应用代码；
+3. `version`没有旧版本条件更新，不具备真正的并发覆盖检测；
+4. 状态字段使用字符串且没有数据库`CHECK`约束，数据库能接受未知状态；
+5. `idempotency_key`全局唯一但没有绑定会话，请求方必须保证键不会跨会话碰撞；
+6. `Artifact.version`目前缺少同类型版本唯一约束，不能仅凭字段名宣称已经支持严格产物版本管理；
+7. `user_core_memory`默认使用固定`profile_id=default`，适合本地单用户演示，不是多租户用户模型；
+8. SQLite适合当前本地单进程，但高并发多实例需要重新设计写入串行化、任务调度和共享事件通道。
+
+面试中更好的表达不是“数据库设计得很完善”，而是说明当前规模下为什么这样拆分、哪些一致性由数据库保证、哪些由应用补偿，以及扩展到多用户多实例时首先要改什么。
+
+### 19.15 表结构变化不会自动迁移旧数据库
+
+应用启动时调用`Base.metadata.create_all()`，它只会创建不存在的表，不会自动为已有表增加字段、修改类型、补外键或重建索引。因此：
+
+```text
+只修改 models.py
+≠
+已有 app.db 自动升级
+```
+
+当前仓库没有接入Alembic一类迁移工具。开发中修改ORM模型后，如果继续使用旧`app.db`，可能出现“代码里有字段、数据库里没有字段”的错误；直接删除本地数据库只能用于可丢弃的开发数据，不能当作正式升级方案。
+
+MySQL的`scripts/demo_data/schema.sql`同样是演示库重建脚本，会先关闭外键检查并删除旧表，不是增量迁移。企业化演进至少需要：
+
+1. 为每次结构变化编写有版本的前向迁移；
+2. 在迁移前备份并验证历史数据约束；
+3. 对新增唯一约束先检查重复数据；
+4. 对应用版本和数据库版本做兼容发布；
+5. Chroma文档结构、Embedding模型或切块规则变化时单独重建索引，不能把向量索引迁移和关系库迁移混为一谈。
+
 ---
 
 ## 20. 当前项目的真实边界
@@ -1167,7 +1717,7 @@ Collection名为`data_agent_knowledge`，距离空间使用cosine。BM25与Chrom
 
 1. 当前是单进程内`TaskRegistry`，不是分布式任务队列。
 2. 服务重启不会自动续跑普通run，而是标记失败。
-3. SSE是阶段/产物级，不是LLM逐Token流。
+3. 最终回答支持真实Token增量，但增量只走进程内Broker；断线后恢复的是持久事件和最终快照，不是每个历史Token。
 4. 当前检索是BM25 + Chroma + RRF，没有独立reranker模型。
 5. 核心记忆显式改写和新会话注入已生效，但自动抽取、向量检索、TTL淘汰及旧会话刷新尚未接入主链路。
 6. SQL和Chroma使用`to_thread`，取消不能强制终止底层线程。
@@ -1177,6 +1727,7 @@ Collection名为`data_agent_knowledge`，距离空间使用cosine。BM25与Chrom
 10. Chroma适合当前本地单机规模，生产选型需要结合数据规模、并发、备份和运维重新评估。
 11. Repository写方法多次独立提交，创建run等复合用例目前不是单一原子事务。
 12. `analysis_runs.version`是版本计数，不是能够检测并发覆盖的完整乐观锁。
+13. Executor当前没有根据`ToolMessage.status`区分工具成功和参数错误，少数调用的`tool_calls.status`可能失真。
 
 知道边界不会让项目显得差，反而说明你真正理解了系统。
 
@@ -1280,7 +1831,7 @@ Collection名为`data_agent_knowledge`，距离空间使用cosine。BM25与Chrom
 14. 断线只停订阅；暂停保留Checkpoint等待resume；取消终止Task并删除Checkpoint。
 15. 不能，to_thread底层线程只能依赖数据库超时或数据库级取消。
 16. 不会，queued/running会被标为service_restarted失败。
-17. 不是，目前是阶段和产物级事件。
+17. 最终回答是模型真实Token增量；阶段和终态事件持久化，Token增量只实时广播、不逐条落库。
 18. 没有，当前是RRF融合。
 19. API/LLM/图在事件循环；MySQL/Chroma/CSV等阻塞操作进线程池；Python分析在Docker进程。
 20. 示例：完成自动长期记忆链路、引入分布式任务执行与取消、收紧预算、统一关键用例事务并补齐评测，也可结合代码说明其他真实问题。
@@ -1326,7 +1877,7 @@ Chunking → BM25 → Chroma → RRF → Schema外键扩展
 ```text
 没有独立reranker
 没有完整自动长期记忆链路
-不是逐Token SSE
+Token增量不持久化，断线后依靠最终快照恢复
 不是分布式任务系统
 同步线程和Docker取消仍有缺口
 ```

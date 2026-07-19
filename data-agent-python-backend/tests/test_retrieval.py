@@ -91,6 +91,8 @@ def test_tool_specifications_hide_runtime_injected_arguments() -> None:
     assert set(specifications["search_schema"]["properties"]) == {"query"}
     assert set(specifications["analyze_dataframe"]["properties"]) == {"objective", "dataset_ids"}
     assert set(specifications["search_analysis_history"]["properties"]) == {"query", "scope", "limit"}
+    assert set(specifications["search_current_conversation"]["properties"]) == {"query", "limit"}
+    assert set(specifications["read_message_context"]["properties"]) == {"message_id", "before", "after"}
     assert set(specifications["search_conversation_history"]["properties"]) == {"query", "limit"}
     assert set(specifications["read_conversation_history"]["properties"]) == {"conversation_id", "limit"}
     assert set(specifications["inspect_query_result"]["properties"]) == {"dataset_id", "offset", "limit"}

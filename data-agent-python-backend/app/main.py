@@ -35,11 +35,13 @@ async def lifespan(_app: FastAPI):
     )
     logger.info(
         "application configuration: llmProvider=openai model=%s baseUrl=%s apiKeyConfigured=%s "
-        "llmRawResponseLogging=%s llmThinkingEnabled=%s productDatabaseDriver=%s logFile=%s",
+        "llmRawResponseLogging=%s llmIoLogging=%s llmThinkingEnabled=%s "
+        "productDatabaseDriver=%s logFile=%s",
         settings.llm_model,
         settings.llm_base_url,
         bool(settings.llm_api_key.strip()),
         settings.llm_log_responses,
+        settings.llm_log_io,
         settings.llm_thinking_enabled,
         settings.product_database_url.split(":", 1)[0],
         str(settings.log_file_path) if settings.log_file_enabled else "disabled",

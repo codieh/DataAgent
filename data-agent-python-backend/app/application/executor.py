@@ -27,7 +27,7 @@ from app.application.live_events import run_live_event_broker
 from app.infrastructure.persistence.database import session_factory
 from app.infrastructure.persistence.models import AnalysisRunModel, elapsed_ms, utc_now
 from app.infrastructure.persistence.repository import Repository
-from app.observability.context import current_run_id
+from app.observability.context import current_conversation_id, current_run_id
 from app.workflow.runtime import GraphRuntime
 
 
@@ -135,8 +135,10 @@ class GraphAnalysisExecutor:
         """
         # 记录当前活跃阶段（stage -> stage_run.id），用于节点完成时关闭阶段。
         active_stages: dict[str, str] = {}
-        # 通过 contextvar 把 run_id 注入日志与可观测性上下文。
+        # 通过 contextvar 把运行/会话标识注入整条异步调用链。conversation_id
+        # 同时会作为模型 prompt_cache_key，让同一会话的稳定前缀更容易命中缓存。
         run_token = current_run_id.set(run_id)
+        conversation_token = current_conversation_id.set(str(accumulated.get("conversation_id") or "-"))
         try:
             async for mode, payload in stream:
                 # custom 事件：由图内显式发出，承载阶段开始等控制信息。
@@ -166,7 +168,8 @@ class GraphAnalysisExecutor:
             # 任何未捕获异常都转为「运行失败」终态。
             await self._fail(run_id, error)
         finally:
-            # 恢复 run_id contextvar，避免污染后续协程。
+            # 恢复 contextvar，避免工作线程复用时污染后续协程。
+            current_conversation_id.reset(conversation_token)
             current_run_id.reset(run_token)
 
     async def _handle_custom(self, run_id: str, payload: Any, active_stages: dict[str, str]) -> None:

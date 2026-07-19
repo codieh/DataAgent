@@ -24,7 +24,11 @@ from app.context.compaction import (
     trim_tool_results,
 )
 from app.domain.errors import InvalidOperationError
-from app.observability.context import current_llm_operation, current_run_id
+from app.observability.context import (
+    current_conversation_id,
+    current_llm_operation,
+    current_run_id,
+)
 from app.observability.logging_setup import truncate_text
 
 
@@ -70,6 +74,7 @@ class OpenAiChatClient:
     async def stream_complete(self, system: str, user: str) -> AsyncIterator[str]:
         """流式生成纯文本；仅在收到服务端增量后向调用方产出，不伪造逐字效果。"""
         run_id = current_run_id.get()
+        conversation_id = current_conversation_id.get()
         operation = "final_answer_stream"
         messages = [{"role": "user", "content": user}]
         input_tokens_estimate = _estimate_request_tokens(system, messages, "")
@@ -85,24 +90,45 @@ class OpenAiChatClient:
                 "thinking": {"type": "enabled" if self.settings.llm_thinking_enabled else "disabled"}
             },
             "stream": True,
+            "stream_options": {"include_usage": True},
         }
+        _add_prompt_cache_key(request, conversation_id)
         started = perf_counter()
         logger.info(
-            "llm stream started: runId=%s operation=%s model=%s estimatedInputTokens=%d",
+            "llm stream started: runId=%s conversationId=%s operation=%s model=%s baseUrl=%s "
+            "messageCount=%d temperature=%s thinkingEnabled=%s promptCacheKey=%s estimatedInputTokens=%d",
             run_id,
+            conversation_id,
             operation,
             self.settings.llm_model,
+            self.settings.llm_base_url,
+            len(request["messages"]),
+            self.settings.llm_temperature,
+            self.settings.llm_thinking_enabled,
+            request.get("prompt_cache_key", "-"),
             input_tokens_estimate,
         )
+        self._log_input(run_id, conversation_id, operation, system, messages, None)
         chunks: list[str] = []
         finish_reason = None
+        response_id = "-"
+        response_model = self.settings.llm_model
+        usage = None
+        chunk_count = 0
+        first_token_ms = None
         try:
             stream = await self._client().chat.completions.create(**request)
             async for chunk in stream:
+                chunk_count += 1
+                response_id = getattr(chunk, "id", None) or response_id
+                response_model = getattr(chunk, "model", None) or response_model
+                usage = getattr(chunk, "usage", None) or usage
                 for choice in getattr(chunk, "choices", None) or []:
                     finish_reason = choice.finish_reason or finish_reason
                     content = getattr(choice.delta, "content", None)
                     if content:
+                        if first_token_ms is None:
+                            first_token_ms = int((perf_counter() - started) * 1000)
                         chunks.append(content)
                         yield content
         except openai.AuthenticationError as error:
@@ -116,14 +142,19 @@ class OpenAiChatClient:
             raise InvalidOperationError("LLM 流式响应中没有文本结果。")
         if finish_reason == "length":
             raise InvalidOperationError("LLM 输出达到 Token 上限，结果不完整。")
-        logger.info(
-            "llm stream completed: runId=%s operation=%s model=%s finishReason=%s outputChars=%d durationMs=%d",
-            run_id,
-            operation,
-            self.settings.llm_model,
-            finish_reason,
-            len(text),
-            int((perf_counter() - started) * 1000),
+        self._log_stream_response(
+            run_id=run_id,
+            conversation_id=conversation_id,
+            operation=operation,
+            response_id=response_id,
+            response_model=response_model,
+            finish_reason=finish_reason,
+            content=text,
+            tool_calls=[],
+            usage=usage,
+            chunk_count=chunk_count,
+            first_token_ms=first_token_ms,
+            duration_ms=int((perf_counter() - started) * 1000),
         )
 
     async def complete_tool_messages(
@@ -170,6 +201,8 @@ class OpenAiChatClient:
     ) -> AIMessage:
         """流式消费 Agent 响应，同时组装可能被拆成多段的原生 Tool Call。"""
         run_id = current_run_id.get()
+        conversation_id = current_conversation_id.get()
+        operation = current_llm_operation.get()
         normalized_messages = trim_tool_results(
             _normalize_messages(messages, allow_tool_messages=True),
             self.settings.context_tool_result_max_tokens,
@@ -192,28 +225,58 @@ class OpenAiChatClient:
             "tool_choice": "auto",
             "parallel_tool_calls": False,
             "stream": True,
+            "stream_options": {"include_usage": True},
         }
+        _add_prompt_cache_key(request, conversation_id)
         started = perf_counter()
         logger.info(
-            "llm agent stream started: runId=%s model=%s estimatedInputTokens=%d",
+            "llm agent stream started: runId=%s conversationId=%s operation=%s model=%s baseUrl=%s "
+            "messageCount=%d toolCount=%d temperature=%s thinkingEnabled=%s promptCacheKey=%s "
+            "estimatedInputTokens=%d",
             run_id,
+            conversation_id,
+            operation,
             self.settings.llm_model,
+            self.settings.llm_base_url,
+            len(request["messages"]),
+            len(openai_tools),
+            self.settings.llm_temperature,
+            self.settings.llm_thinking_enabled,
+            request.get("prompt_cache_key", "-"),
             input_tokens_estimate,
         )
+        self._log_input(run_id, conversation_id, operation, system, normalized_messages, openai_tools)
         content_parts: list[str] = []
+        reasoning_parts: list[str] = []
         calls: dict[int, dict[str, str]] = {}
         finish_reason = None
+        response_id = "-"
+        response_model = self.settings.llm_model
+        usage = None
+        chunk_count = 0
+        first_token_ms = None
         try:
             stream = await self._client().chat.completions.create(**request)
             async for chunk in stream:
+                chunk_count += 1
+                response_id = getattr(chunk, "id", None) or response_id
+                response_model = getattr(chunk, "model", None) or response_model
+                usage = getattr(chunk, "usage", None) or usage
                 for choice in getattr(chunk, "choices", None) or []:
                     finish_reason = choice.finish_reason or finish_reason
                     delta = choice.delta
+                    reasoning = getattr(delta, "reasoning_content", None)
+                    if reasoning:
+                        reasoning_parts.append(reasoning)
                     content = getattr(delta, "content", None)
                     if content:
+                        if first_token_ms is None:
+                            first_token_ms = int((perf_counter() - started) * 1000)
                         content_parts.append(content)
                         on_text_delta(content)
                     for call in getattr(delta, "tool_calls", None) or []:
+                        if first_token_ms is None:
+                            first_token_ms = int((perf_counter() - started) * 1000)
                         item = calls.setdefault(call.index, {"id": "", "name": "", "arguments": ""})
                         if call.id:
                             item["id"] += call.id
@@ -250,16 +313,130 @@ class OpenAiChatClient:
             })
         if not content and not tool_calls:
             raise InvalidOperationError("LLM 流式响应既没有文本也没有工具调用。")
-        logger.info(
-            "llm agent stream completed: runId=%s model=%s finishReason=%s outputChars=%d toolCalls=%d durationMs=%d",
-            run_id,
-            self.settings.llm_model,
-            finish_reason,
-            len(content),
-            len(tool_calls),
-            int((perf_counter() - started) * 1000),
+        self._log_stream_response(
+            run_id=run_id,
+            conversation_id=conversation_id,
+            operation=operation,
+            response_id=response_id,
+            response_model=response_model,
+            finish_reason=finish_reason,
+            content=content,
+            reasoning="".join(reasoning_parts),
+            tool_calls=tool_calls,
+            usage=usage,
+            chunk_count=chunk_count,
+            first_token_ms=first_token_ms,
+            duration_ms=int((perf_counter() - started) * 1000),
         )
         return AIMessage(content=content, tool_calls=tool_calls)
+
+    def _log_input(
+        self,
+        run_id: str,
+        conversation_id: str,
+        operation: str,
+        system: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+    ) -> None:
+        """记录模型实际收到的输入；所有内容均受配置的字符上限约束。"""
+        if not self.settings.llm_log_io:
+            return
+        logger.info(
+            "llm input BEGIN runId=%s conversationId=%s operation=%s model=%s\n"
+            "[system]\n%s\n[messages]\n%s\n[tools]\n%s\nllm input END",
+            run_id,
+            conversation_id,
+            operation,
+            self.settings.llm_model,
+            truncate_text(system, self.settings.llm_log_input_chars),
+            truncate_text(_format_messages(messages), self.settings.llm_log_input_chars),
+            truncate_text(_format_tools(tools), self.settings.llm_log_input_chars),
+        )
+
+    def _log_stream_response(
+        self,
+        *,
+        run_id: str,
+        conversation_id: str,
+        operation: str,
+        response_id: str,
+        response_model: str,
+        finish_reason: str | None,
+        content: str,
+        tool_calls: list[dict[str, Any]],
+        usage: Any,
+        chunk_count: int,
+        first_token_ms: int | None,
+        duration_ms: int,
+        reasoning: str = "",
+    ) -> None:
+        """把流式分片汇总为一条可追踪响应日志，并保留服务端 usage。"""
+        usage_details = _usage_details(usage)
+        if self.settings.llm_log_responses:
+            raw = {
+                "id": response_id,
+                "model": response_model,
+                "finish_reason": finish_reason,
+                "content": content,
+                "reasoning_content": reasoning or None,
+                "tool_calls": tool_calls,
+                "usage": usage_details["raw"],
+                "chunk_count": chunk_count,
+            }
+            logger.warning(
+                "LLM_STREAM_RESPONSE_BEGIN runId=%s conversationId=%s operation=%s\n%s\n"
+                "LLM_STREAM_RESPONSE_END runId=%s operation=%s",
+                run_id,
+                conversation_id,
+                operation,
+                truncate_text(
+                    json.dumps(raw, ensure_ascii=False, indent=2),
+                    self.settings.llm_log_output_chars,
+                ),
+                run_id,
+                operation,
+            )
+        if self.settings.llm_log_io:
+            logger.info(
+                "llm output BEGIN runId=%s conversationId=%s operation=%s model=%s finishReason=%s\n"
+                "[content]\n%s\n[reasoning_content]\n%s\n[tool_calls]\n%s\nllm output END",
+                run_id,
+                conversation_id,
+                operation,
+                response_model,
+                finish_reason,
+                truncate_text(content, self.settings.llm_log_output_chars),
+                truncate_text(reasoning, self.settings.llm_log_output_chars) if reasoning else "(无)",
+                truncate_text(
+                    json.dumps(tool_calls, ensure_ascii=False, indent=2) if tool_calls else "(无工具调用)",
+                    self.settings.llm_log_output_chars,
+                ),
+            )
+        logger.info(
+            "llm stream completed: runId=%s conversationId=%s operation=%s model=%s responseId=%s "
+            "finishReason=%s chunks=%d firstTokenMs=%s outputChars=%d toolCalls=%d "
+            "promptTokens=%s completionTokens=%s totalTokens=%s cachedTokens=%s cacheStatus=%s "
+            "cacheHitRate=%s usage=%s durationMs=%d",
+            run_id,
+            conversation_id,
+            operation,
+            response_model,
+            response_id,
+            finish_reason,
+            chunk_count,
+            first_token_ms,
+            len(content),
+            len(tool_calls),
+            usage_details["prompt_tokens"],
+            usage_details["completion_tokens"],
+            usage_details["total_tokens"],
+            usage_details["cached_tokens"],
+            usage_details["cache_status"],
+            usage_details["cache_hit_rate"],
+            json.dumps(usage_details["raw"], ensure_ascii=False, separators=(",", ":")),
+            duration_ms,
+        )
 
     async def _request(
         self,
@@ -269,6 +446,7 @@ class OpenAiChatClient:
         tools: list[dict[str, Any]] | None = None,
     ):
         run_id = current_run_id.get()
+        conversation_id = current_conversation_id.get()
         operation = current_llm_operation.get()
         normalized_messages = _normalize_messages(messages, allow_tool_messages=tools is not None)
         # Tool responses can be much larger than normal dialogue. Trim them before
@@ -288,28 +466,26 @@ class OpenAiChatClient:
             )
         started = perf_counter()
         logger.info(
-            "llm request started: runId=%s operation=%s provider=openai model=%s baseUrl=%s "
-            "inputChars=%d estimatedInputTokens=%d maxContextSize=%d",
+            "llm request started: runId=%s conversationId=%s operation=%s provider=openai model=%s "
+            "baseUrl=%s messageCount=%d toolCount=%d temperature=%s thinkingEnabled=%s "
+            "promptCacheKey=%s inputChars=%d estimatedInputTokens=%d maxContextSize=%d",
             run_id,
+            conversation_id,
             operation,
             self.settings.llm_model,
             self.settings.llm_base_url,
+            len(normalized_messages) + 1,
+            len(openai_tools or []),
+            self.settings.llm_temperature,
+            self.settings.llm_thinking_enabled,
+            _prompt_cache_key(conversation_id) or "-",
             len(system) + sum(len(message["content"]) for message in normalized_messages) + len(tool_schema_text),
             input_tokens_estimate,
             self.settings.max_context_size,
         )
         # 记录模型“实际看到的输入”：系统提示 + 历史/工具消息。截断后写入，
         # 便于排查模型为何给出某个回答，同时避免巨型工具结果刷屏日志。
-        if self.settings.llm_log_io:
-            logger.info(
-                "llm input BEGIN runId=%s operation=%s model=%s\n[system]\n%s\n[messages]\n%s\n[tools]\n%s\nllm input END",
-                run_id,
-                operation,
-                self.settings.llm_model,
-                truncate_text(system, self.settings.llm_log_input_chars),
-                truncate_text(_format_messages(normalized_messages), self.settings.llm_log_input_chars),
-                truncate_text(_format_tools(openai_tools), self.settings.llm_log_input_chars),
-            )
+        self._log_input(run_id, conversation_id, operation, system, normalized_messages, openai_tools)
         try:
             request: dict[str, Any] = {
                 "model": self.settings.llm_model,
@@ -329,6 +505,7 @@ class OpenAiChatClient:
                         "parallel_tool_calls": False,
                     }
                 )
+            _add_prompt_cache_key(request, conversation_id)
             response = await self._client().chat.completions.create(
                 **request,
             )
@@ -382,7 +559,7 @@ class OpenAiChatClient:
                 run_id,
                 operation,
                 self.settings.llm_model,
-                _serialize_response(response),
+                truncate_text(_serialize_response(response), self.settings.llm_log_output_chars),
                 run_id,
                 operation,
             )
@@ -392,8 +569,10 @@ class OpenAiChatClient:
             message = choice.message
             tool_calls = getattr(message, "tool_calls", None) or []
             logger.info(
-                "llm output BEGIN runId=%s operation=%s model=%s finishReason=%s\n[content]\n%s\n[tool_calls]\n%s\nllm output END",
+                "llm output BEGIN runId=%s conversationId=%s operation=%s model=%s finishReason=%s\n"
+                "[content]\n%s\n[tool_calls]\n%s\nllm output END",
                 run_id,
+                conversation_id,
                 operation,
                 self.settings.llm_model,
                 choice.finish_reason,
@@ -403,17 +582,25 @@ class OpenAiChatClient:
         if choice.finish_reason == "length":
             raise InvalidOperationError("LLM 输出达到 Token 上限，结果不完整。")
         usage = getattr(response, "usage", None)
+        usage_details = _usage_details(usage)
         logger.info(
-            "llm request completed: runId=%s operation=%s model=%s requestId=%s finishReason=%s "
-            "promptTokens=%s completionTokens=%s totalTokens=%s durationMs=%d",
+            "llm request completed: runId=%s conversationId=%s operation=%s model=%s requestId=%s "
+            "responseId=%s finishReason=%s promptTokens=%s completionTokens=%s totalTokens=%s "
+            "cachedTokens=%s cacheStatus=%s cacheHitRate=%s usage=%s durationMs=%d",
             run_id,
+            conversation_id,
             operation,
             self.settings.llm_model,
             getattr(response, "_request_id", None) or "-",
+            getattr(response, "id", None) or "-",
             choice.finish_reason,
-            getattr(usage, "prompt_tokens", None),
-            getattr(usage, "completion_tokens", None),
-            getattr(usage, "total_tokens", None),
+            usage_details["prompt_tokens"],
+            usage_details["completion_tokens"],
+            usage_details["total_tokens"],
+            usage_details["cached_tokens"],
+            usage_details["cache_status"],
+            usage_details["cache_hit_rate"],
+            json.dumps(usage_details["raw"], ensure_ascii=False, separators=(",", ":")),
             int((perf_counter() - started) * 1000),
         )
         return choice, response
@@ -549,6 +736,83 @@ def _serialize_response(response: Any) -> str:
     if callable(model_dump_json):
         return model_dump_json(indent=2)
     return repr(response)
+
+
+def _prompt_cache_key(conversation_id: str) -> str | None:
+    """仅使用真实会话 ID 作为缓存键，避免把缺省占位符发送给供应商。"""
+    value = conversation_id.strip()
+    return value if value and value != "-" else None
+
+
+def _add_prompt_cache_key(request: dict[str, Any], conversation_id: str) -> None:
+    """为同一会话提供稳定缓存键；Kimi 会据此优化重复上下文的缓存命中。"""
+    cache_key = _prompt_cache_key(conversation_id)
+    if cache_key:
+        request["prompt_cache_key"] = cache_key
+
+
+def _usage_details(usage: Any) -> dict[str, Any]:
+    """兼容 OpenAI 标准字段和供应商扩展字段，提取 Token/缓存诊断信息。"""
+    raw = _to_log_dict(usage)
+    prompt_tokens = _first_int(raw, ("prompt_tokens",), ("input_tokens",))
+    completion_tokens = _first_int(raw, ("completion_tokens",), ("output_tokens",))
+    total_tokens = _first_int(raw, ("total_tokens",))
+    # Kimi 将 cached_tokens 放在 usage 顶层；OpenAI 可能放在输入详情中。
+    cached_tokens = _first_int(
+        raw,
+        ("cached_tokens",),
+        ("prompt_tokens_details", "cached_tokens"),
+        ("input_tokens_details", "cached_tokens"),
+        ("cache_read_input_tokens",),
+    )
+    cache_status = "unknown" if cached_tokens is None else ("hit" if cached_tokens > 0 else "miss")
+    cache_hit_rate = "unknown"
+    if cached_tokens is not None and prompt_tokens:
+        cache_hit_rate = f"{cached_tokens / prompt_tokens:.2%}"
+    return {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+        "cached_tokens": cached_tokens,
+        "cache_status": cache_status,
+        "cache_hit_rate": cache_hit_rate,
+        "raw": raw,
+    }
+
+
+def _to_log_dict(value: Any) -> dict[str, Any]:
+    """把 SDK 的 Pydantic 模型或测试替身转为可 JSON 序列化字典。"""
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        dumped = model_dump(exclude_none=True)
+        return dumped if isinstance(dumped, dict) else {"value": dumped}
+    try:
+        return {
+            key: item
+            for key, item in vars(value).items()
+            if not key.startswith("_") and item is not None
+        }
+    except TypeError:
+        return {"value": str(value)}
+
+
+def _first_int(source: dict[str, Any], *paths: tuple[str, ...]) -> int | None:
+    for path in paths:
+        value: Any = source
+        for key in path:
+            if not isinstance(value, dict) or key not in value:
+                break
+            value = value[key]
+        else:
+            if isinstance(value, bool):
+                continue
+            if isinstance(value, (int, float)):
+                return int(value)
+    return None
 
 
 def _openai_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
