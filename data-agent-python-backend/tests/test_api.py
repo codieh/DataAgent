@@ -325,6 +325,14 @@ def test_complete_run_populates_frontend_contract() -> None:
         assert "event: complete" in events
         assert '"type":"run.completed"' in events
         assert '"type":"run.behavior_classified"' in events
+        # 已结束的 Run 仍应从 SQLite 回放完整持久事件，供前端切回历史会话时恢复回执。
+        replayed_sequences = [
+            int(line.removeprefix("id: "))
+            for line in events.splitlines()
+            if line.startswith("id: ")
+        ]
+        assert len(replayed_sequences) > 1
+        assert replayed_sequences == sorted(set(replayed_sequences))
 
         assert client.get(f"/api/v1/runs/{run_id}/export?format=csv").status_code == 200
         assert client.get(f"/api/v1/runs/{run_id}/export?format=markdown").status_code == 200

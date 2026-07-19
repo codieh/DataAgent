@@ -8,8 +8,10 @@ import asyncio
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import logging
 from typing import Any, AsyncIterator
+from uuid import uuid4
 
 
 logger = logging.getLogger(__name__)
@@ -64,8 +66,17 @@ class RunLiveEventBroker:
         )
 
     def publish_transient(self, run_id: str, event: dict[str, Any]) -> None:
-        """广播不持久化的 Token 增量。"""
-        self._publish(run_id, {"kind": "transient", **event})
+        """广播不持久化事件；它有唯一身份，但不占用持久事件续传游标。"""
+        self._publish(
+            run_id,
+            {
+                "kind": "transient",
+                **event,
+                "eventId": f"live-{run_id}-{uuid4().hex}",
+                "seq": None,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+        )
 
     def _publish(self, run_id: str, event: dict[str, Any]) -> None:
         for subscription in tuple(self._subscribers.get(run_id, ())):

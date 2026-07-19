@@ -13,10 +13,51 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
+from langchain_core.messages import AIMessage
 
 from app.workflow.nodes.analysis import AnalysisNodes, _build_result_payload, _json_default
 from app.application.executor import _normalize_result_sources
 from app.config import Settings
+
+
+@pytest.mark.asyncio
+async def test_agent_does_not_publish_an_intermediate_final_answer_after_query_results(monkeypatch) -> None:
+    """已有查询结果时，Agent 的结束文本是内部决策，最终只由 result 节点流式输出一次。"""
+
+    class FakeLlm:
+        on_text_delta = "not-called"
+
+        async def complete_tool_messages(self, _system, _messages, *, tools, on_text_delta=None):
+            self.on_text_delta = on_text_delta
+            return AIMessage(content="数据已查询完成，准备总结。")
+
+    class FakeContextBuilder:
+        async def build(self, _state):
+            return SimpleNamespace(messages=[{"role": "user", "content": "分析订单趋势"}])
+
+    llm = FakeLlm()
+    streamed_events = []
+    monkeypatch.setattr("app.workflow.nodes.analysis.get_stream_writer", lambda: streamed_events.append)
+    monkeypatch.setattr("app.workflow.nodes.analysis._progress", lambda *_args, **_kwargs: None)
+    nodes = AnalysisNodes(
+        llm=llm,
+        database=object(),
+        retriever=SimpleNamespace(settings=Settings(retrieval_backend="bm25")),
+        agent_context_builder=FakeContextBuilder(),
+    )
+
+    result = await nodes.agent_decide({
+        "query": "分析订单趋势",
+        "contextualized_query": "分析订单趋势",
+        "query_results": [{"datasetId": "result_1", "rowCount": 3}],
+        "schema": {"tables": [{"name": "orders"}]},
+        "observations": [],
+        "agent_iterations": 1,
+    })
+
+    assert result["agent_decision"]["action"] == "finish"
+    assert llm.on_text_delta is None
+    assert streamed_events == []
 
 
 def test_sql_result_values_are_serialized_for_result_prompt() -> None:

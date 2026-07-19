@@ -36,6 +36,8 @@ function App() {
   const resultRequestRef = useRef(0)
   // 当前选中的结果集 id 的「最新值」副本（在异步回调里读 .current 拿最新，不踩闭包陷阱）。
   const selectedResultSetIdRef = useRef<string | null>(null)
+  // SSE 断点只记录持久事件的正序号，不能被 Token 增量等临时事件覆盖。
+  const lastPersistentSeqRef = useRef(0)
 
   // ---------- useState：会触发重画的「状态」 ----------
   // 语法：const [值, 改值的函数] = useState(初始值)
@@ -148,8 +150,15 @@ function App() {
     streamRef.current = controller
     try {
       await consumeRunEvents(backendUrl, runId, afterSeq, controller.signal, (event) => {
-        // 去重：如果已有同 seq 的事件就不动，否则追加；slice(-240) 最多保留最近 240 条，防止内存膨胀。
-        setEvents((current) => current.some((item) => item.seq === event.seq) ? current : [...current, event].slice(-240))
+        // abort 与网络读取存在极短竞态；只允许当前连接更新页面，防止旧会话事件串入新会话。
+        if (streamRef.current !== controller) return
+        if (event.seq !== null) {
+          lastPersistentSeqRef.current = Math.max(lastPersistentSeqRef.current, event.seq)
+          // 回执是可审计、可回放的持久事件。临时流事件只更新实时正文，不进入回执列表。
+          setEvents((current) => current.some((item) => item.eventId === event.eventId)
+            ? current
+            : [...current, event].slice(-240))
+        }
         if (event.type === 'stage.started') setStatus(String(event.data.message || '正在分析'))
         if (event.type === 'final_answer.started') setStreamingAnswer('')
         if (event.type === 'final_answer.delta') {
@@ -206,6 +215,7 @@ function App() {
       review: null, error: null,
     })
     setEvents([])
+    lastPersistentSeqRef.current = 0
     setQuery('')  // 清空输入框
     void watchRun(accepted.runId)  // 开始监听（void 表示「我不等它结束」）
     void refreshShell()            // 顺手刷新外壳（会话列表会多一条）
@@ -221,11 +231,13 @@ function App() {
     setSelectedResultSetId(null)
     setResultError(null)
     setEvents([])
+    lastPersistentSeqRef.current = 0
     if (item.lastRunId) {
       const latest = await refreshRun(item.lastRunId, false)
       setView('workspace')
-      // 如果上次运行还没结束，就接着监听它的事件流
-      if (!['completed', 'failed', 'cancelled'].includes(latest.status)) void watchRun(latest.id)
+      // 无论 Run 是否结束都打开事件流：终态 Run 会补发数据库中的全部持久事件后立即关闭，
+      // 运行中 Run 则在补发历史事件后继续监听实时事件。
+      void watchRun(latest.id)
     } else {
       setRun(null)
       setView('workspace')
@@ -242,6 +254,7 @@ function App() {
     setSelectedResultSetId(null)
     setResultError(null)
     setEvents([])
+    lastPersistentSeqRef.current = 0
     setQuery('')
     setView('welcome')
   }
@@ -252,7 +265,7 @@ function App() {
     if (approved) await api.approve(backendUrl, run.review.id, comment)
     else await api.reject(backendUrl, run.review.id, comment)
     setView('workspace')
-    void watchRun(run.id, events[events.length - 1]?.seq || 0)  // 从最后一条事件之后继续监听
+    void watchRun(run.id, lastPersistentSeqRef.current)  // 只从最后一条持久事件之后续传
   }
 
   // 取消 / 重试当前运行
@@ -267,6 +280,7 @@ function App() {
     const accepted = await api.retryRun(backendUrl, run.id)
     setView('workspace')
     setEvents([])
+    lastPersistentSeqRef.current = 0
     await refreshRun(accepted.runId)
     void watchRun(accepted.runId)
   }

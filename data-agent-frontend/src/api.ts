@@ -120,9 +120,10 @@ export async function consumeRunEvents(
   signal: AbortSignal,
   onEvent: (event: RunEvent) => void,
 ): Promise<void> {
+  const safeAfterSeq = Math.max(0, Math.trunc(afterSeq))
   // 发一个「我要收事件流」的请求，Accept 头声明接受 text/event-stream。
   const response = await fetch(
-    `${baseUrl.replace(/\/$/, '')}/api/v1/runs/${runId}/events?after_seq=${afterSeq}`,
+    `${baseUrl.replace(/\/$/, '')}/api/v1/runs/${runId}/events?after_seq=${safeAfterSeq}`,
     { headers: { Accept: 'text/event-stream' }, signal },
   )
   if (!response.ok || !response.body) throw new Error(`SSE HTTP ${response.status}`)
@@ -133,7 +134,7 @@ export async function consumeRunEvents(
   let buffer = ''                     // 累积还没处理完的零散数据
 
   // 无限循环：一直读到流结束（done === true）。
-  while (true) {
+  for (;;) {
     const { done, value } = await reader.read()
     // 把这次读到的字节解码后追加到 buffer。stream: true 表示「后面还有，别急着收尾」。
     buffer += decoder.decode(value, { stream: !done })

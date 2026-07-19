@@ -14,6 +14,9 @@ async def test_broker_delivers_transient_event_without_polling() -> None:
         event = await subscription.queue.get()
 
     assert event["kind"] == "transient"
+    assert event["eventId"].startswith("live-run_1-")
+    assert event["seq"] is None
+    assert event["timestamp"]
     assert event["data"]["delta"] == "增长"
 
 

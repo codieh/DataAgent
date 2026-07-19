@@ -281,7 +281,8 @@ class RunEvent(ApiModel):
     event_id: str
     conversation_id: str
     run_id: str
-    seq: int
+    # 仅持久事件拥有可续传序号；Token 增量等临时事件为 None。
+    seq: int | None
     type: str
     stage: str | None
     timestamp: datetime

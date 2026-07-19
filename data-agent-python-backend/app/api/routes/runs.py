@@ -8,6 +8,7 @@
 import asyncio
 import json
 from datetime import datetime, timezone
+from uuid import uuid4
 
 from fastapi import APIRouter, Header, Query, Request, status
 from fastapi.responses import StreamingResponse
@@ -109,7 +110,6 @@ async def stream_run_events(
 
     async def event_stream():
         sequence = resume_sequence
-        live_sequence = 0
         async with run_live_event_broker.subscribe(run_id) as subscription:
             # 订阅必须早于数据库补发，期间产生的持久事件会同时出现在两处，依靠 seq 去重。
             async with session_factory() as session:
@@ -118,6 +118,8 @@ async def stream_run_events(
                 current_run = await repository.get_run(run_id)
             for event in events:
                 response = event_response(event)
+                if response.seq is None:
+                    raise RuntimeError(f"持久事件缺少 seq: eventId={response.event_id}")
                 sequence = max(sequence, response.seq)
                 yield _persistent_sse(response)
             if current_run and (
@@ -137,12 +139,11 @@ async def stream_run_events(
                     continue
                 if live.get("kind") == "overflow":
                     # 让客户端明确重连；Last-Event-ID 会补回持久事件，最终快照补回 Summary。
-                    live_sequence += 1
                     error = {
-                        "eventId": f"live-{run_id}-{live_sequence}",
+                        "eventId": f"live-{run_id}-{uuid4().hex}",
                         "conversationId": run.conversation_id,
                         "runId": run_id,
-                        "seq": -live_sequence,
+                        "seq": None,
                         "type": "stream.overflow",
                         "stage": None,
                         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -162,15 +163,14 @@ async def stream_run_events(
                     if live["type"] in {"run.completed", "run.failed", "run.cancelled", "review.required"}:
                         return
                 else:
-                    live_sequence += 1
                     payload = {
-                        "eventId": f"live-{run_id}-{live_sequence}",
+                        "eventId": live["eventId"],
                         "conversationId": run.conversation_id,
                         "runId": run_id,
-                        "seq": -live_sequence,
+                        "seq": None,
                         "type": live["type"],
                         "stage": live.get("stage"),
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "timestamp": live["timestamp"],
                         "data": live.get("data", {}),
                     }
                     yield format_sse("message", json.dumps(payload, ensure_ascii=False))

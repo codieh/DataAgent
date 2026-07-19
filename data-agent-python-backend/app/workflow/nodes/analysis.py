@@ -124,11 +124,14 @@ class AnalysisNodes:
             writer({"type": "final_answer.delta", "stage": "agent_decide", "data": {"delta": delta}})
 
         # 让 LLM 以原生工具调用方式决定下一步动作
+        # 已有真实查询结果时，Agent 的结束文本只是“停止调用工具”的内部信号；
+        # 最终用户答案由 result 节点统一生成。这里不流式外发，避免前端先看到
+        # 一次临时结论，随后又被 result 节点的正式总结重置并输出第二次。
         response = await self.llm.complete_tool_messages(
             AGENT_SYSTEM,
             context.messages,
             tools=self.tool_registry.specifications(),
-            on_text_delta=on_text_delta,
+            on_text_delta=None if state.get("query_results") else on_text_delta,
         )
         tool_call = response.tool_calls[0] if response.tool_calls else None
         # 没有工具调用即视为结束本轮 Agent 循环
@@ -175,20 +178,20 @@ class AnalysisNodes:
             updates["final_answer"] = str(response.content or "") or (
                 "分析已结束，但模型没有返回可展示的结论。"
             )
-            # 真实流式响应结束后发送完成标记；本地护栏生成的固定文本则一次性发布。
-            if not streamed_final:
-                writer({"type": "final_answer.started", "stage": "agent_decide", "data": {}})
-                writer({
-                    "type": "final_answer.delta",
-                    "stage": "agent_decide",
-                    "data": {"delta": updates["final_answer"]},
-                })
-            writer({
-                "type": "final_answer.completed",
-                "stage": "agent_decide",
-                "data": {"text": updates["final_answer"]},
-            })
             if not state.get("query_results"):
+                # 无查询结果的闲聊/澄清直接以 Agent 回复作为最终答案。
+                if not streamed_final:
+                    writer({"type": "final_answer.started", "stage": "agent_decide", "data": {}})
+                    writer({
+                        "type": "final_answer.delta",
+                        "stage": "agent_decide",
+                        "data": {"delta": updates["final_answer"]},
+                    })
+                writer({
+                    "type": "final_answer.completed",
+                    "stage": "agent_decide",
+                    "data": {"text": updates["final_answer"]},
+                })
                 updates["result_mode"] = state.get("result_mode") or "conversation"
         return updates
 

@@ -197,7 +197,8 @@ export type RunEvent = {
   eventId: string
   conversationId: string
   runId: string
-  seq: number
+  // 仅数据库持久事件拥有续传游标；实时 Token 增量为 null。
+  seq: number | null
   type: string
   stage: string | null
   timestamp: string
