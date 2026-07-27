@@ -146,19 +146,55 @@ class FakeLlm:
         return await self.complete_model(output_type, system, messages[-1]["content"])
 
     async def complete_tool_messages(self, system, messages, *, tools, on_text_delta=None):
-        payload_message = next(item for item in reversed(messages) if isinstance(item, dict))
-        payload = __import__("json").loads(payload_message["content"])
-        if payload["query"] == "你好":
+        user_message = next(
+            item
+            for item in reversed(messages)
+            if isinstance(item, dict)
+            and item.get("role") == "user"
+            and not str(item.get("content") or "").startswith("<")
+        )
+        query = str(user_message["content"])
+        tool_results = []
+        for item in messages:
+            if getattr(item, "type", None) != "tool":
+                continue
+            try:
+                tool_results.append(__import__("json").loads(str(item.content)))
+            except __import__("json").JSONDecodeError:
+                continue
+        has_schema = any(
+            item.get("tool") in {"search_schema", "inspect_tables"}
+            and item.get("preview", {}).get("tables")
+            for item in tool_results
+        )
+        called_tools = {str(item.get("tool") or "") for item in tool_results}
+        last_execute_index = max(
+            (index for index, item in enumerate(tool_results) if item.get("tool") == "execute_sql"),
+            default=-1,
+        )
+        last_plan_index = max(
+            (
+                index
+                for index, item in enumerate(tool_results)
+                if item.get("tool") == "update_analysis_plan"
+            ),
+            default=-1,
+        )
+        latest_execute = (
+            tool_results[last_execute_index] if last_execute_index >= 0 else None
+        )
+        tool_call_suffix = len(tool_results)
+        if query == "你好":
             content = "你好，可以直接聊天，也可以让我分析业务数据。"
             if on_text_delta:
                 on_text_delta(content)
             return AIMessage(content=content)
-        if "记住" in payload["query"]:
-            if not any(item.get("tool") == "rewrite_core_memory" for item in payload.get("observations", [])):
+        if "记住" in query:
+            if "rewrite_core_memory" not in called_tools:
                 return AIMessage(
                     content="记录长期偏好",
                     tool_calls=[{
-                        "id": "functions.rewrite_core_memory:0",
+                        "id": f"functions.rewrite_core_memory:{tool_call_suffix}",
                         "name": "rewrite_core_memory",
                         "args": {"instruction": "销售趋势默认按季度展示"},
                     }],
@@ -167,11 +203,18 @@ class FakeLlm:
             if on_text_delta:
                 on_text_delta(content)
             return AIMessage(content=content)
-        if not payload.get("plan"):
+        if (
+            "update_analysis_plan" not in called_tools
+            or (
+                latest_execute is not None
+                and not latest_execute.get("ok", True)
+                and last_execute_index > last_plan_index
+            )
+        ):
             return AIMessage(
                 content="先记录分析计划",
                 tool_calls=[{
-                    "id": "functions.update_analysis_plan:0",
+                    "id": f"functions.update_analysis_plan:{tool_call_suffix}",
                     "name": "update_analysis_plan",
                     "args": {
                         "goal": "分析销量趋势",
@@ -179,20 +222,33 @@ class FakeLlm:
                     },
                 }],
             )
-        if not payload.get("schema", {}).get("tables"):
+        if not has_schema:
             return AIMessage(
-                content="检索真实表结构",
-                tool_calls=[{
-                    "id": "functions.search_schema:0",
-                    "name": "search_schema",
-                    "args": {"query": payload["query"]},
-                }],
+                content="并行检索真实表结构和业务知识",
+                tool_calls=[
+                    {
+                        "id": f"functions.search_schema:{tool_call_suffix}",
+                        "name": "search_schema",
+                        "args": {"query": query},
+                    },
+                    {
+                        "id": f"functions.retrieve_knowledge:{tool_call_suffix + 1}",
+                        "name": "retrieve_knowledge",
+                        "args": {"query": query},
+                    },
+                ],
             )
-        if not payload.get("activeResult"):
+        has_successful_execute_after_plan = any(
+            index > last_plan_index
+            and item.get("tool") == "execute_sql"
+            and item.get("ok", True)
+            for index, item in enumerate(tool_results)
+        )
+        if not has_successful_execute_after_plan:
             return AIMessage(
                 content="执行订单趋势查询",
                 tool_calls=[{
-                    "id": "functions.execute_sql:0",
+                    "id": f"functions.execute_sql:{tool_call_suffix}",
                     "name": "execute_sql",
                     "args": {
                         "sql": "SELECT order_date, COUNT(order_date) AS order_count, SUM(total_amount) AS sales_amount "
@@ -312,12 +368,22 @@ def test_complete_run_populates_frontend_contract() -> None:
                 "WHERE run_id = ? ORDER BY sequence",
                 (run_id,),
             ).fetchall()
-        # 工具调用顺序应与期望一致：先规划、再检索 schema、最后执行 SQL
-        assert [item[0] for item in calls] == ["update_analysis_plan", "search_schema", "execute_sql"]
+        # Schema 与业务知识在同一轮 ToolNode 中并行执行，之后才生成并执行 SQL。
+        assert [item[0] for item in calls] == [
+            "update_analysis_plan",
+            "search_schema",
+            "retrieve_knowledge",
+            "execute_sql",
+        ]
         # search_schema 工具入参为原始查询
         assert json.loads(calls[1][1]) == {"query": "分析最近30天销量变化"}
-        # search_schema 结果已被压缩为 schemaRef 引用
-        assert json.loads(calls[1][2])["schemaRef"] == "state.schema"
+        # ToolMessage 携带真实 Schema 预览与读取引用，而不是只有摘要。
+        schema_result = json.loads(calls[1][2])
+        assert schema_result["preview"]["tables"][0]["name"] == "orders"
+        assert schema_result["resultRef"]["path"] == "schema"
+        knowledge_result = json.loads(calls[2][2])
+        assert knowledge_result["preview"]["documents"]
+        assert knowledge_result["resultRef"]["path"] == "knowledge"
         # 所有工具调用均成功
         assert all(item[3] == "success" for item in calls)
 
@@ -489,7 +555,7 @@ def test_new_conversation_injects_core_memory_as_hidden_system_message() -> None
                 "SELECT role, content FROM messages WHERE conversation_id = ?",
                 (conversation_id,),
             ).fetchall()
-        assert hidden == [("system", "<user_core_memory>\n# 用户偏好\n\n- 默认使用中文回答。\n</user_core_memory>")]
+        assert hidden == [("system", "用户长期记忆：\n# 用户偏好\n\n- 默认使用中文回答。\n")]
 
 
 def test_delete_conversation_cancels_active_runs(monkeypatch) -> None:
@@ -582,8 +648,46 @@ def test_cancelled_run_deletes_checkpoint() -> None:
         cancelled = client.post(f"/api/v1/runs/{run_id}/cancel")
 
         assert cancelled.status_code == 200
+        conversation = client.get(f"/api/v1/conversations/{conversation_id}").json()
+        assert conversation["messages"][-1]["role"] == "assistant"
+        assert "已由用户取消" in conversation["messages"][-1]["content"]
         with sqlite3.connect(checkpoint_database) as connection:
             after = connection.execute(
                 "SELECT COUNT(*) FROM checkpoints WHERE thread_id = ?", (run_id,)
             ).fetchone()[0]
         assert after == 0
+
+
+def test_retry_reuses_original_user_turn_without_duplicating_message() -> None:
+    """重试属于执行层动作，不能在会话历史中伪造一条相同用户输入。"""
+    with TestClient(app) as client:
+        conversation_id = create_conversation(client)
+        accepted = client.post(
+            f"/api/v1/conversations/{conversation_id}/runs",
+            json={"query": "分析最近30天销量变化"},
+        )
+        original_run_id = accepted.json()["runId"]
+        wait_for_status(client, original_run_id, {"completed"})
+
+        retried = client.post(f"/api/v1/runs/{original_run_id}/retry")
+        assert retried.status_code == 202
+        retry_run_id = retried.json()["runId"]
+        wait_for_status(client, retry_run_id, {"completed"})
+
+        conversation = client.get(f"/api/v1/conversations/{conversation_id}").json()
+        user_messages = [
+            message for message in conversation["messages"] if message["role"] == "user"
+        ]
+        assert [message["content"] for message in user_messages] == ["分析最近30天销量变化"]
+
+        with sqlite3.connect(TEST_DATABASE) as connection:
+            retry_row = connection.execute(
+                "SELECT retry_of_run_id FROM analysis_runs WHERE id = ?",
+                (retry_run_id,),
+            ).fetchone()
+            retry_user_messages = connection.execute(
+                "SELECT COUNT(*) FROM messages WHERE run_id = ? AND role = 'user'",
+                (retry_run_id,),
+            ).fetchone()[0]
+        assert retry_row == (original_run_id,)
+        assert retry_user_messages == 0

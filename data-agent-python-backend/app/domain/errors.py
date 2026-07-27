@@ -21,3 +21,8 @@ class InvalidOperationError(DomainError):
     """当前状态下执行了不允许的操作（如对已终态运行再次取消）。"""
     pass
 
+
+class ContextWindowExceededError(InvalidOperationError):
+    """供应商确认输入上下文超过模型窗口，可由 Agent 强制压缩后重试。"""
+
+    pass

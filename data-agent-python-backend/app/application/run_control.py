@@ -44,6 +44,14 @@ class WorkflowControlService:
             data={"status": "cancelled", "runUrl": f"/api/v1/runs/{run.id}"},
         )
         run_live_event_broker.publish_persistent(event)
+        # 取消属于真实会话状态，写入一条助手消息让后续请求明确知道旧任务已停止。
+        if await self.repository.get_assistant_message_for_run(run.id) is None:
+            await self.repository.add_message(
+                conversation_id=run.conversation_id,
+                run_id=run.id,
+                role="assistant",
+                content="本次分析已由用户取消，未生成最终结果。",
+            )
         # 等待后台任务真正结束，避免返回后 LangGraph 继续写入 checkpoint。
         await task_registry.cancel_and_wait(run.id)
         return run

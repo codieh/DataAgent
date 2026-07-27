@@ -1,7 +1,8 @@
 """分析流程的 LangGraph 状态图定义。
 
-把输入安全检查、Agent 决策、工具调用、SQL 安全校验、人工审核、SQL 执行与
-结果整理等节点编排成一张有向图，并定义节点之间的路由（条件边）。
+把输入安全检查、Agent 决策、原子工具调用与结果整理编排成有向图。
+SQL 校验、人工审核和执行封装在 execute_sql 工具内部，保证一次 Tool Call
+只对应一个最终 Tool Result。
 """
 
 from langgraph.graph import END, START, StateGraph
@@ -35,9 +36,6 @@ def build_analysis_graph(
     graph.add_node("input_guard", nodes.input_guard)
     graph.add_node("agent_decide", nodes.agent_decide)
     graph.add_node("tools", LoggingToolNode(nodes.tool_registry.tools))
-    graph.add_node("sql_validate", nodes.sql_validate)
-    graph.add_node("human_feedback", nodes.human_feedback)
-    graph.add_node("sql_execute", nodes.sql_execute)
     graph.add_node("result", nodes.result)
 
     graph.add_edge(START, "input_guard")
@@ -58,36 +56,10 @@ def build_analysis_graph(
         "tools",
         lambda state: (
             "result"
-            if state.get("result_mode") == "need_clarification"
-            else "sql_validate"
-            if state.get("pending_sql_validation")
+            if state.get("result_mode") == "need_clarification" or state.get("error")
             else "agent_decide"
         ),
-        {"result": "result", "sql_validate": "sql_validate", "agent_decide": "agent_decide"},
+        {"result": "result", "agent_decide": "agent_decide"},
     )
-    graph.add_conditional_edges(
-        "sql_validate",
-        _route_sql_validation,
-        {
-            "human_feedback": "human_feedback",
-            "sql_execute": "sql_execute",
-            "agent_decide": "agent_decide",
-            "result": "result",
-        },
-    )
-    graph.add_conditional_edges(
-        "human_feedback",
-        lambda state: "sql_execute" if state.get("human_feedback", {}).get("approved", True) else "agent_decide",
-        {"sql_execute": "sql_execute", "agent_decide": "agent_decide"},
-    )
-    graph.add_edge("sql_execute", "agent_decide")
     graph.add_edge("result", END)
     return graph
-
-
-def _route_sql_validation(state: AnalysisState) -> str:
-    if state.get("safety", {}).get("passed"):
-        return "human_feedback" if state.get("human_review_enabled") else "sql_execute"
-    if state.get("error"):
-        return "result"
-    return "agent_decide"

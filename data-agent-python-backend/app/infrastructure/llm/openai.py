@@ -23,7 +23,7 @@ from app.context.compaction import (
     message_tokens,
     trim_tool_results,
 )
-from app.domain.errors import InvalidOperationError
+from app.domain.errors import ContextWindowExceededError, InvalidOperationError
 from app.observability.context import (
     current_conversation_id,
     current_llm_operation,
@@ -76,16 +76,17 @@ class OpenAiChatClient:
         run_id = current_run_id.get()
         conversation_id = current_conversation_id.get()
         operation = "final_answer_stream"
-        messages = [{"role": "user", "content": user}]
-        input_tokens_estimate = _estimate_request_tokens(system, messages, "")
-        if input_tokens_estimate > self.settings.max_context_size:
-            raise InvalidOperationError(
-                f"LLM 上下文约 {input_tokens_estimate} Token，超过输入预算 {self.settings.max_context_size} Token。"
-            )
+        messages, input_tokens_estimate = self._prepare_request_context(
+            system,
+            [{"role": "user", "content": user}],
+            "",
+            run_id=run_id,
+            operation=operation,
+        )
         request = {
             "model": self.settings.llm_model,
             "temperature": self.settings.llm_temperature,
-            "messages": [{"role": "system", "content": system}, *messages],
+            "messages": _canonical_request_messages(system, messages),
             "extra_body": {
                 "thinking": {"type": "enabled" if self.settings.llm_thinking_enabled else "disabled"}
             },
@@ -203,27 +204,26 @@ class OpenAiChatClient:
         run_id = current_run_id.get()
         conversation_id = current_conversation_id.get()
         operation = current_llm_operation.get()
-        normalized_messages = trim_tool_results(
-            _normalize_messages(messages, allow_tool_messages=True),
-            self.settings.context_tool_result_max_tokens,
-        )
+        normalized_messages = _normalize_messages(messages, allow_tool_messages=True)
         openai_tools = _openai_tools(tools)
         tool_schema_text = json.dumps(openai_tools, ensure_ascii=False)
-        input_tokens_estimate = _estimate_request_tokens(system, normalized_messages, tool_schema_text)
-        if input_tokens_estimate > self.settings.max_context_size:
-            raise InvalidOperationError(
-                f"LLM 上下文约 {input_tokens_estimate} Token，超过输入预算 {self.settings.max_context_size} Token。"
-            )
+        normalized_messages, input_tokens_estimate = self._prepare_request_context(
+            system,
+            normalized_messages,
+            tool_schema_text,
+            run_id=run_id,
+            operation=operation,
+        )
         request = {
             "model": self.settings.llm_model,
             "temperature": self.settings.llm_temperature,
-            "messages": [{"role": "system", "content": system}, *normalized_messages],
+            "messages": _canonical_request_messages(system, normalized_messages),
             "extra_body": {
                 "thinking": {"type": "enabled" if self.settings.llm_thinking_enabled else "disabled"}
             },
             "tools": openai_tools,
             "tool_choice": "auto",
-            "parallel_tool_calls": False,
+            "parallel_tool_calls": True,
             "stream": True,
             "stream_options": {"include_usage": True},
         }
@@ -287,13 +287,30 @@ class OpenAiChatClient:
         except openai.AuthenticationError as error:
             logger.exception("llm agent stream authentication failed: runId=%s", run_id)
             raise InvalidOperationError("LLM 认证失败（401）：请检查 API Key 与 Base URL。") from error
+        except openai.APIStatusError as error:
+            if _is_context_window_error(error):
+                logger.warning(
+                    "llm agent stream context window exceeded: runId=%s operation=%s "
+                    "status=%s providerMessage=%s",
+                    run_id,
+                    operation,
+                    error.status_code,
+                    _provider_error_message(error),
+                )
+                raise ContextWindowExceededError(
+                    "LLM 供应商拒绝了过长上下文，需要执行响应式压缩。"
+                ) from error
+            logger.exception("llm agent stream failed: runId=%s", run_id)
+            raise InvalidOperationError(
+                f"LLM 流式请求失败：HTTP {error.status_code}"
+            ) from error
         except openai.APIError as error:
             logger.exception("llm agent stream failed: runId=%s", run_id)
             raise InvalidOperationError(f"LLM 流式请求失败：{error.__class__.__name__}") from error
 
         content = "".join(content_parts)
-        if calls and content:
-            raise InvalidOperationError("LLM 同时返回了工具调用和用户可见文本，违反 Agent 输出协议。")
+        # OpenAI 兼容模型允许同一条 assistant 消息同时携带可见说明与 Tool Call。
+        # content 由上层作为过程消息展示，tool_calls 仍交给 LangGraph 执行；两者不能互斥。
         if finish_reason == "length":
             raise InvalidOperationError("LLM 输出达到 Token 上限，结果不完整。")
         tool_calls = []
@@ -449,21 +466,15 @@ class OpenAiChatClient:
         conversation_id = current_conversation_id.get()
         operation = current_llm_operation.get()
         normalized_messages = _normalize_messages(messages, allow_tool_messages=tools is not None)
-        # Tool responses can be much larger than normal dialogue. Trim them before
-        # measuring the request so one query result cannot consume the whole window.
-        normalized_messages = trim_tool_results(
-            normalized_messages, self.settings.context_tool_result_max_tokens
-        )
         openai_tools = _openai_tools(tools) if tools is not None else None
         tool_schema_text = json.dumps(openai_tools, ensure_ascii=False) if openai_tools is not None else ""
-        input_budget = self.settings.max_context_size
-        input_tokens_estimate = _estimate_request_tokens(
-            system, normalized_messages, tool_schema_text
+        normalized_messages, input_tokens_estimate = self._prepare_request_context(
+            system,
+            normalized_messages,
+            tool_schema_text,
+            run_id=run_id,
+            operation=operation,
         )
-        if input_tokens_estimate > input_budget:
-            raise InvalidOperationError(
-                f"LLM 上下文约 {input_tokens_estimate} Token，超过输入预算 {input_budget} Token。"
-            )
         started = perf_counter()
         logger.info(
             "llm request started: runId=%s conversationId=%s operation=%s provider=openai model=%s "
@@ -490,7 +501,7 @@ class OpenAiChatClient:
             request: dict[str, Any] = {
                 "model": self.settings.llm_model,
                 "temperature": self.settings.llm_temperature,
-                "messages": [{"role": "system", "content": system}, *normalized_messages],
+                "messages": _canonical_request_messages(system, normalized_messages),
                 "extra_body": {
                     "thinking": {
                         "type": "enabled" if self.settings.llm_thinking_enabled else "disabled",
@@ -502,7 +513,7 @@ class OpenAiChatClient:
                     {
                         "tools": openai_tools,
                         "tool_choice": "auto",
-                        "parallel_tool_calls": False,
+                        "parallel_tool_calls": True,
                     }
                 )
             _add_prompt_cache_key(request, conversation_id)
@@ -536,6 +547,10 @@ class OpenAiChatClient:
                 _provider_error_message(error),
                 int((perf_counter() - started) * 1000),
             )
+            if _is_context_window_error(error):
+                raise ContextWindowExceededError(
+                    "LLM 供应商拒绝了过长上下文，需要执行响应式压缩。"
+                ) from error
             raise InvalidOperationError(f"LLM 请求失败：HTTP {error.status_code}") from error
         except openai.APIError as error:
             status = getattr(error, "status_code", None)
@@ -604,6 +619,72 @@ class OpenAiChatClient:
             int((perf_counter() - started) * 1000),
         )
         return choice, response
+
+    def _prepare_request_context(
+        self,
+        system: str,
+        messages: list[dict[str, Any]],
+        tool_schema_text: str,
+        *,
+        run_id: str,
+        operation: str,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """供应商边界只做最终预算校验，不再维护第二套百分比压缩策略。
+
+        Agent 请求已经由 AgentContextManager 完成多阶段投影；这里仅处理绕过
+        AgentContextManager 的直接 LLM 调用，以及估算误差导致的最后工具预算收缩。
+        """
+        prepared = list(messages)
+        before_tokens = _estimate_request_tokens(system, prepared, tool_schema_text)
+        after_tokens = before_tokens
+        compacted_tool_messages = 0
+        if after_tokens > self.settings.max_context_size:
+            # 固定提示词和普通消息先占用总预算，剩余额度由本次所有工具结果平均共享。
+            # 这是根据当前请求动态计算的，不再维护单条工具结果固定上限。
+            tool_count = sum(1 for message in prepared if message.get("role") == "tool")
+            if tool_count:
+                without_tool_content = [
+                    {**message, "content": ""} if message.get("role") == "tool" else message
+                    for message in prepared
+                ]
+                fixed_tokens = _estimate_request_tokens(
+                    system,
+                    without_tool_content,
+                    tool_schema_text,
+                )
+                available_tokens = max(1, self.settings.max_context_size - fixed_tokens)
+                # 结构化截断会附加 truncated/notice 等元数据，为每条结果预留封装开销。
+                envelope_reserve = 64 * tool_count
+                per_tool_tokens = max(
+                    1,
+                    (available_tokens - envelope_reserve) // tool_count,
+                )
+                original = prepared
+                prepared = trim_tool_results(prepared, per_tool_tokens)
+                compacted_tool_messages = sum(
+                    1
+                    for before, after in zip(original, prepared, strict=True)
+                    if before.get("role") == "tool"
+                    and before.get("content") != after.get("content")
+                )
+                after_tokens = _estimate_request_tokens(system, prepared, tool_schema_text)
+        logger.info(
+            "llm context checked: runId=%s operation=%s beforeTokens=%d afterTokens=%d "
+            "maxContextSize=%d finalGuardTriggered=%s compactedToolMessages=%d",
+            run_id,
+            operation,
+            before_tokens,
+            after_tokens,
+            self.settings.max_context_size,
+            before_tokens > self.settings.max_context_size,
+            compacted_tool_messages,
+        )
+        if after_tokens > self.settings.max_context_size:
+            raise InvalidOperationError(
+                f"LLM 上下文压缩后仍约 {after_tokens} Token，超过输入预算 "
+                f"{self.settings.max_context_size} Token。"
+            )
+        return prepared, after_tokens
 
     async def complete_json(self, system: str, user: str) -> dict[str, Any]:
         text = await self.complete(system, user)
@@ -681,6 +762,20 @@ def _estimate_request_tokens(
     )
 
 
+def _canonical_request_messages(
+    system: str, messages: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """构造唯一 System Prompt 前缀，禁止历史或摘要注入第二条 system 消息。"""
+    if not system.strip():
+        raise InvalidOperationError("LLM System Prompt 不能为空。")
+    nested_system_count = sum(1 for message in messages if message.get("role") == "system")
+    if nested_system_count:
+        raise InvalidOperationError(
+            "LLM 历史上下文中出现额外 system 消息；Agent 身份只能由当前 System Prompt 定义。"
+        )
+    return [{"role": "system", "content": system}, *messages]
+
+
 def _normalize_messages(messages: list[Any], *, allow_tool_messages: bool = False) -> list[dict[str, Any]]:
     normalized = []
     for message in messages:
@@ -729,6 +824,32 @@ def _provider_error_message(error: openai.APIStatusError) -> str:
             return str(nested.get("message") or nested.get("type") or "unknown")[:300]
         return str(body.get("message") or body.get("detail") or "unknown")[:300]
     return str(error)[:300]
+
+
+def _is_context_window_error(error: openai.APIStatusError) -> bool:
+    """仅识别供应商明确报告的输入窗口超限，避免把普通 400 错误误判为可重试。"""
+    body = getattr(error, "body", None)
+    candidates = [_provider_error_message(error), str(error)]
+    if isinstance(body, dict):
+        nested = body.get("error")
+        if isinstance(nested, dict):
+            candidates.extend(
+                str(nested.get(key) or "")
+                for key in ("code", "type", "message")
+            )
+        candidates.extend(str(body.get(key) or "") for key in ("code", "type", "message"))
+    text = " ".join(candidates).lower()
+    markers = (
+        "context_length_exceeded",
+        "context window",
+        "maximum context length",
+        "prompt is too long",
+        "prompt too long",
+        "input tokens exceed",
+        "上下文长度",
+        "上下文过长",
+    )
+    return any(marker in text for marker in markers)
 
 
 def _serialize_response(response: Any) -> str:

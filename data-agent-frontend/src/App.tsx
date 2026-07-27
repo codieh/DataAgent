@@ -21,7 +21,7 @@ import { api, consumeRunEvents } from './api'
 import { Icon } from './components/Icon'
 import { ResultsScreen, ReviewScreen, SettingsScreen, WelcomeScreen, WorkspaceScreen } from './screens'
 // `import type` 只导入「类型」，不会生成运行时代码，是 TS 的最佳实践。
-import type { AnalysisRun, AppView, Bootstrap, Conversation, ConversationDetail, PingStep, ResultSet, RunEvent } from './types'
+import type { AgentStreamMessage, AnalysisRun, AppView, Bootstrap, Conversation, ConversationDetail, PingStep, ResultSet, RunEvent } from './types'
 
 // 后端默认地址。真实项目里通常会放到环境变量(.env)，这里写死方便演示。
 const DEFAULT_BACKEND = 'http://localhost:8000'
@@ -56,6 +56,7 @@ function App() {
   const [resultError, setResultError] = useState<string | null>(null)   // 结果加载报错
   const [events, setEvents] = useState<RunEvent[]>([])                 // 实时事件流
   const [streamingAnswer, setStreamingAnswer] = useState('')          // 最终结论的实时文本
+  const [agentMessages, setAgentMessages] = useState<AgentStreamMessage[]>([]) // 每轮 Agent 可见过程说明
   const [query, setQuery] = useState('')                               // 输入框文字
   const [humanReview, setHumanReview] = useState(false)                // 是否开启人工审核
   const [connected, setConnected] = useState(false)                    // 后端是否连上
@@ -164,6 +165,64 @@ function App() {
         if (event.type === 'final_answer.delta') {
           setStreamingAnswer((current) => current + String(event.data.delta || ''))
         }
+        if (event.type === 'agent_message.started') {
+          const id = String(event.data.messageId || '')
+          if (!id) throw new Error('agent_message.started 缺少 messageId')
+          setAgentMessages((current) => current.some((item) => item.id === id)
+            ? current
+            : [...current, {
+              id,
+              iteration: Number(event.data.iteration || current.length + 1),
+              text: '',
+              kind: 'pending',
+              completed: false,
+              toolNames: [],
+            }])
+        }
+        if (event.type === 'agent_message.delta') {
+          const id = String(event.data.messageId || '')
+          const delta = String(event.data.delta || '')
+          if (!id) throw new Error('agent_message.delta 缺少 messageId')
+          setAgentMessages((current) => {
+            const existing = current.find((item) => item.id === id)
+            if (!existing) {
+              return [...current, {
+                id,
+                iteration: current.length + 1,
+                text: delta,
+                kind: 'pending',
+                completed: false,
+                toolNames: [],
+              }]
+            }
+            return current.map((item) => item.id === id ? { ...item, text: item.text + delta } : item)
+          })
+        }
+        if (event.type === 'agent_message.completed') {
+          const id = String(event.data.messageId || '')
+          const kind = String(event.data.kind || '')
+          const text = String(event.data.text || '')
+          if (!id || !['narration', 'final'].includes(kind)) {
+            throw new Error('agent_message.completed 缺少有效的 messageId 或 kind')
+          }
+          const completed: AgentStreamMessage = {
+            id,
+            iteration: Number(event.data.iteration || 0),
+            text,
+            kind: kind as 'narration' | 'final',
+            completed: true,
+            toolNames: Array.isArray(event.data.toolNames) ? event.data.toolNames.map(String) : [],
+          }
+          // 直接答复进入最终回答区域；过程说明则保留在 Agent 过程消息列表中。
+          if (completed.kind === 'final') {
+            setStreamingAnswer(text)
+            setAgentMessages((current) => current.filter((item) => item.id !== id))
+          } else {
+            setAgentMessages((current) => current.some((item) => item.id === id)
+              ? current.map((item) => item.id === id ? completed : item)
+              : [...current, completed])
+          }
+        }
         // 某些事件代表「运行状态变了」，需要去拉最新快照刷新界面。
         if (event.type === 'artifact.created' || event.type === 'review.required' || event.type.startsWith('run.')) {
           void refreshRun(runId)
@@ -187,6 +246,7 @@ function App() {
     if (!text) return  // 空输入直接返回（防御性编程）
     setError(null)
     setStreamingAnswer('')
+    setAgentMessages([])
     setStatus('正在创建分析任务')
     setView('workspace')
     let target = conversation
@@ -215,6 +275,7 @@ function App() {
       review: null, error: null,
     })
     setEvents([])
+    setAgentMessages([])
     lastPersistentSeqRef.current = 0
     setQuery('')  // 清空输入框
     void watchRun(accepted.runId)  // 开始监听（void 表示「我不等它结束」）
@@ -231,6 +292,7 @@ function App() {
     setSelectedResultSetId(null)
     setResultError(null)
     setEvents([])
+    setAgentMessages([])
     lastPersistentSeqRef.current = 0
     if (item.lastRunId) {
       const latest = await refreshRun(item.lastRunId, false)
@@ -254,6 +316,7 @@ function App() {
     setSelectedResultSetId(null)
     setResultError(null)
     setEvents([])
+    setAgentMessages([])
     lastPersistentSeqRef.current = 0
     setQuery('')
     setView('welcome')
@@ -279,10 +342,20 @@ function App() {
     if (!run) return
     const accepted = await api.retryRun(backendUrl, run.id)
     setView('workspace')
-    setEvents([])
-    lastPersistentSeqRef.current = 0
+    const resumesSameRun = accepted.runId === run.id
+    // 失败节点恢复沿用原 Run，保留已经展示的步骤、工具轨迹和持久事件；
+    // 只有真正创建了新 Run 时才清空过程区。
+    if (!resumesSameRun) {
+      setEvents([])
+      setAgentMessages([])
+      lastPersistentSeqRef.current = 0
+    }
+    setStreamingAnswer('')
     await refreshRun(accepted.runId)
-    void watchRun(accepted.runId)
+    void watchRun(
+      accepted.runId,
+      resumesSameRun ? lastPersistentSeqRef.current : 0,
+    )
   }
 
   // 重命名 / 删除会话
@@ -335,7 +408,7 @@ function App() {
   // 这就是「单页应用(SPA)」的核心思路：URL 不变，靠 state(view) 切换显示的组件。
   let screen
   if (view === 'welcome') screen = <WelcomeScreen {...navigation} query={query} connected={connected} prompts={bootstrap?.recommendedQuestions || []} error={error} onQueryChange={setQuery} onSubmit={submit} />
-  else if (view === 'workspace') screen = <WorkspaceScreen {...navigation} query={query} conversation={conversation} run={run} events={events} streamingAnswer={streamingAnswer} connected={connected} status={status} onQueryChange={setQuery} onSubmit={submit} onStop={cancelRun} onRetry={retryRun} onViewResults={() => setView('results')} />
+  else if (view === 'workspace') screen = <WorkspaceScreen {...navigation} query={query} conversation={conversation} run={run} events={events} streamingAnswer={streamingAnswer} agentMessages={agentMessages} connected={connected} status={status} onQueryChange={setQuery} onSubmit={submit} onStop={cancelRun} onRetry={retryRun} onViewResults={() => setView('results')} />
   else if (view === 'results') screen = <ResultsScreen {...navigation} run={run} resultSet={resultSet} selectedResultSetId={selectedResultSetId} streamingAnswer={streamingAnswer} resultLoading={resultLoading} resultError={resultError} backendUrl={backendUrl} query={query} onQueryChange={setQuery} onSubmit={submit} onSelectResult={(id) => run && loadResult(run, 1, id)} onResultPage={(page) => run && loadResult(run, page, selectedResultSetId)} onBackToProcess={() => setView('workspace')} />
   else if (view === 'review') screen = <ReviewScreen {...navigation} run={run} onApprove={() => decideReview(true)} onReject={(comment) => decideReview(false, comment)} />
   else screen = <SettingsScreen {...navigation} backendUrl={backendUrl} agentId={agentId} agents={bootstrap?.agents || []} humanReview={humanReview} connected={connected} pingRunning={pingRunning} pingSteps={pingSteps} onBackendUrlChange={(value) => { localStorage.setItem('data-agent.backend-url', value); setBackendUrl(value) }} onAgentIdChange={() => undefined} onHumanReviewChange={setHumanReview} onPing={ping} />

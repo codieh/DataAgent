@@ -161,21 +161,25 @@ OpenAI Client 在最前面添加 `INTENT_SYSTEM`。模型返回结构化结果�
     "schemaSearchesRemaining": 50,
     "sqlExecutionsRemaining": 50
   },
-  "schema": {"tables": []},
-  "knowledge": {"documents": [], "evidences": []},
   "activeResult": null,
   "availableResults": [],
-  "observations": [],
-  "pythonAnalyses": []
+  "observations": []
 }
 ```
 
-这里已经没有旧实现中的：
+Schema、业务知识和 Python 分析不再放进这个 payload。对应工具执行后，会通过原生
+`ToolMessage` 返回受预算约束的真实 `preview`、`stats` 和 `resultRef`；完整结果仍保存
+在 State、SQLite 或结果文件中。
+
+这里已经没有旧实现中的重复字段：
 
 ```text
 queryResults
 lastResult
 observations[].preview
+payload.schema
+payload.knowledge
+payload.pythonAnalyses
 ```
 
 最终 Agent 消息顺序为：
@@ -183,14 +187,19 @@ observations[].preview
 ```text
 最近原始 user/assistant 对话
 → 当前 payload（作为新的 user 消息）
-→ 当前 Run 的 AIMessage / ToolMessage 投影
+→ 当前 Run 的 AIMessage / ToolMessage 原生轨迹
 ```
 
-OpenAI Client 再在最前面添加 `AGENT_SYSTEM`。
+OpenAI Client 再在最前面添加 `AGENT_SYSTEM`。单条工具结果过大时会保留合法 JSON
+和真实内容前缀；总上下文达到阈值后，较旧结果会降级为只含摘要、统计和读取引用的目录项。
+
+`AGENT_SYSTEM` 是不可压缩的唯一系统消息。SQLite 中隐藏保存的核心记忆在上下文构建时
+会转换为 `memory.longTermMemories`；历史窗口和会话摘要只处理 user/assistant，
+不能追加或覆盖第二条 system 消息。
 
 ## 7. 工具如何注册给模型
 
-工具不是写进提示词文本，而是通过 OpenAI 请求的 `tools` 字段注册。当前共有 9 个原生工具：
+工具不是写进提示词文本，而是通过 OpenAI 请求的 `tools` 字段注册。当前原生工具包括：
 
 ```text
 update_analysis_plan
@@ -199,9 +208,14 @@ search_schema
 inspect_tables
 retrieve_knowledge
 execute_sql
-search_history
+search_analysis_history
 inspect_query_result
+search_current_conversation
+read_message_context
+search_conversation_history
+read_conversation_history
 analyze_dataframe
+rewrite_core_memory
 ```
 
 `AnalysisToolRegistry.specifications()` 使用 `tool_call_schema` 生成公开参数，因此以下运行时参数不会暴露给模型：
@@ -258,17 +272,18 @@ conversation_id
 }
 ```
 
-ToolMessage 不再复制字段详情，只返回引用信息：
+ToolMessage 返回真实字段预览和读取引用：
 
 ```json
 {
   "role": "tool",
   "tool_call_id": "call_schema_1",
-  "content": "{\"tool\":\"search_schema\",\"ok\":true,\"summary\":\"召回 1 张候选表\",\"tableNames\":[\"orders\"],\"schemaRef\":\"state.schema\"}"
+  "content": "{\"tool\":\"search_schema\",\"ok\":true,\"summary\":\"召回 1 张候选表\",\"preview\":{\"tables\":[{\"name\":\"orders\",\"columns\":[...]}]},\"resultRef\":{\"type\":\"agent_state\",\"path\":\"schema\"},\"truncated\":false}"
 }
 ```
 
-第二次 `AgentContextBuilder.build()` 会从 `state.schema` 生成一次受 `context_schema_token_budget` 限制的 Schema，模型不会同时收到三份表结构。
+第二次 `AgentContextBuilder.build()` 不再从 `state.schema` 复制一份 Schema；模型直接读取
+原生 ToolMessage。只有整个请求接近 `max_context_size` 时，发送层才根据总剩余空间动态压缩工具结果。
 
 ## 9. SQL 提交与执行
 
@@ -449,17 +464,17 @@ AIMessage(tool_call)
     {"role": "system", "content": "AGENT_SYSTEM"},
     {"role": "user", "content": "历史用户消息"},
     {"role": "assistant", "content": "历史助手消息"},
-    {"role": "user", "content": "当前 Agent payload"},
     {"role": "assistant", "tool_calls": ["省略"]},
-    {"role": "tool", "tool_call_id": "call_schema_1", "content": "工具结果"}
+    {"role": "tool", "tool_call_id": "call_schema_1", "content": "工具结果"},
+    {"role": "user", "content": "当前 Agent payload"}
   ],
   "tools": ["9 个原生工具定义"],
   "tool_choice": "auto",
-  "parallel_tool_calls": false
+  "parallel_tool_calls": true
 }
 ```
 
-项目不主动设置输出 `max_tokens`。输入发送前仍受 `max_context_size=200000` 控制；当消息接近阈值时，LLM Client 的上下文压缩逻辑会保留近期消息并压缩更早内容。
+项目不主动设置输出 `max_tokens`。输入发送前仍受 `max_context_size` 控制。跨 Run 会话历史达到阈值时，会把当前输入之前尚未摘要的历史全量合并进持久化摘要；当前 Run 则依次执行 Tool Result Budget、Snip、Micro、Context Collapse 和 Auto Compact。固定 System Prompt 独立于所有摘要，每次请求重新注入。
 
 ## 15. 完整数据流
 

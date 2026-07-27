@@ -33,15 +33,12 @@ class Settings(BaseSettings):
     llm_base_url: str = "https://api.kimi.com/coding/v1"
     llm_model: str = "kimi-for-coding"
     llm_temperature: float = 0.6
-    max_context_size: int = 200_000
+    max_context_size: int = 10_000
     context_compact_threshold: float = 0.8
     context_compact_preserve_ratio: float = 0.3
-    context_tool_result_max_tokens: int = 20_000
     context_result_catalog_limit: int = 5
     context_result_preview_rows: int = 20
     context_history_search_limit: int = 5
-    context_tool_result_keep_recent: int = 1
-    context_tool_result_compact_chars: int = 2_000
     llm_timeout_seconds: float = 60.0
     llm_max_retries: int = 20
     # 是否把模型原始返回（完整 JSON）写入日志；内容可能很长，排查问题时开启。
@@ -50,11 +47,11 @@ class Settings(BaseSettings):
     # 模型到底“看到了什么、返回了什么”。可在生产环境关闭以降低日志量。
     llm_log_io: bool = True
     # 模型输入（system + messages）写入日志时最多保留的字符数。
-    llm_log_input_chars: int = 80000
+    llm_log_input_chars: int = 8000
     # 模型输出（content + tool_calls）写入日志时最多保留的字符数。
-    llm_log_output_chars: int = 80000
+    llm_log_output_chars: int = 8000
     # 工具调用返回内容写入日志时最多保留的字符数。
-    tool_log_content_chars: int = 80000
+    tool_log_content_chars: int = 8000
     # 是否额外把后端日志写入本地文件；控制台输出仍会保留。
     log_file_enabled: bool = True
     # 日志文件路径，默认位于后端 data/logs 目录。
@@ -110,19 +107,14 @@ class Settings(BaseSettings):
     recall_evidence_top_k: int = 5
     memory_backend: str = "none"
     memory_chroma_collection_name: str = "data_agent_memory"
-    memory_context_token_budget: int = 65_536
-    memory_recent_token_budget: int = 49_152
     memory_retrieval_top_k: int = 6
     memory_retrieval_min_score: float = 0.2
     memory_extraction_enabled: bool = True
     memory_extraction_min_confidence: float = 0.7
     memory_extraction_max_existing: int = 30
-    memory_summary_token_budget: int = 8_192
     memory_ttl_days: int = 180
     memory_max_items_per_conversation: int = 500
     core_memory_max_tokens: int = 2_000
-    context_schema_token_budget: int = 65_536
-    context_knowledge_token_budget: int = 32_768
     python_analysis_enabled: bool = True
     python_sandbox_backend: str = "docker"
     python_sandbox_image: str = "data-agent-python-sandbox:latest"
@@ -146,21 +138,12 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_context_budgets(self):
+        if self.max_context_size <= 0:
+            raise ValueError("max_context_size 必须大于 0")
         if not 0 < self.context_compact_threshold < 1:
             raise ValueError("context_compact_threshold 必须在 0 和 1 之间")
         if not 0 < self.context_compact_preserve_ratio < 1:
             raise ValueError("context_compact_preserve_ratio 必须在 0 和 1 之间")
-        reserved = (
-            self.memory_context_token_budget
-            + self.context_schema_token_budget
-            + self.context_knowledge_token_budget
-        )
-        if reserved > self.max_context_size:
-            raise ValueError(
-                f"上下文分区预算合计 {reserved}，超过 max_context_size={self.max_context_size}"
-            )
-        if self.memory_recent_token_budget > self.memory_context_token_budget:
-            raise ValueError("memory_recent_token_budget 不能超过 memory_context_token_budget")
         return self
 
     @property

@@ -14,6 +14,7 @@ from typing import Any
 from sqlalchemy import and_, delete, or_, select, text
 
 from app.infrastructure.persistence.models import (
+    AnalysisRunModel,
     ConversationModel,
     ConversationSummaryStateModel,
     MemoryItemModel,
@@ -42,9 +43,8 @@ class ConversationRepository(RepositoryBase):
                     run_id=None,
                     role="system",
                     content=(
-                        "<user_core_memory>\n"
+                        "用户长期记忆：\n"
                         f"{core_memory.content.strip()}\n"
-                        "</user_core_memory>"
                     ),
                     content_type="system",
                 )
@@ -149,10 +149,24 @@ class ConversationRepository(RepositoryBase):
         return message
 
     async def list_messages(self, conversation_id: str) -> list[MessageModel]:
-        """列出某对话的全部消息，按创建时间升序。"""
+        """列出某对话的真实消息，按创建时间升序。
+
+        旧版本曾为执行重试重复写入用户消息。原始记录继续保留用于审计，但不再
+        投影到会话历史，避免旧数据继续影响前端展示和 Agent 上下文。
+        """
+        retry_run_ids = select(AnalysisRunModel.id).where(
+            AnalysisRunModel.retry_of_run_id.is_not(None)
+        )
         statement = (
             select(MessageModel)
-            .where(MessageModel.conversation_id == conversation_id)
+            .where(
+                MessageModel.conversation_id == conversation_id,
+                or_(
+                    MessageModel.role != "user",
+                    MessageModel.run_id.is_(None),
+                    MessageModel.run_id.not_in(retry_run_ids),
+                ),
+            )
             .order_by(MessageModel.created_at.asc())
         )
         return list((await self.session.scalars(statement)).all())
@@ -160,6 +174,14 @@ class ConversationRepository(RepositoryBase):
     async def get_user_message_for_run(self, run_id: str) -> MessageModel | None:
         """获取某运行对应的用户提问消息。"""
         statement = select(MessageModel).where(MessageModel.run_id == run_id, MessageModel.role == "user")
+        return await self.session.scalar(statement)
+
+    async def get_assistant_message_for_run(self, run_id: str) -> MessageModel | None:
+        """获取某运行对应的助手消息，用于保证终态消息幂等写入。"""
+        statement = select(MessageModel).where(
+            MessageModel.run_id == run_id,
+            MessageModel.role == "assistant",
+        )
         return await self.session.scalar(statement)
 
     async def search_conversation_history(self, query: str, limit: int) -> list[dict[str, Any]]:

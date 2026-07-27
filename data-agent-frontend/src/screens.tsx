@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { AgentProfile, AnalysisRun, AppView, Conversation, ConversationDetail, PingStep, QueryResult, ResultSet, RunEvent, TableDensity } from './types'
+import type { AgentProfile, AgentStreamMessage, AnalysisRun, AppView, Conversation, ConversationDetail, PingStep, QueryResult, ResultSet, RunEvent, TableDensity } from './types'
 import { Sidebar, TitleBar } from './components/AppChrome'
 import { Composer } from './components/Composer'
 import { Icon } from './components/Icon'
@@ -21,6 +21,18 @@ const stageLabels: Record<string, string> = {
   input_guard: '检查请求安全', agent_decide: '决定下一步分析', agent_schema_search: '检索相关数据表',
   agent_schema_inspect: '查看表结构', agent_knowledge_search: '检索业务知识',
   result: '整理结果', chitchat: '生成回复',
+}
+
+const sqlEventLabels: Record<string, string> = {
+  'sql.candidate': '候选 SQL 已生成',
+  'sql.validated': '安全校验通过',
+  'sql.blocked': '安全策略已拦截',
+  'sql.review_required': '等待人工确认',
+  'sql.rejected': '人工审核未通过',
+  'sql.executing': '正在执行查询',
+  'sql.executed': '查询执行完成',
+  'sql.reused': '复用已有查询结果',
+  'sql.failed': '查询执行失败',
 }
 
 const sidebar = (props: Navigation, collapsed = false) => <Sidebar {...props} collapsed={collapsed} />
@@ -62,21 +74,68 @@ function parseServerTime(value: string) {
 function ExecutionInspector({ run, events }: { run: AnalysisRun | null; events: RunEvent[] }) {
   const [tab, setTab] = useState<'process' | 'details'>('process')
   const stages = run?.stages || []
+  const sqlEvents = events.filter((event) => event.type in sqlEventLabels)
   return <aside className="execution-inspector">
     <div className="inspector-title-row"><h2>执行过程 <span>{stages.filter((item) => item.status === 'completed').length} / {stages.length || '—'}</span></h2><div className="inspector-tabs"><button className={tab === 'process' ? 'is-active' : ''} onClick={() => setTab('process')}>过程</button><button className={tab === 'details' ? 'is-active' : ''} onClick={() => setTab('details')}>详情</button></div></div>
-    {tab === 'process' ? <div className="stage-timeline">{stages.map((stage) => <div className={`stage-step stage-${stage.status === 'running' ? 'active' : stage.status}`} key={`${stage.name}-${stage.attempt}`}><span className="stage-node">{stage.status === 'completed' ? <Icon name="check" size={15} /> : null}</span><div className="stage-copy"><div><strong>{stageLabels[stage.name] || stage.name}</strong><span>{formatDuration(stage.durationMs)}</span></div>{stage.status === 'running' ? <div className="active-stage-receipt"><div><b>{stage.message}</b></div><p><i /> 执行中</p></div> : null}</div></div>)}</div> : <div className="inspector-details"><h3>事件回执</h3><div className="event-receipts">{events.slice(-12).map((event) => <div key={event.eventId}><span>{event.seq ?? '·'}</span><b>{event.stage || 'run'}</b><em>{event.type}</em></div>)}</div></div>}
+    {tab === 'process' ? <><div className="stage-timeline">{stages.map((stage) => <div className={`stage-step stage-${stage.status === 'running' ? 'active' : stage.status}`} key={`${stage.name}-${stage.attempt}`}><span className="stage-node">{stage.status === 'completed' ? <Icon name="check" size={15} /> : null}</span><div className="stage-copy"><div><strong>{stageLabels[stage.name] || stage.name}</strong><span>{formatDuration(stage.durationMs)}</span></div>{stage.status === 'running' ? <div className="active-stage-receipt"><div><b>{stage.message}</b></div><p><i /> 执行中</p></div> : null}</div></div>)}</div>{sqlEvents.length ? <section className="sql-lifecycle"><h3>SQL 状态</h3>{sqlEvents.map((event) => <div className={`sql-lifecycle-item ${event.type.replace('.', '-')}`} key={event.eventId}><i /><span><strong>{sqlEventLabels[event.type]}</strong>{event.data.rowCount != null ? <small>{String(event.data.rowCount)} 行</small> : null}{event.data.reason ? <small>{String(event.data.reason)}</small> : null}{event.data.error ? <small>{String(event.data.error)}</small> : null}</span></div>)}</section> : null}</> : <div className="inspector-details"><h3>事件回执</h3><div className="event-receipts">{events.map((event) => <div key={event.eventId}><span>{event.seq ?? '·'}</span><b>{event.stage || 'run'}</b><em>{event.type}</em></div>)}</div></div>}
     <p className="inspector-footnote">完整结果以持久化运行快照为准。 <Icon name="info" size={14} /></p>
   </aside>
+}
+
+function AgentNarrationList({ messages }: { messages: AgentStreamMessage[] }) {
+  const [collapsedIds, setCollapsedIds] = useState<Set<string>>(() => new Set())
+  const allCollapsed = messages.length > 0 && messages.every((message) => collapsedIds.has(message.id))
+
+  function toggleMessage(id: string) {
+    setCollapsedIds((current) => {
+      const next = new Set(current)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  function toggleAll() {
+    setCollapsedIds(allCollapsed ? new Set() : new Set(messages.map((message) => message.id)))
+  }
+
+  return <section className="agent-narration-list" aria-label="Agent 分析过程">
+    <div className="agent-narration-toolbar">
+      <strong>分析过程</strong>
+      <button type="button" onClick={toggleAll}>{allCollapsed ? '全部展开' : '全部收起'}</button>
+    </div>
+    {messages.map((message) => {
+      const collapsed = collapsedIds.has(message.id)
+      return <section className={`agent-narration ${collapsed ? 'is-collapsed' : ''}`} key={message.id}>
+        <button
+          className="agent-narration-toggle"
+          type="button"
+          aria-expanded={!collapsed}
+          aria-controls={`${message.id}-content`}
+          onClick={() => toggleMessage(message.id)}
+        >
+          <span>第 {message.iteration || '—'} 步</span>
+          <em>{message.toolNames.length ? message.toolNames.join(' + ') : message.completed ? '过程说明' : '正在输出'}</em>
+          <Icon name="chevron-down" size={14} />
+        </button>
+        {!collapsed ? <div className="agent-narration-content" id={`${message.id}-content`}>
+          <Markdown>{message.text}</Markdown>
+          {!message.completed ? <i aria-hidden="true" /> : null}
+        </div> : null}
+      </section>
+    })}
+  </section>
 }
 
 export function WorkspaceScreen(props: Navigation & {
   query: string; conversation: ConversationDetail | null; run: AnalysisRun | null; events: RunEvent[]
   streamingAnswer: string
+  agentMessages: AgentStreamMessage[]
   connected: boolean; status: string; onQueryChange: (value: string) => void; onSubmit: () => void; onStop: () => void
   onRetry: () => void
   onViewResults: () => void
 }) {
-  const { query, conversation, run, events, streamingAnswer, connected, status, onQueryChange, onSubmit, onStop } = props
+  const { query, conversation, run, events, streamingAnswer, agentMessages, connected, status, onQueryChange, onSubmit, onStop } = props
   const running = run ? ['queued', 'running'].includes(run.status) : false
   // 当前 Run 的助手消息由运行卡片统一展示；同一 Run 的用户输入必须保留。
   const visibleMessages = (conversation?.messages || []).filter(
@@ -89,7 +148,7 @@ export function WorkspaceScreen(props: Navigation & {
       {sidebar(props)}
       <main className="conversation-workspace"><div className="conversation-scroll">
         {visibleMessages.map((message) => <article className={`conversation-entry ${message.role === 'user' ? 'user-entry' : 'agent-entry'}`} key={message.id}><div className="entry-meta"><strong>{message.role === 'user' ? '用户' : 'DataAgent'}</strong><span>{parseServerTime(message.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</span></div><Markdown>{message.content}</Markdown></article>)}
-        {run ? <article className="conversation-entry agent-entry"><div className="entry-meta"><strong>DataAgent</strong><span>{run.status}</span></div><h1>{run.analysis?.title || (streamingAnswer ? '正在生成分析结论' : running ? '正在分析数据' : '本次分析')}</h1><p className="current-action">当前步骤：{stageLabels[run.currentStage || ''] || status}</p>{displayedSummary ? <section className={`streaming-answer ${run.analysis ? 'is-complete' : ''}`} aria-live="polite"><Markdown>{displayedSummary}</Markdown>{!run.analysis ? <i aria-hidden="true" /> : null}</section> : null}{run.error ? <><p className="diagnostic-warning">{run.error.message}</p><button type="button" onClick={props.onRetry}>重新运行</button></> : null}{run.analysis ? <button className="view-result-button" type="button" onClick={props.onViewResults}>查看图表与数据 <Icon name="arrow-right" size={14} /></button> : null}{run.retrieval?.tables.length ? <section className="selected-tables"><div className="artifact-heading"><strong>已选择的数据表</strong></div><div className="table-artifact">{run.retrieval.tables.map((table) => <span key={table.name}><Icon name="table" size={16} />{table.displayName || table.name}</span>)}</div></section> : null}{run.queries.length ? <details className="sql-disclosure"><summary><span><Icon name="code" size={16} /> SQL 查询（{run.queries.length} 条）</span><Icon name="chevron-down" size={14} /></summary>{run.queries.map((item) => <pre key={item.id}>{item.sql}</pre>)}</details> : null}</article> : null}
+        {run ? <article className="conversation-entry agent-entry"><div className="entry-meta"><strong>DataAgent</strong><span>{run.status}</span></div><h1>{run.analysis?.title || (streamingAnswer ? '正在生成分析结论' : running ? '正在分析数据' : '本次分析')}</h1><p className="current-action">当前步骤：{stageLabels[run.currentStage || ''] || status}</p>{agentMessages.length ? <AgentNarrationList messages={agentMessages} /> : null}{displayedSummary ? <section className={`streaming-answer ${run.analysis ? 'is-complete' : ''}`} aria-live="polite"><Markdown>{displayedSummary}</Markdown>{!run.analysis ? <i aria-hidden="true" /> : null}</section> : null}{run.error ? <><p className="diagnostic-warning">{run.error.message}</p><button type="button" onClick={props.onRetry}>重新运行</button></> : null}{run.analysis ? <button className="view-result-button" type="button" onClick={props.onViewResults}>查看图表与数据 <Icon name="arrow-right" size={14} /></button> : null}{run.retrieval?.tables.length ? <section className="selected-tables"><div className="artifact-heading"><strong>已选择的数据表</strong></div><div className="table-artifact">{run.retrieval.tables.map((table) => <span key={table.name}><Icon name="table" size={16} />{table.displayName || table.name}</span>)}</div></section> : null}{run.queries.length ? <details className="sql-disclosure"><summary><span><Icon name="code" size={16} /> SQL 查询（{run.queries.length} 条）</span><Icon name="chevron-down" size={14} /></summary>{run.queries.map((item) => <pre key={item.id}>{item.sql}</pre>)}</details> : null}</article> : null}
       </div><div className="workspace-composer"><Composer compact value={query} running={running} placeholder="继续提出分析问题…" onChange={onQueryChange} onSubmit={onSubmit} onStop={onStop} /></div></main>
       <ExecutionInspector run={run} events={events} />
     </div>
@@ -226,7 +285,7 @@ export function ResultsScreen(props: Navigation & {
     if (resultSet) setVisibleColumns(resultSet.columns.map((column) => column.name))
   }, [resultSet?.id])
 
-  if (!run?.analysis) return <WorkspaceScreen {...props} conversation={null} events={[]} streamingAnswer={props.streamingAnswer} connected status="结果尚未生成" onStop={() => undefined} onRetry={() => undefined} onViewResults={() => undefined} />
+  if (!run?.analysis) return <WorkspaceScreen {...props} conversation={null} events={[]} agentMessages={[]} streamingAnswer={props.streamingAnswer} connected status="结果尚未生成" onStop={() => undefined} onRetry={() => undefined} onViewResults={() => undefined} />
   const analysis = run.analysis
   const successfulQueries = run.queries.filter((item) => item.resultSetId)
   const selectedQuery = successfulQueries.find((item) => item.resultSetId === props.selectedResultSetId)

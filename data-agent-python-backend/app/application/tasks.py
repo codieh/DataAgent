@@ -55,6 +55,12 @@ class TaskRegistry:
             # 等待取消完成；return_exceptions 避免取消异常向上传播。
             await asyncio.gather(task, return_exceptions=True)
 
+    async def wait_for_completion(self, run_id: str) -> None:
+        """等待指定 Run 的旧后台任务彻底退出，避免失败后立即重试的启动竞态。"""
+        task = self._tasks.get(run_id)
+        if task and not task.done():
+            await asyncio.gather(task, return_exceptions=True)
+
     async def shutdown(self) -> None:
         """关闭注册表：取消全部进行中的任务并等待全部结束，最后清空映射。"""
         tasks = list(self._tasks.values())

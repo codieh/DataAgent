@@ -218,10 +218,23 @@
 .active-stage-receipt p i { width: 7px; height: 7px; border-radius: 50%; background: #268653; }
 .active-stage-receipt p span { margin-left: auto; color: #777872; }
 .active-stage-receipt code { color: #676963; font-family: var(--mono); font-size: 9px; line-height: 1.55; }
+.sql-lifecycle { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line-soft); }
+.sql-lifecycle h3 { margin: 0 0 12px; font-size: 11px; }
+.sql-lifecycle-item { display: grid; grid-template-columns: 12px minmax(0, 1fr); gap: 8px; padding: 7px 0; }
+.sql-lifecycle-item > i { width: 7px; height: 7px; margin-top: 4px; border: 1px solid #8d918b; border-radius: 50%; background: var(--bone-soft); }
+.sql-lifecycle-item > span { display: flex; flex-direction: column; min-width: 0; gap: 2px; }
+.sql-lifecycle-item strong { font-size: 10px; font-weight: 600; }
+.sql-lifecycle-item small { overflow: hidden; color: var(--muted); font-size: 8px; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
+.sql-lifecycle-item.sql-validated > i,
+.sql-lifecycle-item.sql-executed > i,
+.sql-lifecycle-item.sql-reused > i { border-color: var(--forest); background: var(--forest); }
+.sql-lifecycle-item.sql-blocked > i,
+.sql-lifecycle-item.sql-rejected > i,
+.sql-lifecycle-item.sql-failed > i { border-color: var(--copper); background: var(--copper); }
 .inspector-details { margin-top: 28px; }
 .inspector-details h3 { margin: 18px 0 8px; font-size: 11px; }
 .inspector-details pre { max-height: 280px; overflow: auto; padding: 14px; border: 1px solid var(--line); font-family: var(--mono); font-size: 9px; white-space: pre-wrap; }
-.event-receipts { border-top: 1px solid var(--line-soft); }
+.event-receipts { max-height: 320px; overflow: auto; border-top: 1px solid var(--line-soft); }
 .event-receipts div { display: grid; grid-template-columns: 28px 1fr auto; padding: 9px 0; border-bottom: 1px solid var(--line-soft); font-size: 9px; }
 .event-receipts em { color: var(--muted); font-style: normal; }
 .inspector-footnote { position: sticky; bottom: -20px; display: flex; align-items: center; justify-content: space-between; margin: 30px -5px -20px; padding: 20px 5px; color: #85857f; background: var(--bone); font-size: 9px; }
@@ -434,6 +447,20 @@
 .streaming-answer p { margin: 0; white-space: pre-wrap; color: #253b33; font-size: 13px; line-height: 1.9; }
 .streaming-answer.is-complete { background: transparent; }
 .streaming-answer i { display: inline-block; width: 7px; height: 14px; margin-left: 4px; background: var(--forest); vertical-align: -2px; animation: stream-cursor 1s steps(1) infinite; }
+.agent-narration-list { display: grid; gap: 10px; margin: 14px 0 18px; }
+.agent-narration { position: relative; padding: 13px 15px; border: 1px solid rgba(20, 77, 60, .14); border-radius: 8px; background: rgba(250, 248, 242, .72); }
+.agent-narration.is-collapsed { padding-top: 10px; padding-bottom: 10px; }
+.agent-narration-toolbar { display: flex; align-items: center; justify-content: space-between; }
+.agent-narration-toolbar strong { color: #424a45; font-size: 12px; }
+.agent-narration-toolbar button { border: 0; background: transparent; color: var(--forest); font-size: 12px; cursor: pointer; }
+.agent-narration-toggle { display: flex; width: 100%; align-items: center; gap: 10px; padding: 0; border: 0; background: transparent; color: #6d716c; font-size: 11px; letter-spacing: .02em; text-align: left; cursor: pointer; }
+.agent-narration-toggle span { color: var(--forest); font-weight: 700; }
+.agent-narration-toggle em { overflow: hidden; flex: 1; font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
+.agent-narration-toggle svg { transition: transform .18s ease; }
+.agent-narration:not(.is-collapsed) .agent-narration-toggle svg { transform: rotate(180deg); }
+.agent-narration-content { margin-top: 7px; }
+.agent-narration-content p { margin: 0; color: #343b37; font-size: 13px; line-height: 1.75; }
+.agent-narration-content > i { display: inline-block; width: 6px; height: 12px; margin-left: 4px; background: var(--forest); vertical-align: -2px; animation: stream-cursor 1s steps(1) infinite; }
 @keyframes stream-cursor { 50% { opacity: 0; } }
 .stream-monitor { display: grid; grid-template-rows: auto auto auto minmax(0, 1fr) auto; min-width: 0; min-height: 0; padding: 0 22px; color: #bfcac1; background: #111d19; font-family: var(--mono); }
 .stream-monitor > header { display: flex; justify-content: space-between; align-items: center; height: 56px; border-bottom: 1px solid rgba(255, 255, 255, .12); font-size: 11px; letter-spacing: .12em; }
@@ -606,4 +633,3 @@
 /* 任务列表（Gfm 扩展）：去掉默认圆点，让 checkbox 单独显示 */
 .markdown-body li input[type="checkbox"] { margin-right: 6px; }
 .markdown-body li:has(> input[type="checkbox"]) { list-style: none; margin-left: -18px; }
-

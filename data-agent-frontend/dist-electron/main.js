@@ -1,115 +1,89 @@
-import { app, BrowserWindow, ipcMain } from "electron";
-import http from "node:http";
-import https from "node:https";
-import { fileURLToPath } from "node:url";
-import path from "node:path";
-const __dirname$1 = path.dirname(fileURLToPath(import.meta.url));
-process.env.APP_ROOT = path.join(__dirname$1, "..");
-const VITE_DEV_SERVER_URL = process.env["VITE_DEV_SERVER_URL"];
-const MAIN_DIST = path.join(process.env.APP_ROOT, "dist-electron");
-const RENDERER_DIST = path.join(process.env.APP_ROOT, "dist");
-process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, "public") : RENDERER_DIST;
-let win;
-const activeStreams = /* @__PURE__ */ new Map();
-function parseSseChunk(buffer) {
-  const events = [];
-  const normalized = buffer.replace(/\r\n/g, "\n");
-  const parts = normalized.split("\n\n");
-  const rest = parts.pop() ?? "";
-  for (const part of parts) {
-    if (!part.trim()) {
+import { app as v, BrowserWindow as _, ipcMain as d } from "electron";
+import j from "node:http";
+import O from "node:https";
+import { fileURLToPath as x } from "node:url";
+import c from "node:path";
+const S = c.dirname(x(import.meta.url));
+process.env.APP_ROOT = c.join(S, "..");
+const g = process.env.VITE_DEV_SERVER_URL, C = c.join(process.env.APP_ROOT, "dist-electron"), P = c.join(process.env.APP_ROOT, "dist");
+process.env.VITE_PUBLIC = g ? c.join(process.env.APP_ROOT, "public") : P;
+let i;
+const l = /* @__PURE__ */ new Map();
+function R(t) {
+  const e = [], s = t.replace(/\r\n/g, `
+`).split(`
+
+`), r = s.pop() ?? "";
+  for (const n of s) {
+    if (!n.trim())
       continue;
-    }
-    let event = "message";
-    let id = "";
-    const dataLines = [];
-    for (const rawLine of part.split("\n")) {
-      if (!rawLine || rawLine.startsWith(":")) {
+    let o = "message", w = "";
+    const E = [];
+    for (const m of n.split(`
+`)) {
+      if (!m || m.startsWith(":"))
         continue;
-      }
-      const separator = rawLine.indexOf(":");
-      const field = separator >= 0 ? rawLine.slice(0, separator) : rawLine;
-      const value = separator >= 0 ? rawLine.slice(separator + 1).replace(/^ /, "") : "";
-      if (field === "event") {
-        event = value || "message";
-      } else if (field === "data") {
-        dataLines.push(value);
-      } else if (field === "id") {
-        id = value;
-      }
+      const f = m.indexOf(":"), h = f >= 0 ? m.slice(0, f) : m, u = f >= 0 ? m.slice(f + 1).replace(/^ /, "") : "";
+      h === "event" ? o = u || "message" : h === "data" ? E.push(u) : h === "id" && (w = u);
     }
-    events.push({ event, data: dataLines.join("\n"), id: id || void 0 });
+    e.push({ event: o, data: E.join(`
+`), id: w || void 0 });
   }
-  return { events, rest };
+  return { events: e, rest: r };
 }
-function emitStreamEvent(webContents, payload) {
-  if (!webContents.isDestroyed()) {
-    webContents.send("stream:event", payload);
-  }
+function p(t, e) {
+  t.isDestroyed() || t.send("stream:event", e);
 }
-function stopStream(requestId) {
-  const request = activeStreams.get(requestId);
-  if (!request) {
-    return;
-  }
-  activeStreams.delete(requestId);
-  request.destroy();
+function T(t) {
+  const e = l.get(t);
+  e && (l.delete(t), e.destroy());
 }
-function handleStreamResponse(webContents, requestId, response) {
-  emitStreamEvent(webContents, {
-    requestId,
+function z(t, e, a) {
+  p(t, {
+    requestId: e,
     type: "open",
-    status: response.statusCode ?? 0
-  });
-  response.setEncoding("utf8");
-  let buffer = "";
-  response.on("data", (chunk) => {
-    buffer += chunk;
-    const parsed = parseSseChunk(buffer);
-    buffer = parsed.rest;
-    for (const event of parsed.events) {
-      emitStreamEvent(webContents, {
-        requestId,
+    status: a.statusCode ?? 0
+  }), a.setEncoding("utf8");
+  let s = "";
+  a.on("data", (r) => {
+    s += r;
+    const n = R(s);
+    s = n.rest;
+    for (const o of n.events)
+      p(t, {
+        requestId: e,
         type: "message",
-        event: event.event,
-        data: event.data,
-        id: event.id
+        event: o.event,
+        data: o.data,
+        id: o.id
       });
-    }
-  });
-  response.on("end", () => {
-    if (buffer.trim()) {
-      const parsed = parseSseChunk(`${buffer}
+  }), a.on("end", () => {
+    if (s.trim()) {
+      const r = R(`${s}
 
 `);
-      for (const event of parsed.events) {
-        emitStreamEvent(webContents, {
-          requestId,
+      for (const n of r.events)
+        p(t, {
+          requestId: e,
           type: "message",
-          event: event.event,
-          data: event.data,
-          id: event.id
+          event: n.event,
+          data: n.data,
+          id: n.id
         });
-      }
     }
-    activeStreams.delete(requestId);
-    emitStreamEvent(webContents, { requestId, type: "close" });
-  });
-  response.on("error", (error) => {
-    activeStreams.delete(requestId);
-    emitStreamEvent(webContents, {
-      requestId,
+    l.delete(e), p(t, { requestId: e, type: "close" });
+  }), a.on("error", (r) => {
+    l.delete(e), p(t, {
+      requestId: e,
       type: "error",
-      error: error instanceof Error ? error.message : String(error)
+      error: r instanceof Error ? r.message : String(r)
     });
   });
 }
-function startStream(webContents, requestId, rawUrl) {
-  stopStream(requestId);
-  const url = new URL(rawUrl);
-  const transport = url.protocol === "https:" ? https : http;
-  const request = transport.request(
-    url,
+function V(t, e, a) {
+  T(e);
+  const s = new URL(a), n = (s.protocol === "https:" ? O : j).request(
+    s,
     {
       method: "GET",
       headers: {
@@ -118,75 +92,53 @@ function startStream(webContents, requestId, rawUrl) {
         Connection: "keep-alive"
       }
     },
-    (response) => handleStreamResponse(webContents, requestId, response)
+    (o) => z(t, e, o)
   );
-  activeStreams.set(requestId, request);
-  request.on("error", (error) => {
-    activeStreams.delete(requestId);
-    emitStreamEvent(webContents, {
-      requestId,
+  l.set(e, n), n.on("error", (o) => {
+    l.delete(e), p(t, {
+      requestId: e,
       type: "error",
-      error: error instanceof Error ? error.message : String(error)
+      error: o instanceof Error ? o.message : String(o)
     });
-  });
-  request.end();
+  }), n.end();
 }
-function createWindow() {
-  win = new BrowserWindow({
+function L() {
+  i = new _({
     width: 1440,
     height: 960,
     minWidth: 760,
     minHeight: 580,
-    frame: false,
-    transparent: false,
+    frame: !1,
+    transparent: !1,
     backgroundColor: "#f2efe8",
-    icon: path.join(process.env.VITE_PUBLIC, "app-icon.png"),
+    icon: c.join(process.env.VITE_PUBLIC, "app-icon.png"),
     webPreferences: {
-      preload: path.join(__dirname$1, "preload.mjs")
+      preload: c.join(S, "preload.mjs")
     }
-  });
-  win.webContents.on("did-finish-load", () => {
-    win?.webContents.send("main-process-message", (/* @__PURE__ */ new Date()).toLocaleString());
-  });
-  if (VITE_DEV_SERVER_URL) {
-    win.loadURL(VITE_DEV_SERVER_URL);
-  } else {
-    win.loadFile(path.join(RENDERER_DIST, "index.html"));
-  }
+  }), i.webContents.on("did-finish-load", () => {
+    i?.webContents.send("main-process-message", (/* @__PURE__ */ new Date()).toLocaleString());
+  }), g ? i.loadURL(g) : i.loadFile(c.join(P, "index.html"));
 }
-app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") {
-    app.quit();
-    win = null;
-  }
+v.on("window-all-closed", () => {
+  process.platform !== "darwin" && (v.quit(), i = null);
 });
-app.on("activate", () => {
-  if (BrowserWindow.getAllWindows().length === 0) {
-    createWindow();
-  }
+v.on("activate", () => {
+  _.getAllWindows().length === 0 && L();
 });
-ipcMain.on("stream:start", (event, payload) => {
-  if (!payload?.requestId || !payload?.url) {
-    return;
-  }
-  startStream(event.sender, payload.requestId, payload.url);
+d.on("stream:start", (t, e) => {
+  !e?.requestId || !e?.url || V(t.sender, e.requestId, e.url);
 });
-ipcMain.on("stream:stop", (_event, requestId) => {
-  if (!requestId) {
-    return;
-  }
-  stopStream(requestId);
+d.on("stream:stop", (t, e) => {
+  e && T(e);
 });
-ipcMain.on("window:minimize", () => win?.minimize());
-ipcMain.on("window:maximize", () => {
-  if (!win) return;
-  if (win.isMaximized()) win.unmaximize();
-  else win.maximize();
+d.on("window:minimize", () => i?.minimize());
+d.on("window:maximize", () => {
+  i && (i.isMaximized() ? i.unmaximize() : i.maximize());
 });
-ipcMain.on("window:close", () => win?.close());
-app.whenReady().then(createWindow);
+d.on("window:close", () => i?.close());
+v.whenReady().then(L);
 export {
-  MAIN_DIST,
-  RENDERER_DIST,
-  VITE_DEV_SERVER_URL
+  C as MAIN_DIST,
+  P as RENDERER_DIST,
+  g as VITE_DEV_SERVER_URL
 };

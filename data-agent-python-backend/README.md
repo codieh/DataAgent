@@ -10,7 +10,7 @@ DataAgent 的主后端服务，基于 FastAPI、LangGraph 和 OpenAI Python SDK 
 - MySQL 实时 Schema 检索和只读数据分析
 - 基于 `sqlglot` AST 的确定性 SQL 安全检查
 - Docker 隔离的 Python 复杂分析
-- 会话历史、长期记忆和自动上下文压缩
+- 会话历史、核心记忆和滚动摘要压缩（向量长期记忆默认未接入主链）
 - REST 持久化结果与可断线恢复的 SSE 事件流
 
 ## 文档导航
@@ -20,7 +20,9 @@ DataAgent 的主后端服务，基于 FastAPI、LangGraph 和 OpenAI Python SDK 
 | [Python 零基础读代码指南](./docs/python-beginner-guide.md) | 还不熟悉Python、异步、FastAPI、SQLAlchemy和pytest |
 | [代码级理解手册](./docs/dataagent-deep-dive.md) | 想完整理解架构、数据流、RAG、记忆、任务取消和数据库设计 |
 | [调试与故障排查手册](./docs/debug-playbook.md) | 需要按`run_id`定位LLM、检索、SQL、SSE和Docker问题 |
-| [校招面试问题与参考回答](./docs/interview-question-bank.md) | 准备项目介绍和代码追问 |
+| [核心面试题库](./docs/interview-question-bank.md) | 面试前优先掌握的 32 道项目追问 |
+| [扩展面试问题参考](./docs/interview-question-bank-extended.md) | 核心题掌握后按需查阅更多细节 |
+| [两场真实面试复盘](../docs/tutorial/15-interview-retrospective.md) | 对照真实失误练习标准答案和连续追问 |
 
 ## 运行要求
 
@@ -112,13 +114,15 @@ flowchart TD
 每次分析开始前，`ContextBuilder` 会读取 SQLite 中的会话摘要和尚未摘要的消息，并按统一预算判断是否需要持久化压缩：
 
 1. 会话摘要与尚未摘要消息达到记忆预算的 `80%` 时触发压缩。
-2. 较早消息交给 `ConversationSummarizer` 合并，最近约 `30%` 保留原文。
+2. 当前输入之前尚未摘要的会话历史全部交给 `ConversationSummarizer` 合并，不额外保留最近原文。
 3. 摘要和覆盖到的消息游标写入 SQLite，后续请求直接复用。
 4. 已由摘要覆盖的原始消息不再重复加入最近对话；历史会话通过 SQLite FTS5 工具按需搜索，不写入 Chroma。
-5. 用户核心记忆以一份精简 Markdown 保存，新建会话时作为隐藏 System Message 加入；用户明确要求修改时由 `rewrite_core_memory` 整块改写。
-6. LLM Client 不再创建第二份临时摘要，只截断超大 Tool Result 并执行最终硬上限检查。
+5. 用户核心记忆以一份精简 Markdown 保存，新建会话时写入隐藏的会话元数据；构建模型输入时转为 `memory.longTermMemories`，不会成为第二条 System Prompt。用户明确要求修改时由 `rewrite_core_memory` 整块改写。
+6. 当前 Run 采用 `Tool Result Budget → Snip → Micro → Context Collapse → Auto Compact` 五级活动上下文压缩；完整工具轨迹仍由 SQLite 和 LangGraph checkpoint 保存。
+7. Context Collapse 以完整工具调用轮次为边界生成结构化运行摘要；Auto Compact 会重建“固定 System Prompt + 核心记忆 + 压缩边界 + 恢复摘要 + 当前请求 + Tool Schema”，成功后自动继续同一次 Run。
+8. 不保护最近一次完整工具结果；所有超限 Tool Result 都会变成元数据、有限预览和 `resultRef`。若全部阶段完成后仍超过总上限则直接报错。
 
-默认总上下文上限为 `200000`，其中会预留模型输出和安全余量。持久化摘要实现在 `app/memory/summary.py`，最终请求保护位于 `app/infrastructure/llm/openai.py`。
+总上下文上限由 `max_context_size` 统一控制。跨 Run 会话摘要实现在 `app/memory/summary.py`，当前 Run 的多阶段压缩位于 `app/context/manager.py`，最终请求保护位于 `app/infrastructure/llm/openai.py`。
 
 模型调用的工具名称、完整参数和模型实际看到的 ToolMessage 会写入 SQLite `tool_calls` 表；大型 SQL 数据仍由 `result_sets` 和 CSV 保存，工具轨迹记录对应引用。
 
@@ -205,10 +209,9 @@ docker build -t data-agent-python-sandbox:latest sandbox/python
 | `DATA_AGENT_DATABASE_URL` | 本地 SQLite | 会话、运行、事件和产物 |
 | `DATA_AGENT_PRODUCT_DATABASE_URL` | 本地 MySQL | 只读业务数据源 |
 | `DATA_AGENT_LLM_MODEL` | `kimi-for-coding` | OpenAI 兼容模型名 |
-| `DATA_AGENT_MAX_CONTEXT_SIZE` | `200000` | 总上下文窗口 |
+| `DATA_AGENT_MAX_CONTEXT_SIZE` | `4000` | 唯一的总上下文窗口（当前为压缩测试值） |
 | `DATA_AGENT_CONTEXT_COMPACT_THRESHOLD` | `0.8` | 会话记忆触发持久化摘要的比例 |
 | `DATA_AGENT_CONTEXT_COMPACT_PRESERVE_RATIO` | `0.3` | 持久化摘要时保留的近期原文比例 |
-| `DATA_AGENT_CONTEXT_TOOL_RESULT_MAX_TOKENS` | `20000` | 单条工具结果预算 |
 | `DATA_AGENT_SQL_ROW_LIMIT` | `50000` | SQL执行和完整结果最大行数 |
 | `DATA_AGENT_SQL_TIMEOUT_SECONDS` | `30` | SQL执行超时 |
 | `DATA_AGENT_RETRIEVAL_BACKEND` | `chroma` | 知识检索实现 |

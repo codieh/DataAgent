@@ -8,6 +8,7 @@ Schema/知识、计划、SQL 及其校验/执行、结果、Agent 决策与计�
 约定：节点方法返回“状态增量”dict，LangGraph 负责把增量合并进本状态。
 """
 
+import operator
 from typing import Annotated, Any, TypedDict
 
 from langchain_core.messages import AnyMessage
@@ -44,11 +45,11 @@ class AnalysisState(TypedDict, total=False):
     agent_iterations: int  # Agent 已执行的决策轮数
     schema_search_count: int  # schema 检索累计次数（预算控制）
     sql_execution_count: int  # SQL 执行累计次数（预算控制）
-    observations: list[dict[str, Any]]  # 工具/动作观察记录（用于上下文与可解释性）
+    # 工具可并行完成；每个工具只返回本次增量，由 reducer 合并为完整观察轨迹。
+    observations: Annotated[list[dict[str, Any]], operator.add]
     final_answer: str  # Agent 结束时的结论文本
     full_schema: dict[str, Any]  # 完整 schema（区别于裁剪后的 schema）
-    pending_sql_execution: bool  # 是否等待 SQL 执行
-    pending_sql_validation: bool  # 是否等待 SQL 安全校验
     query_results: list[dict[str, Any]]  # 所有已执行查询的结果集清单
     python_analyses: list[dict[str, Any]]  # Python 分析产出（供结果合并）
     analysis_datasets: list[dict[str, Any]]  # 持久化的分析数据集元信息
+    context_compaction: dict[str, Any]  # 活动上下文压缩边界、结构化摘要与 Token 统计

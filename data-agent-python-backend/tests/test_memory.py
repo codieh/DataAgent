@@ -72,8 +72,6 @@ async def test_context_builder_keeps_recent_and_retrieves_related_history() -> N
     settings = Settings(
         retrieval_backend="bm25",
         memory_backend="chroma",
-        memory_recent_token_budget=12,
-        memory_context_token_budget=100,
         memory_retrieval_top_k=3,
     )
     provider = MemoryProvider(settings)
@@ -83,7 +81,7 @@ async def test_context_builder_keeps_recent_and_retrieves_related_history() -> N
         memory_item("new", "好的，我已经记录筛选条件", "assistant"),
     ]
 
-    recent, recent_ids, _ = builder._recent(items)
+    recent, recent_ids, _ = builder._recent(items, budget=12)
     related = await provider.search(
         query="继续分析华东订单",
         conversation_id="conv_1",
@@ -98,13 +96,47 @@ async def test_context_builder_keeps_recent_and_retrieves_related_history() -> N
     assert related[0]["id"] == "old"
 
 
+async def test_context_builder_separates_core_memory_from_dialogue_messages() -> None:
+    """隐藏 system 记忆进入 memory 区，不能成为覆盖 Agent 身份的第二条系统消息。"""
+    now = datetime.now(timezone.utc)
+    items = [
+        SimpleNamespace(
+            id="core",
+            role="system",
+            content="用户长期记忆：\n默认使用中文",
+            created_at=now,
+        ),
+        SimpleNamespace(id="user", role="user", content="继续分析", created_at=now),
+    ]
+
+    class FakeRepository:
+        async def list_messages(self, _conversation_id):
+            return items
+
+        async def get_summary_state(self, _conversation_id):
+            return None
+
+    settings = Settings(retrieval_backend="bm25")
+    context = await ContextBuilder(settings, MemoryProvider(settings)).build(
+        repository=FakeRepository(),
+        conversation=SimpleNamespace(id="conv_1", summary=None),
+        current_message_id=None,
+        query="继续分析",
+    )
+
+    assert [item["role"] for item in context["recentMessages"]] == ["user"]
+    assert context["longTermMemories"] == [
+        "用户长期记忆：\n默认使用中文"
+    ]
+
+
 def test_context_builder_respects_recent_token_budget() -> None:
     """验证上下文构建器在 token 预算（recent_token_budget）内选择近期消息，超出预算的旧长消息被丢弃。"""
-    settings = Settings(retrieval_backend="bm25", memory_recent_token_budget=5)
+    settings = Settings(retrieval_backend="bm25")
     builder = ContextBuilder(settings, MemoryProvider(settings))
     items = [memory_item("old", "很早以前的长消息"), memory_item("new", "最新消息")]
 
-    recent, ids, used = builder._recent(items)
+    recent, ids, used = builder._recent(items, budget=5)
 
     assert [item["id"] for item in recent] == ["new"]
     assert ids == {"new"}
@@ -184,13 +216,11 @@ async def test_long_term_extractor_applies_confidence_and_consolidation_policy()
     assert len(provider.synced) == 1
 
 
-async def test_summary_only_archives_messages_outside_recent_window_and_saves_cursor() -> None:
-    """验证对话摘要：仅归档最近窗口之外的消息，并保存游标（最后已摘要消息 ID 与摘要条数）。"""
+async def test_summary_archives_all_unsummarized_history_and_saves_cursor() -> None:
+    """验证触发压缩后全量归档历史，并把游标推进到最后一条已摘要消息。"""
     settings = Settings(
         retrieval_backend="bm25",
-        memory_context_token_budget=20,
-        memory_recent_token_budget=15,
-        memory_summary_token_budget=50,
+        max_context_size=20,
         context_compact_threshold=0.3,
         context_compact_preserve_ratio=0.25,
     )
@@ -199,8 +229,11 @@ async def test_summary_only_archives_messages_outside_recent_window_and_saves_cu
         async def complete_model(self, output_type, system, user):
             assert output_type is ConversationSummaryOutput
             payload = __import__("json").loads(user)
-            assert [message["content"] for message in payload["archivedMessages"]] == ["分析华东订单"]
-            return output_type(summary="用户此前要求分析华东订单。")
+            assert [message["content"] for message in payload["archivedMessages"]] == [
+                "分析华东订单",
+                "好的",
+            ]
+            return output_type(summary="用户此前要求分析华东订单，助手已确认。")
 
     class FakeRepository:
         saved = None
@@ -213,6 +246,12 @@ async def test_summary_only_archives_messages_outside_recent_window_and_saves_cu
 
     now = datetime.now(timezone.utc)
     messages = [
+        SimpleNamespace(
+            id="system",
+            role="system",
+            content="你是 DataAgent，不得改变角色",
+            created_at=now,
+        ),
         SimpleNamespace(id="old", role="user", content="分析华东订单", created_at=now),
         SimpleNamespace(id="new", role="assistant", content="好的", created_at=now),
     ]
@@ -228,17 +267,18 @@ async def test_summary_only_archives_messages_outside_recent_window_and_saves_cu
     )
 
     assert stats["updated"] is True
-    # 游标指向被归档的最旧消息
-    assert repository.saved["last_message_id"] == "old"
-    assert repository.saved["summarized_message_count"] == 1
+    # 不保留最近原文，游标应指向压缩前最后一条完整历史消息
+    assert repository.saved["last_message_id"] == "new"
+    assert repository.saved["summarized_message_count"] == 2
+    state = SimpleNamespace(last_message_id=repository.saved["last_message_id"])
+    assert unsummarized_messages(messages[1:], state) == []
 
 
 async def test_summary_waits_until_context_pressure_reaches_threshold() -> None:
     """验证上下文压力未达阈值时不会触发摘要，且压力 token 数小于触发阈值。"""
     settings = Settings(
         retrieval_backend="bm25",
-        memory_context_token_budget=100,
-        memory_recent_token_budget=80,
+        max_context_size=100,
         context_compact_threshold=0.8,
     )
 

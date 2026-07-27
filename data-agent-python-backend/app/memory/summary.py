@@ -1,12 +1,12 @@
 """对话摘要器（ConversationSummarizer）。
 
-职责：在上下文 token 预算接近上限（memory_context_token_budget * 阈值）时，将
-较早且完整的对话消息压缩为持久化摘要，从而「腾出」预算容纳最新对话。
+职责：在总上下文 token 预算接近上限（max_context_size * 阈值）时，将
+尚未摘要的完整对话历史全部压缩为持久化摘要。
 
 设计要点：
 - 压力指标 = 现有摘要 token + 尚未摘要消息的 token 之和。
-- 达到 compact_at 阈值才触发；保留最近一段（preserve_ratio）作为原文对话。
-- 仅归档「旧且完整」的消息，最近若干条始终以原文保留以保证连贯性。
+- 达到 compact_at 阈值才触发；触发后全量归档游标之后的历史消息。
+- 当前正在处理的消息与 System Prompt 不参与摘要，Agent 身份始终独立注入。
 - 副作用：通过 repository.save_conversation_summary 更新摘要与游标，并写审计日志。
 """
 
@@ -31,7 +31,7 @@ class ConversationSummarizer:
         """初始化摘要器。
 
         Args:
-            settings: 全局配置（预算、压缩阈值、保留比例等）。
+            settings: 全局配置（总预算、压缩阈值、摘要目标大小等）。
             llm: LLM 客户端，用于生成压缩摘要。
         """
         self.settings = settings
@@ -58,7 +58,12 @@ class ConversationSummarizer:
             pressureTokens（当前压力）与 compactAtTokens（触发阈值）。
         """
         # 排除当前正在处理的消息，避免把「正在回复的内容」也计入可压缩历史
-        eligible = [message for message in messages if message.id != current_message_id]
+        eligible = [
+            message
+            for message in messages
+            if message.id != current_message_id
+            and str(getattr(message, "role", "")) in {"user", "assistant"}
+        ]
         if not eligible:
             return {"updated": False, "archivedCount": 0, "archivedTokens": 0}
         state = await repository.get_summary_state(conversation.id)
@@ -68,9 +73,7 @@ class ConversationSummarizer:
         # 压力 = 现有摘要 token + 未摘要消息 token
         pressure_tokens = summary_tokens + sum(estimate_tokens(message.content) for message in unsummarized)
         # 触发阈值 = 总预算 * 压缩阈值
-        compact_at = int(
-            self.settings.memory_context_token_budget * self.settings.context_compact_threshold
-        )
+        compact_at = int(self.settings.max_context_size * self.settings.context_compact_threshold)
         base_stats = {
             "updated": False,
             "archivedCount": 0,
@@ -82,18 +85,9 @@ class ConversationSummarizer:
         if pressure_tokens < compact_at:
             return base_stats
 
-        # 压力达阈值后：保留最近一段作为原文对话，仅将更早的完整消息合并进 SQLite 摘要
-        preserve_budget = max(
-            1,
-            int(
-                self.settings.memory_context_token_budget
-                * self.settings.context_compact_preserve_ratio
-            ),
-        )
-        # 最近若干条消息（在保留预算内）始终以原文保留
-        recent_ids = self._recent_message_ids(unsummarized, preserve_budget)
-        # 其余较早消息进入待归档集合
-        archive = [message for message in unsummarized if message.id not in recent_ids]
+        # 达到阈值后全量压缩游标之后的历史。当前消息已在 eligible 阶段排除，
+        # 因此不会把正在处理的用户输入提前写进摘要。
+        archive = unsummarized
         archived_tokens = sum(estimate_tokens(message.content) for message in archive)
         if not archive:
             return base_stats
@@ -110,7 +104,10 @@ class ConversationSummarizer:
             CONVERSATION_SUMMARY_SYSTEM,
             json.dumps(payload, ensure_ascii=False),
         )
-        summary = truncate_to_tokens(result.summary.strip(), self.settings.memory_summary_token_budget)
+        summary = truncate_to_tokens(
+            result.summary.strip(),
+            max(1, int(self.settings.max_context_size * self.settings.context_compact_preserve_ratio)),
+        )
         # LLM 未产出有效摘要时，仍记录归档量，但不更新摘要游标
         if not summary:
             return {**base_stats, "archivedCount": len(archive), "archivedTokens": archived_tokens}
@@ -135,20 +132,6 @@ class ConversationSummarizer:
             "archivedCount": len(archive),
             "archivedTokens": archived_tokens,
         }
-
-    @staticmethod
-    def _recent_message_ids(messages: list[Any], budget: int) -> set[str]:
-        """从最新消息向前贪心选取，累计 token 不超过 budget，返回其 id 集合。"""
-        selected = set()
-        used = 0
-        for message in reversed(messages):
-            cost = estimate_tokens(message.content)
-            # 已选若干后若加入会超预算则停止（保证至少保留当前消息）
-            if selected and used + cost > budget:
-                break
-            selected.add(message.id)
-            used += cost
-        return selected
 
 
 def _after_cursor(messages: list[Any], state: Any | None) -> list[Any]:

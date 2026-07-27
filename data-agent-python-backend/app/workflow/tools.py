@@ -13,7 +13,7 @@ from langchain_core.messages import ToolMessage
 from langchain_core.tools import InjectedToolCallId, BaseTool, tool
 from langgraph.config import get_stream_writer
 from langgraph.prebuilt import InjectedState, ToolNode
-from langgraph.types import Command
+from langgraph.types import Command, interrupt
 
 from app.config import get_settings
 from app.observability.logging_setup import truncate_text
@@ -24,11 +24,17 @@ logger = logging.getLogger(__name__)
 from app.infrastructure.datasource.sql import BusinessDatabase
 from app.domain.errors import ResourceNotFoundError
 from app.analysis.service import PythonAnalysisService
+from app.analysis.datasets import AnalysisDatasetStore
 from app.infrastructure.persistence.database import session_factory
 from app.infrastructure.persistence.repository import Repository
 from app.memory.core import CoreMemoryService
 from app.retrieval import KnowledgeRetriever
+from app.security import inspect_select_sql
 from app.workflow.state import AnalysisState
+from app.workflow.tool_results import (
+    build_tool_result,
+    json_default,
+)
 
 
 class AnalysisToolRegistry:
@@ -39,12 +45,14 @@ class AnalysisToolRegistry:
         database: BusinessDatabase,
         retriever: KnowledgeRetriever,
         python_analysis: PythonAnalysisService | None = None,
+        dataset_store: AnalysisDatasetStore | None = None,
         result_history: Any | None = None,
         core_memory: CoreMemoryService | None = None,
     ):
         self.database = database
         self.retriever = retriever
         self.python_analysis = python_analysis
+        self.dataset_store = dataset_store
         self.result_history = result_history
         self.core_memory = core_memory
         self.tools = self._build()
@@ -53,6 +61,7 @@ class AnalysisToolRegistry:
         database = self.database
         retriever = self.retriever
         python_analysis = self.python_analysis
+        dataset_store = self.dataset_store
         result_history = self.result_history
         core_memory = self.core_memory
 
@@ -85,7 +94,7 @@ class AnalysisToolRegistry:
                 tool_call_id,
                 observation,
                 plan=plan,
-                observations=[*state.get("observations", []), observation],
+                observations=[observation],
             )
 
         @tool(
@@ -106,7 +115,7 @@ class AnalysisToolRegistry:
                 observation,
                 final_answer=question,
                 result_mode="need_clarification",
-                observations=[*state.get("observations", []), observation],
+                observations=[observation],
             )
 
         @tool("search_schema", description="检索完成当前分析问题所需的数据表及其字段和关联关系。")
@@ -116,25 +125,62 @@ class AnalysisToolRegistry:
             tool_call_id: Annotated[str, InjectedToolCallId],
         ) -> Command:
             _progress("正在检索相关数据表")
+            previous = _successful_observation(state, "search_schema", query)
+            if previous is not None and state.get("schema", {}).get("tables"):
+                selected = list(state.get("selected_tables") or [])
+                observation = {
+                    "tool": "search_schema",
+                    "ok": True,
+                    "query": query,
+                    "reused": True,
+                    "summary": "相同 Schema 检索已成功完成，复用现有候选表，请继续下一步",
+                    "tableNames": selected,
+                }
+                return _command(
+                    tool_call_id,
+                    observation,
+                    tool_content=build_tool_result(
+                        observation,
+                        result_ref={
+                            "type": "agent_state",
+                            "path": "schema",
+                            "scope": "current_run",
+                            "readTool": "inspect_tables",
+                        },
+                        stats={"tableCount": len(selected), "tableNames": selected, "reused": True},
+                    ),
+                    observations=[observation],
+                )
             full_schema = await database.schema_snapshot()
             recalled = await retriever.search_schema(query, full_schema)
             selected = [table["name"] for table in recalled["tables"]]
             observation = {
                 "tool": "search_schema",
                 "ok": bool(selected),
+                "query": query,
                 "summary": f"召回 {selected} 作为候选表",
                 "tableNames": selected,
-                "schemaRef": "state.schema",
             }
             return _command(
                 tool_call_id,
                 observation,
+                tool_content=build_tool_result(
+                    observation,
+                    preview={"tables": recalled["tables"]},
+                    result_ref={
+                        "type": "agent_state",
+                        "path": "schema",
+                        "scope": "current_run",
+                        "readTool": "inspect_tables",
+                    },
+                    stats={"tableCount": len(recalled["tables"]), "tableNames": selected},
+                ),
                 full_schema=full_schema,
                 schema={"tables": recalled["tables"]},
                 selected_tables=selected,
                 schema_reasons=recalled["reasons"],
                 schema_search_count=state.get("schema_search_count", 0) + 1,
-                observations=[*state.get("observations", []), observation],
+                observations=[observation],
             )
 
         @tool("inspect_tables", description="读取指定真实数据表的完整字段和关联关系。")
@@ -154,15 +200,28 @@ class AnalysisToolRegistry:
                 "ok": bool(inspected),
                 "summary": f"读取 {len(inspected)} 张表的完整结构" if inspected else "请求的表不存在",
                 "tableNames": [table.get("name") for table in inspected],
-                "schemaRef": "state.schema",
             }
             return _command(
                 tool_call_id,
                 observation,
+                tool_content=build_tool_result(
+                    observation,
+                    preview={"tables": inspected},
+                    result_ref={
+                        "type": "agent_state",
+                        "path": "schema",
+                        "scope": "current_run",
+                        "readTool": "inspect_tables",
+                    },
+                    stats={
+                        "tableCount": len(inspected),
+                        "tableNames": [table.get("name") for table in inspected],
+                    },
+                ),
                 full_schema=full_schema,
                 schema={"tables": list(merged.values())},
                 selected_tables=list(merged),
-                observations=[*state.get("observations", []), observation],
+                observations=[observation],
             )
 
         @tool("retrieve_knowledge", description="检索与指标口径、业务术语和默认规则相关的业务知识。")
@@ -172,37 +231,336 @@ class AnalysisToolRegistry:
             tool_call_id: Annotated[str, InjectedToolCallId],
         ) -> Command:
             _progress("正在检索业务知识")
+            previous = _successful_observation(state, "retrieve_knowledge", query)
+            if previous is not None and state.get("knowledge"):
+                knowledge = state["knowledge"]
+                count = len(knowledge.get("documents", [])) + len(knowledge.get("evidences", []))
+                observation = {
+                    "tool": "retrieve_knowledge",
+                    "ok": True,
+                    "query": query,
+                    "reused": True,
+                    "summary": "相同业务知识检索已成功完成，复用现有结果，请继续下一步",
+                }
+                return _command(
+                    tool_call_id,
+                    observation,
+                    tool_content=build_tool_result(
+                        observation,
+                        result_ref={
+                            "type": "agent_state",
+                            "path": "knowledge",
+                            "scope": "current_run",
+                            "readTool": "retrieve_knowledge",
+                        },
+                        stats={
+                            "documentCount": len(knowledge.get("documents", [])),
+                            "evidenceCount": len(knowledge.get("evidences", [])),
+                            "reused": True,
+                        },
+                    ),
+                    observations=[observation],
+                )
             knowledge = await retriever.search(query)
             count = len(knowledge["documents"]) + len(knowledge["evidences"])
             observation = {
                 "tool": "retrieve_knowledge",
                 "ok": count > 0,
+                "query": query,
                 "summary": f"召回 {count} 条业务知识",
             }
             return _command(
                 tool_call_id,
                 observation,
+                tool_content=build_tool_result(
+                    observation,
+                    preview=knowledge,
+                    result_ref={
+                        "type": "agent_state",
+                        "path": "knowledge",
+                        "scope": "current_run",
+                        "readTool": "retrieve_knowledge",
+                    },
+                    stats={
+                        "documentCount": len(knowledge["documents"]),
+                        "evidenceCount": len(knowledge["evidences"]),
+                    },
+                ),
                 knowledge=knowledge,
-                observations=[*state.get("observations", []), observation],
+                observations=[observation],
             )
 
-        @tool(
-            "execute_sql",
-            description="提交一条只读 MySQL SELECT 候选语句。工具只提交候选，系统安全校验通过后才会执行。",
-        )
+        @tool("execute_sql", description="安全校验并执行一条只读 MySQL SELECT，返回最终查询结果。")
         async def execute_sql(
             sql: str,
             state: Annotated[AnalysisState, InjectedState],
             tool_call_id: Annotated[str, InjectedToolCallId],
         ) -> Command:
-            _progress("正在提交候选 SQL")
-            observation = {"tool": "submit_sql", "ok": True, "summary": "候选 SQL 已提交安全检查"}
+            """在一次原生工具调用内完成校验、审核和执行，只返回最终结果。"""
+            _progress("正在检查并执行 SQL")
+            policy = inspect_select_sql(
+                sql,
+                row_limit=database.settings.sql_row_limit,
+                schema=state.get("schema", {}),
+                sensitive_fields=retriever.settings.sql_sensitive_field_list,
+            )
+            if not policy.passed:
+                _sql_event(
+                    "sql.blocked",
+                    {
+                        "candidateSql": sql,
+                        "reason": policy.reason,
+                        "resultMode": policy.result_mode,
+                        "retryable": policy.retryable,
+                    },
+                )
+                repair_count = state.get("retry_count", 0) + int(policy.retryable)
+                repair_exhausted = (
+                    policy.retryable
+                    and repair_count > retriever.settings.agent_max_sql_repairs
+                )
+                observation = {
+                    "tool": "execute_sql",
+                    "ok": False,
+                    "summary": "SQL 安全校验未通过",
+                    "error": policy.reason,
+                    "resultMode": policy.result_mode,
+                    "retryable": policy.retryable and not repair_exhausted,
+                }
+                updates: dict[str, Any] = {
+                    "sql": sql,
+                    "sql_error": policy.reason,
+                    "safety": {
+                        "passed": False,
+                        "reason": policy.reason,
+                        "checks": policy.checks,
+                        "resultMode": policy.result_mode,
+                    },
+                    "retry_count": repair_count,
+                    "observations": [observation],
+                }
+                if not policy.retryable or repair_exhausted:
+                    updates["result_mode"] = (
+                        policy.result_mode
+                        if not repair_exhausted
+                        else "sql_repair_exhausted"
+                    )
+                    updates["error"] = (
+                        policy.reason
+                        if not repair_exhausted
+                        else f"SQL 连续校验失败，已停止自动修复：{policy.reason}"
+                    )
+                return _command(tool_call_id, observation, **updates)
+
+            safe_sql = policy.sql
+            safety = {
+                "passed": True,
+                "readOnly": True,
+                "limitApplied": "LIMIT" in safe_sql.upper(),
+                "sensitiveFields": [],
+                "checks": policy.checks,
+            }
+            _sql_event(
+                "sql.validated",
+                {
+                    "sql": safe_sql,
+                    "safety": safety,
+                },
+            )
+
+            # 同一 Run 已成功执行过完全相同的规范化 SQL 时复用结果，避免模型重试
+            # 造成重复数据库访问和重复结果集。
+            existing = next(
+                (
+                    item
+                    for item in reversed(state.get("query_results", []))
+                    if str(item.get("sql") or "").strip() == safe_sql.strip()
+                ),
+                None,
+            )
+            if existing is not None:
+                dataset_id = str(existing.get("datasetId") or "")
+                _sql_event(
+                    "sql.reused",
+                    {
+                        "sql": safe_sql,
+                        "resultSetId": dataset_id,
+                        "rowCount": int(existing.get("rowCount") or 0),
+                    },
+                )
+                observation = {
+                    "tool": "execute_sql",
+                    "ok": True,
+                    "summary": "相同 SQL 已执行成功，直接复用已有结果",
+                    "rowCount": int(existing.get("rowCount") or 0),
+                    "datasetId": dataset_id,
+                    "reused": True,
+                }
+                return _command(
+                    tool_call_id,
+                    observation,
+                    tool_content=build_tool_result(
+                        observation,
+                        result_ref={
+                            "type": "query_result",
+                            "datasetId": dataset_id,
+                            "scope": "current_run",
+                            "readTool": "inspect_query_result",
+                        },
+                        stats={
+                            "rowCount": observation["rowCount"],
+                            "datasetId": dataset_id,
+                            "reused": True,
+                        },
+                    ),
+                    sql=safe_sql,
+                    sql_error=None,
+                    safety=safety,
+                    observations=[observation],
+                )
+
+            human_feedback = {"approved": True, "comment": ""}
+            if state.get("human_review_enabled"):
+                _progress("SQL 已通过安全检查，等待人工审核")
+                _sql_event(
+                    "sql.review_required",
+                    {
+                        "sql": safe_sql,
+                        "tables": state.get("selected_tables", []),
+                        "safety": safety,
+                    },
+                )
+                human_feedback = dict(
+                    interrupt(
+                        {
+                            "sql": safe_sql,
+                            "plan": state.get("plan"),
+                            "safety": safety,
+                            "tables": state.get("selected_tables", []),
+                        }
+                    )
+                    or {}
+                )
+                if not human_feedback.get("approved", False):
+                    comment = human_feedback.get("comment") or "人工审核未通过"
+                    _sql_event(
+                        "sql.rejected",
+                        {"sql": safe_sql, "reason": comment},
+                    )
+                    observation = {
+                        "tool": "execute_sql",
+                        "ok": False,
+                        "summary": "SQL 未执行：人工审核未通过",
+                        "error": comment,
+                        "retryable": True,
+                    }
+                    plan = dict(state.get("plan") or {})
+                    plan["review_feedback"] = comment
+                    return _command(
+                        tool_call_id,
+                        observation,
+                        sql=safe_sql,
+                        sql_error=comment,
+                        safety=safety,
+                        human_feedback=human_feedback,
+                        plan=plan,
+                        observations=[observation],
+                    )
+
+            if dataset_store is None:
+                raise RuntimeError("分析数据集存储未配置")
+            try:
+                _sql_event("sql.executing", {"sql": safe_sql})
+                columns, rows = await database.execute_select(
+                    safe_sql,
+                    row_limit=database.settings.sql_row_limit,
+                )
+                dataset = await dataset_store.create(
+                    run_id=state["run_id"],
+                    columns=columns,
+                    rows=rows,
+                )
+            except Exception as error:
+                _sql_event(
+                    "sql.failed",
+                    {"sql": safe_sql, "error": str(error)},
+                )
+                observation = {
+                    "tool": "execute_sql",
+                    "ok": False,
+                    "summary": "SQL 执行失败",
+                    "error": str(error),
+                    "retryable": True,
+                }
+                return _command(
+                    tool_call_id,
+                    observation,
+                    sql=safe_sql,
+                    columns=[],
+                    rows=[],
+                    sql_error=str(error),
+                    safety=safety,
+                    human_feedback=human_feedback,
+                    retry_count=state.get("retry_count", 0) + 1,
+                    sql_execution_count=state.get("sql_execution_count", 0) + 1,
+                    observations=[observation],
+                )
+
+            preview = dataset["previewRows"]
+            query_result = {
+                "sql": safe_sql,
+                "columns": columns,
+                "rowCount": len(rows),
+                "datasetId": dataset["id"],
+                "dataset": {
+                    "id": dataset["id"],
+                    "rowCount": dataset["rowCount"],
+                    "filePath": dataset["filePath"],
+                },
+            }
+            _sql_event(
+                "sql.executed",
+                {
+                    "sql": safe_sql,
+                    "resultSetId": dataset["id"],
+                    "rowCount": len(rows),
+                },
+            )
+            observation = {
+                "tool": "execute_sql",
+                "ok": True,
+                "summary": f"查询成功，返回 {len(rows)} 行",
+                "rowCount": len(rows),
+                "datasetId": dataset["id"],
+            }
             return _command(
                 tool_call_id,
                 observation,
-                sql=sql,
-                pending_sql_validation=True,
-                observations=[*state.get("observations", []), observation],
+                tool_content=build_tool_result(
+                    observation,
+                    preview={"columns": columns, "rows": preview},
+                    result_ref={
+                        "type": "query_result",
+                        "datasetId": dataset["id"],
+                        "scope": "current_run",
+                        "readTool": "inspect_query_result",
+                    },
+                    stats={
+                        "rowCount": len(rows),
+                        "datasetId": dataset["id"],
+                    },
+                ),
+                sql=safe_sql,
+                columns=columns,
+                rows=preview,
+                sql_error=None,
+                result_mode="success",
+                safety=safety,
+                human_feedback=human_feedback,
+                sql_execution_count=state.get("sql_execution_count", 0) + 1,
+                query_results=[*state.get("query_results", []), query_result],
+                analysis_datasets=[*state.get("analysis_datasets", []), dataset],
+                observations=[observation],
             )
 
         @tool("search_analysis_history", description="按问题、SQL 或字段关键词搜索当前会话以前产生的查询结果。")
@@ -229,8 +587,17 @@ class AnalysisToolRegistry:
             return _command(
                 tool_call_id,
                 observation,
-                tool_content={**observation, "matches": matches},
-                observations=[*state.get("observations", []), observation],
+                tool_content=build_tool_result(
+                    observation,
+                    preview={"matches": matches},
+                    result_ref={
+                        "type": "result_catalog",
+                        "conversationId": state["conversation_id"],
+                        "readTool": "inspect_query_result",
+                    },
+                    stats={"matchCount": len(matches)},
+                ),
+                observations=[observation],
             )
 
         @tool(
@@ -259,8 +626,17 @@ class AnalysisToolRegistry:
             return _command(
                 tool_call_id,
                 observation,
-                tool_content={**observation, "matches": matches},
-                observations=[*state.get("observations", []), observation],
+                tool_content=build_tool_result(
+                    observation,
+                    preview={"matches": matches},
+                    result_ref={
+                        "type": "conversation_messages",
+                        "conversationId": state["conversation_id"],
+                        "readTool": "read_message_context",
+                    },
+                    stats={"matchCount": len(matches)},
+                ),
+                observations=[observation],
             )
 
         @tool(
@@ -290,8 +666,18 @@ class AnalysisToolRegistry:
             return _command(
                 tool_call_id,
                 observation,
-                tool_content={**observation, **result},
-                observations=[*state.get("observations", []), observation],
+                tool_content=build_tool_result(
+                    observation,
+                    preview=result,
+                    result_ref={
+                        "type": "conversation_messages",
+                        "conversationId": state["conversation_id"],
+                        "messageId": message_id,
+                        "readTool": "read_message_context",
+                    },
+                    stats={"messageCount": len(result["messages"])},
+                ),
+                observations=[observation],
             )
 
         @tool(
@@ -315,8 +701,16 @@ class AnalysisToolRegistry:
             return _command(
                 tool_call_id,
                 observation,
-                tool_content={**observation, "matches": matches},
-                observations=[*state.get("observations", []), observation],
+                tool_content=build_tool_result(
+                    observation,
+                    preview={"matches": matches},
+                    result_ref={
+                        "type": "conversation_catalog",
+                        "readTool": "read_conversation_history",
+                    },
+                    stats={"matchCount": len(matches)},
+                ),
+                observations=[observation],
             )
 
         @tool(
@@ -342,8 +736,17 @@ class AnalysisToolRegistry:
             return _command(
                 tool_call_id,
                 observation,
-                tool_content={**observation, **result},
-                observations=[*state.get("observations", []), observation],
+                tool_content=build_tool_result(
+                    observation,
+                    preview=result,
+                    result_ref={
+                        "type": "conversation_messages",
+                        "conversationId": conversation_id,
+                        "readTool": "read_conversation_history",
+                    },
+                    stats={"messageCount": len(result["messages"])},
+                ),
+                observations=[observation],
             )
 
         @tool("inspect_query_result", description="按结果编号读取当前会话某次历史查询的具体数据行。")
@@ -371,7 +774,7 @@ class AnalysisToolRegistry:
                 return _command(
                     tool_call_id,
                     observation,
-                    observations=[*state.get("observations", []), observation],
+                    observations=[observation],
                 )
             observation = {
                 "tool": "inspect_query_result",
@@ -384,13 +787,27 @@ class AnalysisToolRegistry:
             return _command(
                 tool_call_id,
                 observation,
-                tool_content={"tool": "inspect_query_result", "ok": True, **result},
-                observations=[*state.get("observations", []), observation],
+                tool_content=build_tool_result(
+                    observation,
+                    preview=result,
+                    result_ref={
+                        "type": "result_set",
+                        "datasetId": dataset_id,
+                        "conversationId": state["conversation_id"],
+                        "readTool": "inspect_query_result",
+                    },
+                    stats={
+                        "rowCount": result["rowCount"],
+                        "returnedRows": result["returnedRows"],
+                    },
+                    truncated=bool(result.get("hasMore") or result.get("truncated")),
+                ),
+                observations=[observation],
             )
 
         @tool(
             "analyze_dataframe",
-            description="使用隔离的 Python 沙箱分析已有 SQL 结果，适用于趋势、异常、相关性和多结果集合并。",
+            description="使用隔离的 Python 沙箱分析已有 SQL 结果，适用于聚类、预测等任务。",
         )
         async def analyze_dataframe(
             objective: str,
@@ -404,7 +821,7 @@ class AnalysisToolRegistry:
                 return _command(
                     tool_call_id,
                     observation,
-                    observations=[*state.get("observations", []), observation],
+                    observations=[observation],
                 )
 
             try:
@@ -423,9 +840,21 @@ class AnalysisToolRegistry:
                 return _command(
                     tool_call_id,
                     observation,
+                    tool_content=build_tool_result(
+                        observation,
+                        preview=analysis["result"],
+                        result_ref={
+                            "type": "analysis_artifact",
+                            "analysisId": analysis["id"],
+                            "scope": "current_run",
+                        },
+                        stats={
+                            "datasetIds": analysis.get("datasetIds", dataset_ids or []),
+                        },
+                    ),
                     python_analysis=analysis,
                     python_analyses=[*state.get("python_analyses", []), analysis],
-                    observations=[*state.get("observations", []), observation],
+                    observations=[observation],
                 )
             except Exception as error:
                 observation = {
@@ -437,7 +866,7 @@ class AnalysisToolRegistry:
                 return _command(
                     tool_call_id,
                     observation,
-                    observations=[*state.get("observations", []), observation],
+                    observations=[observation],
                 )
 
         @tool(
@@ -469,8 +898,13 @@ class AnalysisToolRegistry:
             return _command(
                 tool_call_id,
                 observation,
-                tool_content={**observation, "memory": result["memory"]},
-                observations=[*state.get("observations", []), observation],
+                tool_content=build_tool_result(
+                    observation,
+                    preview={"memory": result["memory"]},
+                    result_ref={"type": "core_memory", "scope": "cross_conversation"},
+                    stats={"changed": result["changed"]},
+                ),
+                observations=[observation],
             )
 
         tools = [
@@ -574,12 +1008,34 @@ def _command(
             **updates,
             "messages": [
                 ToolMessage(
-                    content=json.dumps(tool_content or observation, ensure_ascii=False),
+                    content=json.dumps(
+                        tool_content or build_tool_result(observation),
+                        ensure_ascii=False,
+                        default=json_default,
+                    ),
                     tool_call_id=tool_call_id,
+                    id=f"tool-result-{tool_call_id}",
                 )
             ],
         }
     )
+
+
+def _successful_observation(
+    state: AnalysisState,
+    tool_name: str,
+    query: str,
+) -> dict[str, Any] | None:
+    """查找同一 Run 中参数完全相同的成功只读检索，避免重复外部计算。"""
+    normalized = " ".join(str(query).split()).casefold()
+    for observation in reversed(state.get("observations", [])):
+        if (
+            observation.get("tool") == tool_name
+            and observation.get("ok") is True
+            and " ".join(str(observation.get("query", "")).split()).casefold() == normalized
+        ):
+            return observation
+    return None
 
 
 def _compact_table(table: dict[str, Any]) -> dict[str, Any]:
@@ -599,3 +1055,14 @@ def _compact_table(table: dict[str, Any]) -> dict[str, Any]:
 
 def _progress(message: str) -> None:
     get_stream_writer()({"type": "stage.started", "stage": "tools", "message": message})
+
+
+def _sql_event(event_type: str, data: dict[str, Any]) -> None:
+    """发送 SQL 生命周期事件，由 Executor 持久化并通过 SSE 对外发布。"""
+    get_stream_writer()(
+        {
+            "type": event_type,
+            "stage": "tools",
+            "data": data,
+        }
+    )

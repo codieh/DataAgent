@@ -4,13 +4,14 @@
 组装成一份受 token 预算约束的模型上下文，避免无限累积历史导致上下文溢出。
 
 设计要点：
-- 摘要优先：先尝试压缩历史（若注入 summarizer），再用预算内的剩余额度容纳近
-  期原始消息。
-- 预算分配：总预算 = memory_context_token_budget，先扣除摘要占用，剩余给近期消息。
-- 已摘要消息不重复纳入近期消息（由 unsummarized_messages 过滤），避免信息重复。
+- 摘要优先：先尝试全量压缩游标之后的历史（若注入 summarizer），未触发压缩时
+  才把尚未摘要的消息作为原始上下文。
+- 预算分配：只使用 max_context_size 总预算，先扣除摘要占用，剩余给尚未摘要的消息。
+- 已摘要消息不重复纳入原始消息（由 unsummarized_messages 过滤），避免信息重复。
 - 当前正在处理的消息（current_message_id）从上下文消息列表中排除，防止自指。
 """
 
+import re
 from typing import Any
 
 from app.config import Settings
@@ -50,48 +51,60 @@ class ContextBuilder:
             其中 stats 汇报消息计数、token 估算与各预算上限，便于上游做可观测性统计。
         """
         messages = await repository.list_messages(conversation.id)
+        # System 消息是会话级核心记忆，不属于可摘要的对话历史。将其单独投影到
+        # memory 区，避免成为第二条 System Prompt 覆盖 Agent 身份。
+        core_memories = [
+            _plain_memory_text(message.content)
+            for message in messages
+            if str(getattr(message, "role", "")) == "system" and message.content
+        ]
+        dialogue_messages = [
+            message
+            for message in messages
+            if str(getattr(message, "role", "")) in {"user", "assistant"}
+        ]
         # 排除正在处理的当前消息，避免其被当作历史上下文再次输入
-        context_messages = [message for message in messages if message.id != current_message_id]
+        context_messages = [
+            message for message in dialogue_messages if message.id != current_message_id
+        ]
         summary_stats = {"updated": False, "archivedCount": 0, "archivedTokens": 0}
         if self.summarizer is not None:
             # 在预算吃紧时压缩历史对话，返回摘要更新统计
             summary_stats = await self.summarizer.maybe_summarize(
                 repository=repository,
                 conversation=conversation,
-                messages=messages,
+                messages=dialogue_messages,
                 current_message_id=current_message_id,
             )
         summary_state = await repository.get_summary_state(conversation.id)
         # 仅保留未被摘要覆盖的后续消息，避免与摘要内容重复
         active_messages = unsummarized_messages(context_messages, summary_state)
-        summary = truncate_to_tokens(conversation.summary or "", self.settings.memory_summary_token_budget)
-        summary_tokens = estimate_tokens(summary) if summary else 0
-        # 总预算中先扣除摘要占用，剩余额度给近期消息（且不超过近期限额）
-        recent_budget = min(
-            self.settings.memory_recent_token_budget,
-            max(0, self.settings.memory_context_token_budget - summary_tokens),
+        summary = truncate_to_tokens(
+            conversation.summary or "",
+            max(1, int(self.settings.max_context_size * self.settings.context_compact_preserve_ratio)),
         )
-        recent, recent_message_ids, recent_tokens = self._recent(active_messages, recent_budget)
+        summary_tokens = estimate_tokens(summary) if summary else 0
+        # 总预算中先扣除摘要占用，剩余额度给尚未触发下一次压缩的原始消息。
+        recent_budget = max(0, self.settings.max_context_size - summary_tokens)
+        recent, _, recent_tokens = self._recent(active_messages, recent_budget)
         used_tokens = summary_tokens + recent_tokens
         return {
             "summary": summary,
             "recentMessages": recent,
             "relatedMessages": [],
-            "longTermMemories": [],
+            "longTermMemories": core_memories,
             "stats": {
-                "messageCount": len(messages),
+                "messageCount": len(dialogue_messages),
                 "recentCount": len(recent),
                 "retrievedMessageCount": 0,
-                "longTermMemoryCount": 0,
+                "longTermMemoryCount": len(core_memories),
                 "retrievedCount": 0,
                 "estimatedTokens": used_tokens,
                 "summaryUpdated": summary_stats["updated"],
                 "summarizedMessages": summary_stats["archivedCount"],
                 "retentionDeleted": 0,
                 "budgets": {
-                    "memory": self.settings.memory_context_token_budget,
-                    "schema": self.settings.context_schema_token_budget,
-                    "knowledge": self.settings.context_knowledge_token_budget,
+                    "totalContext": self.settings.max_context_size,
                 },
             },
         }
@@ -101,7 +114,7 @@ class ContextBuilder:
 
         Args:
             items: 候选消息列表（按时间顺序排列）。
-            budget: 可选 token 预算；缺省时使用 memory_recent_token_budget。
+            budget: 可选 token 预算；缺省时使用 max_context_size。
 
         Returns:
             (选中的消息字典列表, 选中消息 id 集合, 已用 token 数)。
@@ -109,7 +122,7 @@ class ContextBuilder:
         """
         selected = []
         used = 0
-        budget = self.settings.memory_recent_token_budget if budget is None else max(0, budget)
+        budget = self.settings.max_context_size if budget is None else max(0, budget)
         # 从最新消息向前遍历，优先保留近期对话
         for item in reversed(items):
             cost = estimate_tokens(item.content)
@@ -159,3 +172,11 @@ def unsummarized_messages(messages: list[Any], summary_state: Any | None) -> lis
         None,
     )
     return messages if cursor_index is None else messages[cursor_index + 1 :]
+
+
+def _plain_memory_text(content: str) -> str:
+    """兼容旧数据：移除历史版本保存的单层 XML 包装，不改动记忆正文。"""
+    text = str(content).strip()
+    text = re.sub(r"^<[^>]+>\s*", "", text, count=1)
+    text = re.sub(r"\s*</[^>]+>$", "", text, count=1)
+    return text.strip()

@@ -205,5 +205,15 @@ export type RunEvent = {
   data: Record<string, unknown>
 }
 
+// Agent 每轮可见输出：工具调用前是 narration，直接回答时是 final。
+export type AgentStreamMessage = {
+  id: string
+  iteration: number
+  text: string
+  kind: 'pending' | 'narration' | 'final'
+  completed: boolean
+  toolNames: string[]
+}
+
 // 连接诊断里每一步的结果（设置页「ping」按钮用）。
 export type PingStep = { label: string; detail: string; duration: string }

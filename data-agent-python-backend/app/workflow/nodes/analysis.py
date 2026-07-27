@@ -3,7 +3,7 @@
 本模块实现 ``AnalysisNodes``，是 LangGraph 各节点的具体逻辑落地：
 - ``input_guard``：输入侧提示注入安全校验；
 - ``agent_decide``：Agent 决策循环核心，调用 LLM 选定下一步工具或结束；
-- ``sql_validate`` / ``human_feedback`` / ``sql_execute``：SQL 安全校验、人工审核、执行；
+- ``tools``：执行原生工具；SQL 校验、人工审核和执行封装在 ``execute_sql`` 内；
 - ``result``：汇总多查询结果，调用 LLM 生成结构化分析报告。
 
 每个节点接收 ``AnalysisState`` 并返回需要合并进全局状态的状态增量（dict）。
@@ -17,12 +17,12 @@ from decimal import Decimal
 from typing import Any
 from langchain_core.messages import AIMessage
 from langgraph.config import get_stream_writer
-from langgraph.types import interrupt
 
 from app.infrastructure.datasource.sql import BusinessDatabase
 from app.analysis import AnalysisDatasetStore
 from app.analysis.service import PythonAnalysisService
 from app.context import estimate_tokens
+from app.domain.errors import ContextWindowExceededError, InvalidOperationError
 from app.retrieval import KnowledgeRetriever
 from app.security import PromptInjectionGuard
 from app.workflow.prompts import (
@@ -64,6 +64,7 @@ class AnalysisNodes:
             database,
             retriever,
             python_analysis,
+            dataset_store,
             result_history,
             CoreMemoryService(retriever.settings, llm),
         )
@@ -111,68 +112,134 @@ class AnalysisNodes:
             }
         if self.agent_context_builder is None:
             raise RuntimeError("AgentContextBuilder 未配置")
-        context = await self.agent_context_builder.build(state)
+        tool_specifications = self.tool_registry.specifications()
+        context = await self.agent_context_builder.build(
+            state,
+            system=AGENT_SYSTEM,
+            tools=tool_specifications,
+        )
         writer = get_stream_writer()
         streamed_final = False
+        streamed_agent_text: list[str] = []
+        stream_message_id = f"agent-message-{iteration + 1}"
 
         def on_text_delta(delta: str) -> None:
-            """只有模型直接回答时才会收到文本增量；工具调用的 content 被协议要求为空。"""
-            nonlocal streamed_final
-            if not streamed_final:
-                writer({"type": "final_answer.started", "stage": "agent_decide", "data": {}})
-                streamed_final = True
-            writer({"type": "final_answer.delta", "stage": "agent_decide", "data": {"delta": delta}})
+            """实时展示 Agent 可见文本；响应结束后再判定它是过程说明还是最终回答。"""
+            if not streamed_agent_text:
+                writer({
+                    "type": "agent_message.started",
+                    "stage": "agent_decide",
+                    "data": {"messageId": stream_message_id, "iteration": iteration + 1},
+                })
+            streamed_agent_text.append(delta)
+            writer({
+                "type": "agent_message.delta",
+                "stage": "agent_decide",
+                "data": {"messageId": stream_message_id, "delta": delta},
+            })
 
         # 让 LLM 以原生工具调用方式决定下一步动作
-        # 已有真实查询结果时，Agent 的结束文本只是“停止调用工具”的内部信号；
-        # 最终用户答案由 result 节点统一生成。这里不流式外发，避免前端先看到
-        # 一次临时结论，随后又被 result 节点的正式总结重置并输出第二次。
-        response = await self.llm.complete_tool_messages(
-            AGENT_SYSTEM,
-            context.messages,
-            tools=self.tool_registry.specifications(),
-            on_text_delta=None if state.get("query_results") else on_text_delta,
-        )
-        tool_call = response.tool_calls[0] if response.tool_calls else None
-        # 没有工具调用即视为结束本轮 Agent 循环
-        action = tool_call["name"] if tool_call else "finish"
-        arguments = tool_call["args"] if tool_call else {}
-        # 安全护栏：还没检索过 schema 时，不允许直接 inspect/execute，强制先 search_schema
-        if not state.get("schema", {}).get("tables") and action in {
-            "inspect_tables",
-            "execute_sql",
-        }:
-            action = "search_schema"
-            arguments = {"query": state.get("contextualized_query") or state["query"]}
-        # 检索/schema 预算耗尽则强制结束
-        if (
-            action == "search_schema"
-            and state.get("schema_search_count", 0) >= self.retriever.settings.agent_max_schema_searches
-        ):
-            action = "finish"
-            response = AIMessage(content="已达到表结构检索上限，请补充更明确的业务实体或指标。")
-        if (
-            action == "execute_sql"
-            and state.get("sql_execution_count", 0) >= self.retriever.settings.agent_max_sql_executions
-        ):
-            action = "finish"
-            response = AIMessage(content="已达到查询执行上限，已返回当前可确认的分析结果。")
-        elif tool_call and (action != tool_call["name"] or arguments != tool_call["args"]):
-            # 动作/参数被护栏改写后，需要把 LLM 返回的工具调用同步修正，保证图状态一致
-            response = AIMessage(
-                content=response.content,
-                tool_calls=[{"id": tool_call["id"], "name": action, "args": arguments}],
+        try:
+            response = await self.llm.complete_tool_messages(
+                AGENT_SYSTEM,
+                context.messages,
+                tools=tool_specifications,
+                on_text_delta=on_text_delta,
             )
+        except ContextWindowExceededError:
+            # 与 cc-haha 的 reactive compact 一致：仅在供应商明确报告 prompt
+            # too long 时强制全量压缩，并重试当前 LLM 调用一次。
+            writer(
+                {
+                    "type": "context.compaction.retrying",
+                    "stage": "agent_decide",
+                    "data": {
+                        "iteration": iteration + 1,
+                        "reason": "provider_context_window_exceeded",
+                    },
+                }
+            )
+            retry_state = {
+                **state,
+                "context_compaction": context.compaction_state,
+            }
+            context = await self.agent_context_builder.build(
+                retry_state,
+                system=AGENT_SYSTEM,
+                tools=tool_specifications,
+                force_full_compact=True,
+            )
+            response = await self.llm.complete_tool_messages(
+                AGENT_SYSTEM,
+                context.messages,
+                tools=tool_specifications,
+                on_text_delta=on_text_delta,
+            )
+        original_tool_calls = list(response.tool_calls)
+        tool_calls = _normalize_tool_calls(
+            original_tool_calls,
+            state=state,
+            schema_search_limit=self.retriever.settings.agent_max_schema_searches,
+            sql_execution_limit=self.retriever.settings.agent_max_sql_executions,
+        )
+        _validate_parallel_state_writes(tool_calls)
+
+        if tool_calls != original_tool_calls:
+            # 护栏可能替换了越序工具或移除了超预算调用，必须同步修正 AIMessage。
+            response = AIMessage(content=response.content, tool_calls=tool_calls)
+
+        if streamed_agent_text:
+            # 有后续工具或查询结果时，这段文本只是过程说明；没有后续工作时才是直接答复。
+            message_kind = "narration" if original_tool_calls or state.get("query_results") else "final"
+            writer({
+                "type": "agent_message.completed",
+                "stage": "agent_decide",
+                "data": {
+                    "messageId": stream_message_id,
+                    "iteration": iteration + 1,
+                    "kind": message_kind,
+                    "text": "".join(streamed_agent_text),
+                    "toolNames": [call["name"] for call in original_tool_calls],
+                },
+            })
+            streamed_final = message_kind == "final"
+
+        # 没有工具调用即视为结束本轮 Agent 循环；兼容保留首动作字段并新增 actions。
+        action = tool_calls[0]["name"] if tool_calls else "finish"
+        arguments = tool_calls[0]["args"] if tool_calls else {}
+        actions = [{"action": call["name"], "arguments": call["args"]} for call in tool_calls]
+        if not tool_calls and original_tool_calls:
+            response = AIMessage(content=_budget_exhausted_message(original_tool_calls, state, self.retriever))
         updates: dict[str, Any] = {
             # 记录本轮决策（动作、理由摘要、参数）供后续节点与人工审核使用
             "agent_decision": {
                 "action": action,
+                "actions": actions,
                 "reasonSummary": str(response.content or ""),
                 "arguments": arguments,
             },
             "agent_iterations": iteration + 1,
             "messages": [response],
         }
+        if context.stats.get("updated"):
+            # 压缩边界进入 Graph State/checkpoint，下一轮只投影边界之后的新消息。
+            updates["context_compaction"] = context.compaction_state
+            writer(
+                {
+                    "type": "context.compacted",
+                    "stage": "agent_decide",
+                    "data": {
+                        "sequence": context.compaction_state.get("sequence"),
+                        "mode": context.compaction_state.get("mode"),
+                        "stages": context.compaction_state.get("stages", []),
+                        "beforeTokens": context.compaction_state.get("beforeTokens"),
+                        "afterTokens": context.compaction_state.get("afterTokens"),
+                        "coveredMessageCount": context.compaction_state.get(
+                            "coveredMessageCount"
+                        ),
+                    },
+                }
+            )
         if action == "finish":
             # 收尾：落定最终答案；若全程未产生查询结果，则按“对话”模式而非成功模式
             updates["final_answer"] = str(response.content or "") or (
@@ -194,169 +261,6 @@ class AnalysisNodes:
                 })
                 updates["result_mode"] = state.get("result_mode") or "conversation"
         return updates
-
-    async def sql_validate(self, state: AnalysisState) -> dict[str, Any]:
-        """对已生成的 SQL 做安全校验（只读、行数限制、敏感字段等）。
-
-        返回安全通过时的规范化结果（含 ``pending_sql_execution=True``），
-        或不通过时记录观察并标记 ``retryable`` 以触发自动修复/失败收敛。
-        """
-        _progress("sql_validate", "正在检查 SQL 安全性")
-        from app.security import inspect_select_sql
-
-        proposed_sql = str(state.get("sql") or "")
-        policy = inspect_select_sql(
-            proposed_sql,
-            row_limit=self.database.settings.sql_row_limit,
-            schema=state.get("schema", {}),
-            sensitive_fields=self.retriever.settings.sql_sensitive_field_list,
-        )
-        if not policy.passed:
-            # 计算已修复次数；可重试且超过最大修复次数则视为“修复已耗尽”
-            repair_count = state.get("retry_count", 0) + (1 if policy.retryable else 0)
-            repair_exhausted = policy.retryable and repair_count > self.retriever.settings.agent_max_sql_repairs
-            observation = {
-                "tool": "execute_safe_sql",
-                "ok": False,
-                "resultMode": policy.result_mode,
-                "error": policy.reason,
-                "retryable": policy.retryable and not repair_exhausted,
-            }
-            updates = {
-                "sql": proposed_sql,
-                "sql_error": policy.reason,
-                "pending_sql_validation": False,
-                "safety": {
-                    "passed": False,
-                    "reason": policy.reason,
-                    "checks": policy.checks,
-                    "resultMode": policy.result_mode,
-                },
-                "observations": _append_observation(state, observation),
-                "pending_sql_execution": False,
-                "retry_count": repair_count,
-            }
-            if not policy.retryable or repair_exhausted:
-                # 不可重试或修复已耗尽：确定最终 result_mode 与错误文案
-                updates["result_mode"] = policy.result_mode if not repair_exhausted else "sql_repair_exhausted"
-                updates["error"] = (
-                    policy.reason
-                    if not repair_exhausted
-                    else f"SQL 连续校验失败，已停止自动修复：{policy.reason}"
-                )
-            return updates
-        safe_sql = policy.sql
-        # 安全通过：写入规范化后的 SQL，并标记可进入执行阶段
-        return {
-            "sql": safe_sql,
-            "sql_error": None,
-            "pending_sql_validation": False,
-            "pending_sql_execution": True,
-            "safety": {
-                "passed": True,
-                "readOnly": True,
-                "limitApplied": "LIMIT" in safe_sql.upper(),
-                "sensitiveFields": [],
-                "checks": policy.checks,
-            },
-        }
-
-    async def human_feedback(self, state: AnalysisState) -> dict[str, Any]:
-        """人工审核节点：若开启审核则以 interrupt 暂停等待审批，否则直接通过。
-
-        审批不通过时记录观察并写入 plan 的 ``review_feedback``，阻止进入 SQL 执行。
-        """
-        if not state.get("human_review_enabled"):
-            return {"human_feedback": {"approved": True, "comment": ""}}
-        _progress("human_feedback", "SQL 已通过安全检查，等待人工审核")
-        # 把待审核信息（SQL/计划/安全结论/所选表）交给人工，暂停工作流直到 resume
-        feedback = interrupt(
-            {
-                "sql": state.get("sql"),
-                "plan": state.get("plan"),
-                "safety": state.get("safety"),
-                "tables": state.get("selected_tables", []),
-            }
-        )
-        normalized = dict(feedback or {})
-        updates: dict[str, Any] = {"human_feedback": normalized}
-        if not normalized.get("approved", False):
-            # 审核未通过：取消执行，并把审核意见写回计划，便于后续澄清/重试
-            updates["pending_sql_execution"] = False
-            plan = dict(state.get("plan") or {})
-            plan["review_feedback"] = normalized.get("comment") or "人工审核未通过"
-            updates["plan"] = plan
-            updates["observations"] = _append_observation(
-                state,
-                {
-                    "tool": "human_review",
-                    "ok": False,
-                    "error": normalized.get("comment") or "人工审核未通过",
-                    "retryable": True,
-                },
-            )
-        return updates
-
-    async def sql_execute(self, state: AnalysisState) -> dict[str, Any]:
-        """执行已通过校验/审核的 SQL，并把结果落库为分析数据集。
-
-        成功：写入预览行、query_results、analysis_datasets，并累加 SQL 执行次数；
-        失败：记录可重试的观察与异常，供上层决定修复或收敛。
-        """
-        _progress("sql_execute", "正在执行 SQL")
-        try:
-            row_limit = self.database.settings.sql_row_limit
-            columns, rows = await self.database.execute_select(state["sql"], row_limit=row_limit)
-            if self.dataset_store is None:
-                raise RuntimeError("分析数据集存储未配置")
-            dataset = await self.dataset_store.create(run_id=state["run_id"], columns=columns, rows=rows)
-            preview = dataset["previewRows"]
-            query_result = {
-                "sql": state["sql"],
-                "columns": columns,
-                "rowCount": len(rows),
-                "datasetId": dataset["id"],
-                "dataset": {
-                    "id": dataset["id"],
-                    "rowCount": dataset["rowCount"],
-                    "filePath": dataset["filePath"],
-                },
-            }
-            # 成功路径：把结果集登记到 query_results，并累积进分析数据集列表
-            return {
-                "columns": columns,
-                "rows": preview,
-                "sql_error": None,
-                "result_mode": "success",
-                "pending_sql_execution": False,
-                "sql_execution_count": state.get("sql_execution_count", 0) + 1,
-                "query_results": [*state.get("query_results", []), query_result],
-                "analysis_datasets": [*state.get("analysis_datasets", []), dataset],
-                "observations": _append_observation(
-                    state,
-                    {
-                        "tool": "execute_safe_sql",
-                        "ok": True,
-                        "summary": f"查询成功，返回 {len(rows)} 行",
-                        "rowCount": len(rows),
-                        "datasetId": dataset["id"],
-                    },
-                ),
-            }
-        except Exception as error:
-            # 执行异常：返回可重试的观察，让 Agent 决定修复 SQL 或结束
-            return {
-                "columns": [],
-                "rows": [],
-                "sql_error": str(error),
-                "retry_count": state.get("retry_count", 0) + 1,
-                "pending_sql_execution": False,
-                "sql_execution_count": state.get("sql_execution_count", 0) + 1,
-                "observations": _append_observation(
-                    state,
-                    {"tool": "execute_safe_sql", "ok": False, "error": str(error), "retryable": True},
-                ),
-            }
 
     async def result(self, state: AnalysisState) -> dict[str, Any]:
         """汇总全部查询结果，调用 LLM 生成结构化分析报告（findings/metrics/charts）。
@@ -494,11 +398,6 @@ def _json_default(value: Any) -> Any:
     raise TypeError(f"Object of type {value.__class__.__name__} is not JSON serializable")
 
 
-def _append_observation(state: AnalysisState, observation: dict[str, Any]) -> list[dict[str, Any]]:
-    """把一条工具观察追加到既有观察列表末尾（不可变地返回新列表）。"""
-    return [*state.get("observations", []), observation]
-
-
 def _conversation_messages(state: AnalysisState, current_content: str) -> list[dict[str, str]]:
     """由近轮对话历史组装模型消息（仅 user/assistant），末尾追加当前上下文。"""
     messages = []
@@ -519,6 +418,100 @@ def _supplemental_memory(state: AnalysisState) -> dict[str, Any]:
         "relatedMessages": context.get("relatedMessages", []),
         "longTermMemories": context.get("longTermMemories", []),
     }
+
+
+_TOOL_STATE_WRITES: dict[str, set[str]] = {
+    "update_analysis_plan": {"plan"},
+    "ask_clarification": {"final_answer", "result_mode"},
+    "search_schema": {
+        "full_schema",
+        "schema",
+        "selected_tables",
+        "schema_reasons",
+        "schema_search_count",
+    },
+    "inspect_tables": {"full_schema", "schema", "selected_tables"},
+    "retrieve_knowledge": {"knowledge"},
+    "execute_sql": {
+        "sql",
+        "columns",
+        "rows",
+        "query_results",
+        "analysis_datasets",
+        "sql_execution_count",
+    },
+    "analyze_dataframe": {"python_analysis", "python_analyses"},
+    # 核心记忆虽不写 AnalysisState，但并发改写会造成持久化层的丢失更新。
+    "rewrite_core_memory": {"persistent_core_memory"},
+}
+
+
+def _normalize_tool_calls(
+    tool_calls: list[dict[str, Any]],
+    *,
+    state: AnalysisState,
+    schema_search_limit: int,
+    sql_execution_limit: int,
+) -> list[dict[str, Any]]:
+    """规范化一轮中的全部 Tool Call，同时保留可安全并行的独立调用。
+
+    尚未取得 Schema 时，``inspect_tables`` / ``execute_sql`` 不能越序执行：
+    保留同轮中的其它独立工具，并把第一个越序调用替换为 ``search_schema``。
+    """
+    normalized: list[dict[str, Any]] = []
+    has_schema = bool(state.get("schema", {}).get("tables"))
+    schema_requested = any(call["name"] == "search_schema" for call in tool_calls)
+    replacement_added = False
+    query = state.get("contextualized_query") or state["query"]
+
+    for call in tool_calls:
+        name = call["name"]
+        if not has_schema and name in {"inspect_tables", "execute_sql"}:
+            if not schema_requested and not replacement_added:
+                normalized.append({**call, "name": "search_schema", "args": {"query": query}})
+                replacement_added = True
+            continue
+        normalized.append(call)
+
+    if state.get("schema_search_count", 0) >= schema_search_limit:
+        normalized = [call for call in normalized if call["name"] != "search_schema"]
+    if state.get("sql_execution_count", 0) >= sql_execution_limit:
+        normalized = [call for call in normalized if call["name"] != "execute_sql"]
+    return normalized
+
+
+def _validate_parallel_state_writes(tool_calls: list[dict[str, Any]]) -> None:
+    """拒绝会并发覆盖同一 State 字段的工具组合，并明确报告冲突。"""
+    owners: dict[str, str] = {}
+    for call in tool_calls:
+        name = call["name"]
+        for field in _TOOL_STATE_WRITES.get(name, set()):
+            previous = owners.get(field)
+            if previous is not None:
+                raise InvalidOperationError(
+                    f"工具 {previous} 与 {name} 不能并行：都会更新状态字段 {field}。"
+                )
+            owners[field] = name
+
+
+def _budget_exhausted_message(
+    original_tool_calls: list[dict[str, Any]],
+    state: AnalysisState,
+    retriever: KnowledgeRetriever,
+) -> str:
+    """当本轮所有调用都被预算护栏移除时，返回可观测的结束原因。"""
+    names = {call["name"] for call in original_tool_calls}
+    if (
+        "search_schema" in names
+        and state.get("schema_search_count", 0) >= retriever.settings.agent_max_schema_searches
+    ):
+        return "已达到表结构检索上限，请补充更明确的业务实体或指标。"
+    if (
+        "execute_sql" in names
+        and state.get("sql_execution_count", 0) >= retriever.settings.agent_max_sql_executions
+    ):
+        return "已达到查询执行上限，已返回当前可确认的分析结果。"
+    return "当前工具调用不满足执行顺序或预算约束，已停止本轮分析。"
 
 
 def _budget_schema(schema: dict[str, Any], budget: int) -> dict[str, Any]:

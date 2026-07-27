@@ -18,22 +18,28 @@ from langchain_core.messages import AIMessage
 from app.workflow.nodes.analysis import AnalysisNodes, _build_result_payload, _json_default
 from app.application.executor import _normalize_result_sources
 from app.config import Settings
+from app.domain.errors import ContextWindowExceededError
 
 
 @pytest.mark.asyncio
-async def test_agent_does_not_publish_an_intermediate_final_answer_after_query_results(monkeypatch) -> None:
-    """已有查询结果时，Agent 的结束文本是内部决策，最终只由 result 节点流式输出一次。"""
+async def test_agent_publishes_query_result_followup_as_narration(monkeypatch) -> None:
+    """已有查询结果时，Agent 文本作为可见过程说明，不冒充最终分析结论。"""
 
     class FakeLlm:
         on_text_delta = "not-called"
 
         async def complete_tool_messages(self, _system, _messages, *, tools, on_text_delta=None):
             self.on_text_delta = on_text_delta
+            on_text_delta("数据已查询完成，准备总结。")
             return AIMessage(content="数据已查询完成，准备总结。")
 
     class FakeContextBuilder:
-        async def build(self, _state):
-            return SimpleNamespace(messages=[{"role": "user", "content": "分析订单趋势"}])
+        async def build(self, _state, **_kwargs):
+            return SimpleNamespace(
+                messages=[{"role": "user", "content": "分析订单趋势"}],
+                stats={"updated": False},
+                compaction_state={},
+            )
 
     llm = FakeLlm()
     streamed_events = []
@@ -56,8 +62,78 @@ async def test_agent_does_not_publish_an_intermediate_final_answer_after_query_r
     })
 
     assert result["agent_decision"]["action"] == "finish"
-    assert llm.on_text_delta is None
-    assert streamed_events == []
+    assert callable(llm.on_text_delta)
+    assert [event["type"] for event in streamed_events] == [
+        "agent_message.started",
+        "agent_message.delta",
+        "agent_message.completed",
+    ]
+    assert streamed_events[-1]["data"]["kind"] == "narration"
+
+
+@pytest.mark.asyncio
+async def test_agent_reactively_compacts_and_retries_provider_context_error(
+    monkeypatch,
+) -> None:
+    """供应商确认 prompt too long 后，当前决策应强制 Full Compact 并只重试一次。"""
+
+    class FakeLlm:
+        def __init__(self):
+            self.calls = 0
+
+        async def complete_tool_messages(self, _system, _messages, *, tools, on_text_delta=None):
+            self.calls += 1
+            if self.calls == 1:
+                raise ContextWindowExceededError("prompt too long")
+            return AIMessage(content="压缩后继续完成")
+
+    class FakeContextBuilder:
+        def __init__(self):
+            self.force_flags = []
+
+        async def build(self, _state, **kwargs):
+            forced = bool(kwargs.get("force_full_compact"))
+            self.force_flags.append(forced)
+            return SimpleNamespace(
+                messages=[{"role": "user", "content": "压缩后上下文" if forced else "原上下文"}],
+                stats={"updated": forced},
+                compaction_state={
+                    "sequence": 1,
+                    "mode": "reactive",
+                    "stages": ["reactive_compact"],
+                    "beforeTokens": 1000,
+                    "afterTokens": 300,
+                    "coveredMessageCount": 2,
+                } if forced else {},
+            )
+
+    llm = FakeLlm()
+    builder = FakeContextBuilder()
+    streamed_events = []
+    monkeypatch.setattr("app.workflow.nodes.analysis.get_stream_writer", lambda: streamed_events.append)
+    monkeypatch.setattr("app.workflow.nodes.analysis._progress", lambda *_args, **_kwargs: None)
+    nodes = AnalysisNodes(
+        llm=llm,
+        database=object(),
+        retriever=SimpleNamespace(settings=Settings(retrieval_backend="bm25")),
+        agent_context_builder=builder,
+    )
+
+    result = await nodes.agent_decide({
+        "query": "继续分析",
+        "contextualized_query": "继续分析",
+        "query_results": [],
+        "schema": {},
+        "observations": [],
+        "agent_iterations": 0,
+    })
+
+    assert llm.calls == 2
+    assert builder.force_flags == [False, True]
+    assert result["final_answer"] == "压缩后继续完成"
+    assert result["context_compaction"]["mode"] == "reactive"
+    assert "context.compaction.retrying" in [event["type"] for event in streamed_events]
+    assert "context.compacted" in [event["type"] for event in streamed_events]
 
 
 def test_sql_result_values_are_serialized_for_result_prompt() -> None:
@@ -155,13 +231,15 @@ def test_default_limits_keep_full_results_but_only_persist_small_preview() -> No
 
 
 @pytest.mark.asyncio
-async def test_sql_nodes_use_unified_sql_row_limit_after_execution_mode_removed(monkeypatch) -> None:
-    """验证 SQL 校验与执行统一使用数据库行数上限，不再由模型提交分析模式决定。"""
+async def test_execute_sql_returns_final_result_and_uses_unified_row_limit(monkeypatch) -> None:
+    """execute_sql 应在一次工具调用内完成校验和执行，并返回最终结果。"""
 
     class FakeDatabase:
         settings = SimpleNamespace(sql_row_limit=123)
+        execute_count = 0
 
         async def execute_select(self, sql: str, *, row_limit: int | None = None):
+            self.execute_count += 1
             self.last_row_limit = row_limit
             return ([{"name": "id", "dataType": "integer"}], [{"id": 1}])
 
@@ -176,7 +254,12 @@ async def test_sql_nodes_use_unified_sql_row_limit_after_execution_mode_removed(
             }
 
     database = FakeDatabase()
-    monkeypatch.setattr("app.workflow.nodes.analysis._progress", lambda *_args, **_kwargs: None)
+    sql_events = []
+    monkeypatch.setattr("app.workflow.tools._progress", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "app.workflow.tools._sql_event",
+        lambda event_type, data: sql_events.append((event_type, data)),
+    )
     nodes = AnalysisNodes(
         llm=object(),
         database=database,
@@ -185,17 +268,41 @@ async def test_sql_nodes_use_unified_sql_row_limit_after_execution_mode_removed(
     )
     state = {
         "run_id": "run_test",
-        "sql": "SELECT id FROM orders",
         "schema": {"tables": [{"name": "orders", "columns": [{"name": "id"}]}]},
-        "sql_analysis_mode": True,
         "query_results": [],
         "analysis_datasets": [],
         "observations": [],
     }
+    execute_sql = next(
+        tool for tool in nodes.tool_registry.tools if tool.name == "execute_sql"
+    )
+    command = await execute_sql.coroutine(
+        sql="SELECT id FROM orders",
+        state=state,
+        tool_call_id="call_sql_test",
+    )
+    update = command.update
+    tool_result = json.loads(update["messages"][0].content)
 
-    validated = await nodes.sql_validate(state)
-    executed = await nodes.sql_execute({**state, **validated})
-
-    assert "LIMIT 123" in validated["sql"].upper()
+    assert "LIMIT 123" in update["sql"].upper()
     assert database.last_row_limit == 123
-    assert executed["query_results"][0]["rowCount"] == 1
+    assert update["query_results"][0]["rowCount"] == 1
+    assert tool_result["tool"] == "execute_sql"
+    assert [event_type for event_type, _data in sql_events] == [
+        "sql.validated",
+        "sql.executing",
+        "sql.executed",
+    ]
+    assert tool_result["ok"] is True
+    assert tool_result["summary"] == "查询成功，返回 1 行"
+    assert "候选 SQL 已提交" not in update["messages"][0].content
+
+    repeated = await execute_sql.coroutine(
+        sql="SELECT id FROM orders",
+        state={**state, **update},
+        tool_call_id="call_sql_repeated",
+    )
+    repeated_result = json.loads(repeated.update["messages"][0].content)
+    assert database.execute_count == 1
+    assert repeated_result["stats"]["reused"] is True
+    assert repeated_result["resultRef"]["datasetId"] == "result_test"

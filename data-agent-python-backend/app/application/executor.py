@@ -24,6 +24,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 
 from app.config import get_settings
 from app.application.live_events import run_live_event_broker
+from app.domain.errors import InvalidOperationError
 from app.infrastructure.persistence.database import session_factory
 from app.infrastructure.persistence.models import AnalysisRunModel, elapsed_ms, utc_now
 from app.infrastructure.persistence.repository import Repository
@@ -61,6 +62,14 @@ class GraphAnalysisExecutor:
             conversation = await repository.get_conversation(run.conversation_id)
             # 取出触发本次运行的用户消息，用于构建记忆上下文。
             current_message = await repository.get_user_message_for_run(run.id)
+            # 重试不会新增用户消息；沿 retry_of 链找到原始用户回合并从历史投影中
+            # 排除，随后仍以 run.question 作为本次精确输入发送，避免同文出现两次。
+            retry_source = run
+            while current_message is None and retry_source.retry_of_run_id:
+                retry_source = await repository.get_run(retry_source.retry_of_run_id)
+                if retry_source is None:
+                    break
+                current_message = await repository.get_user_message_for_run(retry_source.id)
             memory_context = await self.runtime.context_builder.build(
                 repository=repository,
                 conversation=conversation,
@@ -104,6 +113,35 @@ class GraphAnalysisExecutor:
     async def resume_after_review(self, run_id: str) -> None:
         """人工审核通过后的恢复：以「批准」语义继续图执行。"""
         await self._resume(run_id, approved=True, comment="")
+
+    async def retry_failed(self, run_id: str) -> None:
+        """使用原 Run checkpoint 从失败节点续跑，并保留全部既有运行产物。"""
+        state = await self.runtime.state(run_id)
+        async with session_factory() as session:
+            repository = Repository(session)
+            run = await repository.get_run(run_id)
+            if not run or run.status != "pending":
+                return
+            await self._event(
+                repository,
+                run,
+                "run.retrying",
+                run.current_stage,
+                {
+                    "status": "running",
+                    "resumeStage": run.current_stage,
+                    "message": f"从 {run.current_stage or '失败节点'} 继续执行",
+                },
+            )
+            run.status = "running"
+            await repository.save_run(run)
+        logger.info(
+            "failed run resuming from checkpoint: runId=%s stage=%s stateKeys=%s",
+            run_id,
+            run.current_stage,
+            sorted(state),
+        )
+        await self._consume(run_id, self.runtime.retry_failed(run_id), state)
 
     async def replan_after_rejection(self, run_id: str, comment: str) -> None:
         """人工审核驳回后的重规划：以「驳回」语义退回并依据意见重新规划。"""
@@ -150,17 +188,16 @@ class GraphAnalysisExecutor:
                     continue
                 # 图中出现中断标记，说明需要人工审核，进入等待审核收尾。
                 if "__interrupt__" in payload:
-                    await self._mark_waiting_review(run_id, accumulated)
+                    await self._mark_waiting_review(
+                        run_id,
+                        accumulated,
+                        payload["__interrupt__"],
+                    )
                     return
-                for node, delta in payload.items():
-                    if not isinstance(delta, dict):
-                        continue
-                    if node == "tools":
-                        # 调试辅助：将 tools 节点的增量键打印到标准错误。
-                        import sys
-                        print(f"[DEBUG] tools delta keys: {list(delta.keys())}", file=sys.stderr, flush=True)
-                    # 把本次节点增量并入全量状态，供后续阶段与产物引用。
-                    accumulated.update(delta)
+                for node, raw_delta in payload.items():
+                    delta = _coalesce_node_delta(node, raw_delta)
+                    # 按 LangGraph reducer 语义合并累积状态，不能让增量 observation 覆盖历史。
+                    _apply_state_delta(accumulated, delta)
                     await self._persist_node_update(run_id, node, delta, accumulated, active_stages)
             # 事件流正常结束，标记为运行完成。
             await self._complete(run_id, accumulated)
@@ -179,9 +216,78 @@ class GraphAnalysisExecutor:
         """
         if not isinstance(payload, dict):
             return
-        if str(payload.get("type", "")).startswith("final_answer."):
+        event_type = str(payload.get("type", ""))
+        if event_type.startswith("final_answer.") or event_type in {
+            "agent_message.started",
+            "agent_message.delta",
+        }:
             # Token 增量不落库，直接交给当前 SSE 订阅者；最终结果由 Run 快照持久化。
             run_live_event_broker.publish_transient(run_id, payload)
+            return
+        if event_type == "agent_message.completed":
+            # 完整过程说明体积可控且需要支持刷新后回放；Token 增量只走实时通道。
+            async with session_factory() as session:
+                repository = Repository(session)
+                run = await repository.get_run(run_id)
+                if not run or run.status == "cancelled":
+                    return
+                await self._event(
+                    repository,
+                    run,
+                    event_type,
+                    str(payload.get("stage") or "agent_decide"),
+                    dict(payload.get("data") or {}),
+                )
+            return
+        if event_type.startswith("sql."):
+            # SQL 生命周期事件必须持久化，保证刷新页面后仍能区分候选、校验与执行状态。
+            async with session_factory() as session:
+                repository = Repository(session)
+                run = await repository.get_run(run_id)
+                if not run or run.status == "cancelled":
+                    return
+                data = dict(payload.get("data") or {})
+                logger.info(
+                    "sql lifecycle event: runId=%s type=%s resultSetId=%s rowCount=%s",
+                    run_id,
+                    event_type,
+                    data.get("resultSetId"),
+                    data.get("rowCount"),
+                )
+                await self._event(
+                    repository,
+                    run,
+                    event_type,
+                    str(payload.get("stage") or "tools"),
+                    data,
+                )
+            return
+        if event_type == "context.compacted":
+            # 压缩边界必须持久化，刷新页面或恢复 Run 后仍可解释模型为何只看到摘要。
+            async with session_factory() as session:
+                repository = Repository(session)
+                run = await repository.get_run(run_id)
+                if not run or run.status == "cancelled":
+                    return
+                data = dict(payload.get("data") or {})
+                logger.info(
+                    "run context compacted: runId=%s sequence=%s mode=%s stages=%s "
+                    "beforeTokens=%s afterTokens=%s coveredMessages=%s",
+                    run_id,
+                    data.get("sequence"),
+                    data.get("mode"),
+                    data.get("stages"),
+                    data.get("beforeTokens"),
+                    data.get("afterTokens"),
+                    data.get("coveredMessageCount"),
+                )
+                await self._event(
+                    repository,
+                    run,
+                    event_type,
+                    str(payload.get("stage") or "agent_decide"),
+                    data,
+                )
             return
         # 其他 custom 事件目前只处理阶段开始。
         if payload.get("type") != "stage.started":
@@ -249,6 +355,26 @@ class GraphAnalysisExecutor:
                             tool_name=str(call["name"]),
                             arguments=_json_safe(call.get("args") or {}),
                         )
+                event_actions = []
+                for action in decision.get("actions", []):
+                    if action.get("action") == "execute_sql":
+                        # 未校验 SQL 使用专门的 sql.candidate 事件表达；agent.decision
+                        # 只保留动作类型，避免前端误认为这里已经验证或执行。
+                        event_actions.append(
+                            {"action": "execute_sql", "arguments": {"status": "candidate"}}
+                        )
+                        await self._event(
+                            repository,
+                            run,
+                            "sql.candidate",
+                            node,
+                            {
+                                "sql": str((action.get("arguments") or {}).get("sql") or ""),
+                                "status": "candidate",
+                            },
+                        )
+                    else:
+                        event_actions.append(action)
                 await self._event(
                     repository,
                     run,
@@ -256,11 +382,12 @@ class GraphAnalysisExecutor:
                     node,
                     {
                         "action": decision.get("action"),
+                        "actions": event_actions,
                         "reasonSummary": decision.get("reasonSummary", ""),
                         "iteration": state.get("agent_iterations", 0),
                     },
                 )
-            elif node in {"tools", "sql_execute"}:
+            elif node == "tools":
                 # 工具/SQL 执行节点：完成工具调用记录并广播工具完成事件。
                 if node == "tools":
                     for message in delta.get("messages", []):
@@ -278,19 +405,19 @@ class GraphAnalysisExecutor:
                             result=_json_safe(result),
                         )
                 observations = delta.get("observations", [])
-                # 取最近一条观察作为本次工具事件的简要信息。
-                latest = observations[-1] if observations else {}
-                await self._event(
-                    repository,
-                    run,
-                    "tool.completed",
-                    node,
-                    {
-                        "tool": latest.get("tool", node),
-                        "ok": latest.get("ok", True),
-                        "summary": latest.get("summary", ""),
-                    },
-                )
+                # 并行工具各自产生一条完成事件，前端和审计记录不会丢失其中任何一个。
+                for observation in observations or [{}]:
+                    await self._event(
+                        repository,
+                        run,
+                        "tool.completed",
+                        node,
+                        {
+                            "tool": observation.get("tool", node),
+                            "ok": observation.get("ok", True),
+                            "summary": observation.get("summary", ""),
+                        },
+                    )
 
             if delta.get("plan"):
                 # 分析计划产物：补充选中表（若模型未提供则回退到状态中的选择）。
@@ -335,32 +462,12 @@ class GraphAnalysisExecutor:
                     str(result.get("summary") or "Python 数据分析完成"),
                     python_analysis,
                 )
-            elif node == "sql_validate" and state.get("sql"):
-                # SQL 校验通过后的查询预览产物（含安全性与查询范围）。
-                await self._artifact(
-                    repository,
-                    run,
-                    stage,
-                    "query_preview",
-                    "SQL 已生成并完成安全检查",
-                    {
-                        "sql": state["sql"],
-                        # 依据安全检查结果标注当前查询状态。
-                        "status": "validated" if state.get("safety", {}).get("passed") else "blocked",
-                        "scope": {
-                            "datasource": "sales-db",
-                            "tables": state.get("selected_tables", []),
-                            "timeRange": "由 SQL 条件确定",
-                        },
-                        "safety": state.get("safety", {}),
-                    },
-                )
-            elif node == "sql_execute":
-                # SQL 执行节点：根据是否存在 sql_error 分流到成功/失败落库。
-                if delta.get("sql_error"):
-                    await self._persist_query_failure(repository, run, state)
-                else:
-                    await self._persist_query_result(repository, run, state)
+            elif node == "tools" and delta.get("query_results"):
+                # execute_sql 现在是原子工具，查询成功后直接在 tools 节点返回最终
+                # Tool Result 与结果集状态，因此也必须在这里持久化 Query 记录。
+                await self._persist_query_result(repository, run, state)
+            elif node == "tools" and "sql_error" in delta and delta.get("sql_error"):
+                await self._persist_query_failure(repository, run, state)
             elif node == "result" and delta.get("analysis"):
                 # 最终分析结果产物：先做来源归一化，再写入并生成助手消息。
                 analysis = _json_safe(delta["analysis"])
@@ -579,7 +686,12 @@ class GraphAnalysisExecutor:
         )
         return artifact
 
-    async def _mark_waiting_review(self, run_id: str, state: dict[str, Any]) -> None:
+    async def _mark_waiting_review(
+        self,
+        run_id: str,
+        state: dict[str, Any],
+        interrupts: Any,
+    ) -> None:
         """图被人工审核中断时的收尾：创建审核记录并标记运行进入 waiting_review。"""
         async with session_factory() as session:
             repository = Repository(session)
@@ -589,7 +701,24 @@ class GraphAnalysisExecutor:
             artifacts = await repository.list_artifacts(run_id)
             # 取最近一次的 plan 与 query_preview 产物作为审核上下文。
             plan = next((item for item in reversed(artifacts) if item.type == "plan"), None)
-            query = next((item for item in reversed(artifacts) if item.type == "query_preview"), None)
+            review_payload = _interrupt_value(interrupts)
+            query = await self._artifact(
+                repository,
+                run,
+                "human_feedback",
+                "query_preview",
+                "SQL 已生成并完成安全检查",
+                {
+                    "sql": review_payload.get("sql", ""),
+                    "status": "validated",
+                    "scope": {
+                        "datasource": "sales-db",
+                        "tables": review_payload.get("tables", []),
+                        "timeRange": "由 SQL 条件确定",
+                    },
+                    "safety": review_payload.get("safety", {}),
+                },
+            )
             review = await repository.create_review(
                 run_id=run.id,
                 plan_artifact_id=plan.id if plan else "",
@@ -699,6 +828,18 @@ class GraphAnalysisExecutor:
                 run.current_stage,
                 {"code": run.error_code, "message": run.error_message},
             )
+            # 失败必须成为会话中的显式事实，否则下一轮模型只能看到悬空的用户问题，
+            # 容易误判为网络重发并擅自继续旧任务。
+            if await repository.get_assistant_message_for_run(run.id) is None:
+                await repository.add_message(
+                    conversation_id=run.conversation_id,
+                    run_id=run.id,
+                    role="assistant",
+                    content=(
+                        f"本次分析未完成：在 {run.current_stage or 'unknown'} 阶段发生"
+                        f" {run.error_code}。{run.error_message}"
+                    ),
+                )
 
     async def _event(
         self,
@@ -720,6 +861,61 @@ class GraphAnalysisExecutor:
         run_live_event_broker.publish_persistent(event)
 
 
+def _coalesce_node_delta(node: str, raw_delta: Any) -> dict[str, Any]:
+    """把 LangGraph 并行工具返回的多个 Command 更新合并为一个节点增量。
+
+    ``messages`` 和 ``observations`` 是 reducer 字段，可以顺序拼接；其它字段若收到
+    多个值说明工具组合存在写冲突，立即失败并给出字段名，不能静默覆盖。
+    """
+    if isinstance(raw_delta, dict):
+        return raw_delta
+    if not isinstance(raw_delta, list):
+        raise InvalidOperationError(
+            f"节点 {node} 返回了不支持的更新类型：{type(raw_delta).__name__}"
+        )
+
+    merged: dict[str, Any] = {}
+    for item in raw_delta:
+        if not isinstance(item, dict):
+            raise InvalidOperationError(
+                f"节点 {node} 返回了无法合并的并行更新类型：{type(item).__name__}"
+            )
+        for key, value in item.items():
+            if key in {"messages", "observations"}:
+                merged.setdefault(key, []).extend(value or [])
+            elif key in merged:
+                raise InvalidOperationError(f"节点 {node} 的并行工具同时更新了状态字段 {key}")
+            else:
+                merged[key] = value
+    logger.info(
+        "parallel node updates merged: node=%s branches=%d keys=%s",
+        node,
+        len(raw_delta),
+        sorted(merged),
+    )
+    return merged
+
+
+def _apply_state_delta(state: dict[str, Any], delta: dict[str, Any]) -> None:
+    """按照 AnalysisState reducer 规则，把节点增量合并到执行器侧累积状态。"""
+    for key, value in delta.items():
+        if key in {"messages", "observations"}:
+            state[key] = [*state.get(key, []), *(value or [])]
+        else:
+            state[key] = value
+
+
+def _interrupt_value(interrupts: Any) -> dict[str, Any]:
+    """提取 LangGraph interrupt 的审核载荷，格式异常时立即失败。"""
+    items = interrupts if isinstance(interrupts, (list, tuple)) else [interrupts]
+    if not items:
+        raise RuntimeError("人工审核中断缺少审核载荷")
+    value = getattr(items[0], "value", items[0])
+    if not isinstance(value, dict):
+        raise RuntimeError("人工审核中断载荷格式错误")
+    return value
+
+
 def _json_safe(value: Any) -> Any:
     """把任意可序列化对象（含非 JSON 原生类型）转为 JSON 兼容结构。
 
@@ -729,25 +925,11 @@ def _json_safe(value: Any) -> Any:
 
 
 def _stage_message(node: str, delta: dict[str, Any]) -> str:
-    """根据节点名返回该阶段完成时的中文提示文案。
-
-    sql_execute 节点会依据 delta 中是否存在 sql_error 区分成功/失败文案。
-    """
+    """根据当前四节点 Graph 的节点名返回阶段完成文案。"""
     messages = {
         "input_guard": "请求安全检查完成",
         "agent_decide": "下一步分析动作已确定",
-        "agent_schema_search": "相关数据表检索完成",
-        "agent_schema_inspect": "数据表结构读取完成",
-        "agent_knowledge_search": "业务知识检索完成",
         "tools": "工具调用完成",
-        "knowledge_recall": "业务知识召回完成",
-        "schema_recall": "数据库结构读取完成",
-        "planner": "分析计划已生成",
-        "simple_plan": "单步执行方案已准备",
-        "sql_generate": "SQL 已生成",
-        "sql_validate": "SQL 安全检查完成",
-        "human_feedback": "人工审核完成",
-        "sql_execute": "SQL 执行完成" if not delta.get("sql_error") else "SQL 执行失败，准备修复",
         "result": "分析结果已生成",
     }
     return messages.get(node, f"{node} 已完成")

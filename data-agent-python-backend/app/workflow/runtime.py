@@ -24,6 +24,7 @@ from app.analysis import AnalysisDatasetStore, PythonAnalysisService, ResultHist
 from app.infrastructure.datasource.sql import BusinessDatabase
 from app.infrastructure.llm.openai import OpenAiChatClient
 from app.memory import ContextBuilder, ConversationSummarizer, LongTermMemoryExtractor, MemoryProvider
+from app.context.manager import AgentContextManager
 from app.retrieval import KnowledgeRetriever
 from app.workflow.graph import build_analysis_graph
 from app.workflow.context_builder import AgentContextBuilder
@@ -48,7 +49,12 @@ class GraphRuntime:
         self.retriever = KnowledgeRetriever(settings)
         self.dataset_store = AnalysisDatasetStore(settings)
         self.result_history = ResultHistoryService(settings, self.dataset_store)
-        self.agent_context_builder = AgentContextBuilder(settings, self.result_history)
+        self.agent_context_manager = AgentContextManager(settings, self.llm)
+        self.agent_context_builder = AgentContextBuilder(
+            settings,
+            self.result_history,
+            self.agent_context_manager,
+        )
         self.python_sandbox = create_python_sandbox(settings)
         self.python_analysis = PythonAnalysisService(settings, self.llm, self.python_sandbox)
         self.memory_provider = MemoryProvider(settings)
@@ -124,6 +130,26 @@ class GraphRuntime:
         config = {"configurable": {"thread_id": run_id}}
         command = Command(resume={"approved": approved, "comment": comment})
         async for item in self.graph.astream(command, config=config, stream_mode=["custom", "updates"]):
+            yield item
+
+    async def can_resume_failed(self, run_id: str) -> bool:
+        """判断失败 Run 是否仍有可继续执行的 checkpoint 和待执行节点。"""
+        if self.graph is None:
+            raise RuntimeError("LangGraph runtime is not started")
+        snapshot = await self.graph.aget_state({"configurable": {"thread_id": run_id}})
+        return bool(snapshot.values) and bool(snapshot.next)
+
+    async def retry_failed(self, run_id: str) -> AsyncIterator[tuple[str, Any]]:
+        """从失败节点之前的 checkpoint 原地续跑，不重放已完成节点。"""
+        if self.graph is None:
+            raise RuntimeError("LangGraph runtime is not started")
+        config = {"configurable": {"thread_id": run_id}}
+        # None 表示不注入新输入，直接继续 checkpoint 中尚未完成的任务。
+        async for item in self.graph.astream(
+            None,
+            config=config,
+            stream_mode=["custom", "updates"],
+        ):
             yield item
 
     async def state(self, run_id: str) -> dict[str, Any]:

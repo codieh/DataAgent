@@ -8,7 +8,8 @@
 
 - 如果还不熟悉Python、FastAPI、异步和SQLAlchemy，先读[《Python零基础读代码指南》](./python-beginner-guide.md)；
 - 如果正在排查真实问题，使用[《调试与故障排查手册》](./debug-playbook.md)；
-- 准备面试追问时，再读[《校招面试问题与参考回答》](./interview-question-bank.md)。
+- 准备面试追问时，先读[《核心面试题库》](./interview-question-bank.md)；遇到低频细节再查
+  [《扩展面试问题参考》](./interview-question-bank-extended.md)。
 
 ---
 
@@ -349,23 +350,22 @@ Checkpoint不是业务数据库，TaskRegistry也不是会话记忆。
 + 近期原始对话
 + 滚动摘要
 + 当前计划
-+ 裁剪后的Schema
-+ 裁剪后的业务知识
 + 当前结果预览
 + 最近结果目录
 + 最近8条Observation
-+ Python分析结果
 + 当前Agent预算
++ 原生工具轨迹（Schema/业务知识/Python分析的有界真实预览）
 ```
 
-完整Schema仍在State中，但发送给模型时受`context_schema_token_budget`限制。Schema工具消息还会压缩成表名和`state.schema`引用，避免同一份列定义重复进入上下文。
+完整Schema、业务知识和Python分析仍保存在State及相应运行产物中；对应ToolMessage采用统一的“真实预览 + `resultRef` + 统计信息”结构。它们不再复制到每轮payload，避免同一结果重复占用上下文。
 
 模型请求之前，[`OpenAiChatClient`](../app/infrastructure/llm/openai.py)还会：
 
-1. 对超长ToolMessage截断；
+1. 对超长ToolMessage做结构化裁剪，保持JSON合法并保留读取引用；
 2. 估算系统提示、消息和工具Schema的总Token；
-3. 超过`max_context_size`直接报错；
-4. 记录模型输入、输出、Token使用量和耗时。
+3. 达到上下文阈值时，把所有超限工具结果降级为目录项，不额外保留最近完整结果；
+4. 压缩后仍超过`max_context_size`则直接报错；
+5. 记录模型输入、输出、Token使用量和耗时。
 
 Token估算不是服务端返回值，而是客户端启发式：中文大约1字1 Token，ASCII大约4字符1 Token。真正请求完成后，日志再记录API返回的`prompt_tokens`和`completion_tokens`。
 
@@ -432,7 +432,9 @@ async def search_schema(
 - `query`、`sql`、`tables`等业务参数会出现在提供给模型的JSON Schema中；
 - `state`和`tool_call_id`由LangGraph注入，不允许模型伪造；
 - `specifications()`使用`tool_call_schema`生成模型可见定义，主动排除注入参数；
-- OpenAI请求设置`parallel_tool_calls=False`，当前Agent每轮只处理一个工具调用。
+- OpenAI 请求启用 `parallel_tool_calls=True`，Agent 会保留模型返回的全部 Tool Call；
+  LangGraph `ToolNode` 并发执行彼此独立的工具。`messages` 和 `observations` 使用 reducer
+  合并；若多个工具会覆盖同一个非 reducer 状态字段，系统会明确报错而不是静默覆盖。
 
 工具通常不直接修改传入的字典，而是通过`_command()`返回状态增量：
 
@@ -871,7 +873,7 @@ Checkpoint解决的是“图在哪里暂停、如何继续”，不是多轮聊�
 模型上下文由两部分构成：
 
 ```text
-持久化滚动摘要 + 摘要游标之后的近期原始消息
+持久化滚动摘要 + 尚未触发下一次压缩的原始消息
 ```
 
 ### 12.2 什么时候触发摘要
@@ -885,33 +887,36 @@ pressure = tokens(existingSummary) + tokens(unsummarizedMessages)
 当：
 
 \[
-pressure \ge memoryContextBudget \times compactThreshold
+pressure \ge maxContextSize \times compactThreshold
 \]
 
 才执行摘要。
-
-当前默认：
-
-```text
-memory_context_token_budget = 65,536
-context_compact_threshold = 0.8
-触发点约为 52,428 Token
-context_compact_preserve_ratio = 0.3
-近期原文保留预算约为 19,660 Token
-```
 
 达到阈值后：
 
 ```text
 找到尚未摘要的消息
-→ 从最新消息向前保留约30%预算的原文
-→ 更早消息与existingSummary一起发给LLM
+→ 将当前输入之前的全部未摘要历史与existingSummary一起发给LLM
 → 保存新summary
 → 保存last_message_id摘要游标
 → 后续上下文不再重复加入游标之前的原始消息
 ```
 
 原始消息仍在SQLite，不会因为摘要而删除。摘要只是模型上下文压缩，不是数据删除。
+
+当前 Run 还会在每次 Agent 模型调用前执行五级活动上下文管理：
+
+```text
+Tool Result Budget
+→ Snip（工具结果降级为目录项）
+→ Micro（完整工具调用轮次机械折叠）
+→ Context Collapse（结构化运行摘要）
+→ Auto Compact（全量恢复摘要并重建活动上下文）
+```
+
+压缩边界以`coveredMessageCount + sequence`写入`AnalysisState.context_compaction`和
+LangGraph checkpoint。完整`messages`不删除，下一轮只投影边界之后的新消息；压缩成功后
+继续同一次Run。System Prompt始终由请求层重新注入，不参与摘要。
 
 ### 12.3 当前尚未真正接入的记忆能力
 
@@ -932,7 +937,7 @@ context_compact_preserve_ratio = 0.3
 
 因此当前准确描述应是：
 
-> 已实现基于会话ID的消息持久化、近期原文和Token压力触发的滚动摘要，并支持Agent按需搜索历史会话与历史查询结果。用户明确要求记忆时，Agent可改写核心记忆，新建会话会注入其快照；自动抽取、向量检索、TTL淘汰以及已存在会话的自动刷新尚未接入主链路。
+> 已实现基于会话ID的消息持久化、Token压力触发的跨Run摘要，以及当前Run内的Tool Budget、Snip、Micro、Context Collapse和Auto Compact；完整轨迹保存在SQLite/checkpoint，活动上下文通过压缩边界投影。Agent还可按需搜索历史会话与历史查询结果，用户明确要求时可改写核心记忆。
 
 不能直接说“已经实现完整的多层长期记忆系统”。
 
@@ -1779,7 +1784,7 @@ MySQL的`scripts/demo_data/schema.sql`同样是演示库重建脚本，会先关
 
 ### 22.4 多轮对话如何实现
 
-> conversation_id关联多条消息和多次run。每次新run开始前从SQLite读取历史消息；当摘要加未摘要消息达到记忆预算80%时，保留最近约30%预算的原始消息，把更早内容和旧摘要合并成新摘要，并记录摘要游标。下一轮只组合摘要和游标之后的近期消息，避免重复和上下文无限增长。用户明确要求记忆时可改写核心记忆，新建会话会注入最新快照；自动抽取、向量检索、TTL和旧会话刷新还没有接入主链路。
+> conversation_id关联多条消息和多次run。每次新run开始前从SQLite读取历史消息；当摘要加未摘要消息达到记忆预算80%时，将当前输入之前的全部未摘要历史与旧摘要合并成新摘要，并把摘要游标推进到最后一条历史消息。未达到下一次阈值前，游标之后的新消息仍以原文参与上下文；触发后则全量进入摘要，避免重复和上下文无限增长。固定System Prompt始终独立注入，不参与压缩。用户明确要求记忆时可改写核心记忆；自动抽取、向量检索、TTL和旧会话刷新还没有接入主链路。
 
 ### 22.5 RAG如何实现
 

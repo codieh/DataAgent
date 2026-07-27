@@ -69,3 +69,5 @@ data/traces/*.json
 /data-agent-backend/docs/*.md
 /data-agent-backend/src/test/java/com/alibaba/cloud/ai/dataagentbackend/lite/architecture/LlmExecutionModelGuardTest.java
 /data-agent-backend/src/test/java/com/alibaba/cloud/ai/dataagentbackend/lite/eval/PlannerEvalDatasetTest.java
+
+/**/*.md
