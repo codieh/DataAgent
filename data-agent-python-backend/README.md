@@ -1,11 +1,12 @@
 # DataAgent Python Backend
 
-DataAgent 的主后端服务，基于 FastAPI、LangGraph 和 OpenAI Python SDK 构建，为桌面端提供会话管理、Agent 分析、人工审核、结果查询和 SSE 实时事件。
+DataAgent 的主后端服务，基于 FastAPI、LangChain Agent、LangGraph 和 OpenAI Python SDK 构建，为桌面端提供会话管理、Agent 分析、人工审核、结果查询和 SSE 实时事件。
 
 ## 核心能力
 
-- 基于 LangGraph 的持久化分析工作流与 SQLite Checkpoint
-- 基于 OpenAI 原生 Tool Calling 的受控 Agent 循环
+- 基于 LangChain `create_agent` 的 ReAct 循环与 Middleware 扩展
+- 基于 LangGraph 的持久化状态、人工中断恢复与 SQLite Checkpoint
+- 基于 OpenAI 原生 Tool Calling 的并行工具调用
 - Chroma 向量检索、中文 BM25 与 RRF 混合召回
 - MySQL 实时 Schema 检索和只读数据分析
 - 基于 `sqlglot` AST 的确定性 SQL 安全检查
@@ -87,6 +88,11 @@ uv run python -m scripts.demo_data.generate \
 默认 `medium` 规模包含 5,000 个用户、200 个商品和 50,000 笔订单。完整参数、数据规律和安全说明见 [`scripts/demo_data/README.md`](./scripts/demo_data/README.md)。
 
 ## 分析流程
+
+模型与工具之间的循环由 LangChain `create_agent` 管理。项目通过标准
+`BaseChatModel` 适配器复用 Kimi/OpenAI 兼容客户端，并通过 Middleware 注入
+输入守卫、上下文压缩、工具调用日志、调用预算和最终结果构建。SQL 安全、
+数据持久化、RAG 和 Python 沙箱仍是独立领域模块，不放进通用 Agent 编排层。
 
 ```mermaid
 flowchart TD

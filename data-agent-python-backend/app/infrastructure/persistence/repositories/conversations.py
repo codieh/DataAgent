@@ -184,7 +184,13 @@ class ConversationRepository(RepositoryBase):
         )
         return await self.session.scalar(statement)
 
-    async def search_conversation_history(self, query: str, limit: int) -> list[dict[str, Any]]:
+    async def search_conversation_history(
+        self,
+        query: str,
+        limit: int,
+        *,
+        datasource_id: str | None = None,
+    ) -> list[dict[str, Any]]:
         """在对话历史全文索引中搜索，返回命中的对话摘要（去重，最多 ``limit`` 条）。
 
         仅 SQLite 且 ``query`` 可解析出长度 >= 3 的词条时生效；用 ``MATCH`` 做
@@ -196,13 +202,24 @@ class ConversationRepository(RepositoryBase):
             return []
         # 多词以 AND 连接，要求所有词都命中（由 >3 字符的词组成）
         expression = " AND ".join(f'"{term}"' for term in terms)
+        datasource_clause = ""
+        parameters: dict[str, Any] = {
+            "query": expression,
+            "candidate_limit": max(limit * 5, limit),
+        }
+        if datasource_id is not None:
+            datasource_clause = """AND conversation_id IN (
+                SELECT id FROM conversations WHERE datasource_id = :datasource_id
+            )"""
+            parameters["datasource_id"] = datasource_id
         rows = await self.session.execute(
-            text("""SELECT conversation_id, title,
+            text(f"""SELECT message_id, conversation_id, title,
                 snippet(conversation_history_fts, 4, '', '', '…', 32) AS snippet
             FROM conversation_history_fts
             WHERE conversation_history_fts MATCH :query
+              {datasource_clause}
             ORDER BY rank LIMIT :candidate_limit"""),
-            {"query": expression, "candidate_limit": max(limit * 5, limit)},
+            parameters,
         )
         matches = []
         seen = set()
@@ -212,6 +229,7 @@ class ConversationRepository(RepositoryBase):
             seen.add(row.conversation_id)
             matches.append(
                 {
+                    "messageId": row.message_id,
                     "conversationId": row.conversation_id,
                     "title": row.title,
                     "snippet": row.snippet,
@@ -220,6 +238,35 @@ class ConversationRepository(RepositoryBase):
             if len(matches) >= limit:
                 break
         return matches
+
+    async def read_accessible_message_context(
+        self,
+        anchor_conversation_id: str,
+        message_id: str,
+        before: int,
+        after: int,
+    ) -> dict[str, Any]:
+        """读取当前数据源范围内的消息上下文，禁止模型借消息 ID 跨数据源访问。
+
+        当前项目还没有独立用户表，因此以发起请求的会话数据源作为最小访问边界。
+        后续引入用户身份后，应在这里继续增加 ``profile_id`` 条件。
+        """
+        anchor = await self.get_conversation(anchor_conversation_id)
+        target = await self.session.get(MessageModel, message_id)
+        if anchor is None or target is None:
+            return {"messageId": message_id, "messages": []}
+        target_conversation = await self.get_conversation(target.conversation_id)
+        if (
+            target_conversation is None
+            or target_conversation.datasource_id != anchor.datasource_id
+        ):
+            return {"messageId": message_id, "messages": []}
+        return await self.read_message_context(
+            target.conversation_id,
+            message_id,
+            before,
+            after,
+        )
 
     async def search_current_conversation_history(
         self,

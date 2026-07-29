@@ -80,6 +80,8 @@ _METADATA_KEYS = (
     "retryable",
     "resultMode",
     "resultRef",
+    "nextCursor",
+    "availableActions",
     "stats",
     "datasetId",
     "rowCount",

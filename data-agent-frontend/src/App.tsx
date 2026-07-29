@@ -55,7 +55,8 @@ function App() {
   const [resultLoading, setResultLoading] = useState(false)             // 结果是否在加载
   const [resultError, setResultError] = useState<string | null>(null)   // 结果加载报错
   const [events, setEvents] = useState<RunEvent[]>([])                 // 实时事件流
-  const [streamingAnswer, setStreamingAnswer] = useState('')          // 最终结论的实时文本
+  // 流式结论必须绑定 Run，不能只保存裸字符串，否则切换会话时可能回退显示旧 Run 的内容。
+  const [streamingAnswer, setStreamingAnswer] = useState<{ runId: string; text: string } | null>(null)
   const [agentMessages, setAgentMessages] = useState<AgentStreamMessage[]>([]) // 每轮 Agent 可见过程说明
   const [query, setQuery] = useState('')                               // 输入框文字
   const [humanReview, setHumanReview] = useState(false)                // 是否开启人工审核
@@ -161,9 +162,15 @@ function App() {
             : [...current, event].slice(-240))
         }
         if (event.type === 'stage.started') setStatus(String(event.data.message || '正在分析'))
-        if (event.type === 'final_answer.started') setStreamingAnswer('')
+        if (event.type === 'final_answer.started') {
+          setStreamingAnswer({ runId, text: '' })
+        }
         if (event.type === 'final_answer.delta') {
-          setStreamingAnswer((current) => current + String(event.data.delta || ''))
+          const delta = String(event.data.delta || '')
+          setStreamingAnswer((current) => ({
+            runId,
+            text: current?.runId === runId ? current.text + delta : delta,
+          }))
         }
         if (event.type === 'agent_message.started') {
           const id = String(event.data.messageId || '')
@@ -215,7 +222,7 @@ function App() {
           }
           // 直接答复进入最终回答区域；过程说明则保留在 Agent 过程消息列表中。
           if (completed.kind === 'final') {
-            setStreamingAnswer(text)
+            setStreamingAnswer({ runId, text })
             setAgentMessages((current) => current.filter((item) => item.id !== id))
           } else {
             setAgentMessages((current) => current.some((item) => item.id === id)
@@ -245,7 +252,7 @@ function App() {
     const text = query.trim()
     if (!text) return  // 空输入直接返回（防御性编程）
     setError(null)
-    setStreamingAnswer('')
+    setStreamingAnswer(null)
     setAgentMessages([])
     setStatus('正在创建分析任务')
     setView('workspace')
@@ -285,6 +292,8 @@ function App() {
   // 打开历史会话
   async function openConversation(item: Conversation) {
     streamRef.current?.abort()  // 先停掉旧的流
+    // 在等待新会话详情期间立即移除旧 Run 的临时文本，避免加载间隙串屏。
+    setStreamingAnswer(null)
     const detail = await api.conversation(backendUrl, item.id)
     setConversation(detail)
     setResultSet(null)
@@ -309,6 +318,7 @@ function App() {
   // 新建会话：把所有相关状态复位回欢迎页
   function newConversation() {
     streamRef.current?.abort()
+    setStreamingAnswer(null)
     setConversation(null)
     setRun(null)
     setResultSet(null)
@@ -350,7 +360,7 @@ function App() {
       setAgentMessages([])
       lastPersistentSeqRef.current = 0
     }
-    setStreamingAnswer('')
+    setStreamingAnswer(null)
     await refreshRun(accepted.runId)
     void watchRun(
       accepted.runId,
@@ -403,13 +413,17 @@ function App() {
     onDeleteConversation: setPendingDelete,
   }
   const agentId = bootstrap?.defaultAgentId || 'default-analysis'
+  // 正式结果来自 Run 快照；临时文本只有归属于当前 Run 时才允许参与界面回退。
+  const activeStreamingAnswer = streamingAnswer && streamingAnswer.runId === run?.id
+    ? streamingAnswer.text
+    : ''
 
   // ---------- 根据 view 决定渲染哪个页面 ----------
   // 这就是「单页应用(SPA)」的核心思路：URL 不变，靠 state(view) 切换显示的组件。
   let screen
   if (view === 'welcome') screen = <WelcomeScreen {...navigation} query={query} connected={connected} prompts={bootstrap?.recommendedQuestions || []} error={error} onQueryChange={setQuery} onSubmit={submit} />
-  else if (view === 'workspace') screen = <WorkspaceScreen {...navigation} query={query} conversation={conversation} run={run} events={events} streamingAnswer={streamingAnswer} agentMessages={agentMessages} connected={connected} status={status} onQueryChange={setQuery} onSubmit={submit} onStop={cancelRun} onRetry={retryRun} onViewResults={() => setView('results')} />
-  else if (view === 'results') screen = <ResultsScreen {...navigation} run={run} resultSet={resultSet} selectedResultSetId={selectedResultSetId} streamingAnswer={streamingAnswer} resultLoading={resultLoading} resultError={resultError} backendUrl={backendUrl} query={query} onQueryChange={setQuery} onSubmit={submit} onSelectResult={(id) => run && loadResult(run, 1, id)} onResultPage={(page) => run && loadResult(run, page, selectedResultSetId)} onBackToProcess={() => setView('workspace')} />
+  else if (view === 'workspace') screen = <WorkspaceScreen {...navigation} query={query} conversation={conversation} run={run} events={events} streamingAnswer={activeStreamingAnswer} agentMessages={agentMessages} connected={connected} status={status} onQueryChange={setQuery} onSubmit={submit} onStop={cancelRun} onRetry={retryRun} onViewResults={() => setView('results')} />
+  else if (view === 'results') screen = <ResultsScreen {...navigation} run={run} resultSet={resultSet} selectedResultSetId={selectedResultSetId} streamingAnswer={activeStreamingAnswer} resultLoading={resultLoading} resultError={resultError} backendUrl={backendUrl} query={query} onQueryChange={setQuery} onSubmit={submit} onSelectResult={(id) => run && loadResult(run, 1, id)} onResultPage={(page) => run && loadResult(run, page, selectedResultSetId)} onBackToProcess={() => setView('workspace')} />
   else if (view === 'review') screen = <ReviewScreen {...navigation} run={run} onApprove={() => decideReview(true)} onReject={(comment) => decideReview(false, comment)} />
   else screen = <SettingsScreen {...navigation} backendUrl={backendUrl} agentId={agentId} agents={bootstrap?.agents || []} humanReview={humanReview} connected={connected} pingRunning={pingRunning} pingSteps={pingSteps} onBackendUrlChange={(value) => { localStorage.setItem('data-agent.backend-url', value); setBackendUrl(value) }} onAgentIdChange={() => undefined} onHumanReviewChange={setHumanReview} onPing={ping} />
 

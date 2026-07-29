@@ -95,7 +95,8 @@ class GraphRuntime:
             self.dataset_store,
             self.result_history,
             self.agent_context_builder,
-        ).compile(checkpointer=self._checkpointer)
+            self._checkpointer,
+        )
         self._checkpoint_cleanup_task = asyncio.create_task(
             self._checkpoint_cleanup_loop(), name="checkpoint-cleanup"
         )

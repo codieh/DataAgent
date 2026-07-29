@@ -9,16 +9,24 @@ from datetime import date, datetime, time
 from decimal import Decimal
 from typing import Any
 
+from app.workflow.tool_metadata import tool_metadata
+
 
 def build_tool_result(
     observation: dict[str, Any],
     *,
     preview: Any | None = None,
-    result_ref: dict[str, Any] | None = None,
+    result_ref: str | None = None,
     stats: dict[str, Any] | None = None,
     truncated: bool = False,
+    next_cursor: str | None = None,
+    available_actions: list[str] | None = None,
 ) -> dict[str, Any]:
-    """构造统一、可被后续结构化压缩的 ToolMessage 内容。"""
+    """构造统一、可被后续结构化压缩和继续读取的 ToolMessage 内容。
+
+    ``resultRef`` 只保存服务端签发的稳定资源标识；读取方式由
+    ``availableActions`` 明确声明，模型不能通过引用内容指定后端协议。
+    """
     result = {
         "tool": observation.get("tool"),
         "ok": observation.get("ok", True),
@@ -34,6 +42,13 @@ def build_tool_result(
     if stats:
         result["stats"] = stats
     result["truncated"] = truncated
+    if next_cursor is not None:
+        result["nextCursor"] = next_cursor
+    if available_actions:
+        result["availableActions"] = available_actions
+    metadata = tool_metadata(str(result["tool"]))
+    if result["ok"] and metadata.result_persistence == "full" and result_ref is None:
+        raise RuntimeError(f"工具 {result['tool']} 的成功结果必须提供可回查的 resultRef")
     return result
 
 

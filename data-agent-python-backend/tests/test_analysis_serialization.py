@@ -14,8 +14,11 @@ from types import SimpleNamespace
 
 import pytest
 from langchain_core.messages import AIMessage
+from langchain.agents.middleware.types import ModelRequest, ModelResponse
 
 from app.workflow.nodes.analysis import AnalysisNodes, _build_result_payload, _json_default
+from app.workflow.middleware import DataAgentMiddleware
+from app.workflow.chat_model import agent_text_delta_handler
 from app.application.executor import _normalize_result_sources
 from app.config import Settings
 from app.domain.errors import ContextWindowExceededError
@@ -25,14 +28,6 @@ from app.domain.errors import ContextWindowExceededError
 async def test_agent_publishes_query_result_followup_as_narration(monkeypatch) -> None:
     """已有查询结果时，Agent 文本作为可见过程说明，不冒充最终分析结论。"""
 
-    class FakeLlm:
-        on_text_delta = "not-called"
-
-        async def complete_tool_messages(self, _system, _messages, *, tools, on_text_delta=None):
-            self.on_text_delta = on_text_delta
-            on_text_delta("数据已查询完成，准备总结。")
-            return AIMessage(content="数据已查询完成，准备总结。")
-
     class FakeContextBuilder:
         async def build(self, _state, **_kwargs):
             return SimpleNamespace(
@@ -41,29 +36,38 @@ async def test_agent_publishes_query_result_followup_as_narration(monkeypatch) -
                 compaction_state={},
             )
 
-    llm = FakeLlm()
     streamed_events = []
-    monkeypatch.setattr("app.workflow.nodes.analysis.get_stream_writer", lambda: streamed_events.append)
-    monkeypatch.setattr("app.workflow.nodes.analysis._progress", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("app.workflow.middleware.get_stream_writer", lambda: streamed_events.append)
     nodes = AnalysisNodes(
-        llm=llm,
+        llm=object(),
         database=object(),
         retriever=SimpleNamespace(settings=Settings(retrieval_backend="bm25")),
         agent_context_builder=FakeContextBuilder(),
     )
-
-    result = await nodes.agent_decide({
+    middleware = DataAgentMiddleware(nodes)
+    state = {
         "query": "分析订单趋势",
         "contextualized_query": "分析订单趋势",
         "query_results": [{"datasetId": "result_1", "rowCount": 3}],
         "schema": {"tables": [{"name": "orders"}]},
         "observations": [],
         "agent_iterations": 1,
-    })
+    }
 
-    assert result["agent_decision"]["action"] == "finish"
-    assert callable(llm.on_text_delta)
+    async def handler(_request):
+        on_text_delta = agent_text_delta_handler.get()
+        assert callable(on_text_delta)
+        on_text_delta("数据已查询完成，准备总结。")
+        return ModelResponse(result=[AIMessage(content="数据已查询完成，准备总结。")])
+
+    response = await middleware.awrap_model_call(
+        ModelRequest(model=object(), messages=[], state=state),
+        handler,
+    )
+
+    assert response.command.update["agent_decision"]["action"] == "finish"
     assert [event["type"] for event in streamed_events] == [
+        "stage.started",
         "agent_message.started",
         "agent_message.delta",
         "agent_message.completed",
@@ -76,16 +80,6 @@ async def test_agent_reactively_compacts_and_retries_provider_context_error(
     monkeypatch,
 ) -> None:
     """供应商确认 prompt too long 后，当前决策应强制 Full Compact 并只重试一次。"""
-
-    class FakeLlm:
-        def __init__(self):
-            self.calls = 0
-
-        async def complete_tool_messages(self, _system, _messages, *, tools, on_text_delta=None):
-            self.calls += 1
-            if self.calls == 1:
-                raise ContextWindowExceededError("prompt too long")
-            return AIMessage(content="压缩后继续完成")
 
     class FakeContextBuilder:
         def __init__(self):
@@ -107,31 +101,42 @@ async def test_agent_reactively_compacts_and_retries_provider_context_error(
                 } if forced else {},
             )
 
-    llm = FakeLlm()
     builder = FakeContextBuilder()
     streamed_events = []
-    monkeypatch.setattr("app.workflow.nodes.analysis.get_stream_writer", lambda: streamed_events.append)
-    monkeypatch.setattr("app.workflow.nodes.analysis._progress", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("app.workflow.middleware.get_stream_writer", lambda: streamed_events.append)
     nodes = AnalysisNodes(
-        llm=llm,
+        llm=object(),
         database=object(),
         retriever=SimpleNamespace(settings=Settings(retrieval_backend="bm25")),
         agent_context_builder=builder,
     )
-
-    result = await nodes.agent_decide({
+    middleware = DataAgentMiddleware(nodes)
+    state = {
         "query": "继续分析",
         "contextualized_query": "继续分析",
         "query_results": [],
         "schema": {},
         "observations": [],
         "agent_iterations": 0,
-    })
+    }
+    calls = 0
 
-    assert llm.calls == 2
+    async def handler(_request):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ContextWindowExceededError("prompt too long")
+        return ModelResponse(result=[AIMessage(content="压缩后继续完成")])
+
+    response = await middleware.awrap_model_call(
+        ModelRequest(model=object(), messages=[], state=state),
+        handler,
+    )
+
+    assert calls == 2
     assert builder.force_flags == [False, True]
-    assert result["final_answer"] == "压缩后继续完成"
-    assert result["context_compaction"]["mode"] == "reactive"
+    assert response.command.update["final_answer"] == "压缩后继续完成"
+    assert response.command.update["context_compaction"]["mode"] == "reactive"
     assert "context.compaction.retrying" in [event["type"] for event in streamed_events]
     assert "context.compacted" in [event["type"] for event in streamed_events]
 
@@ -305,4 +310,5 @@ async def test_execute_sql_returns_final_result_and_uses_unified_row_limit(monke
     repeated_result = json.loads(repeated.update["messages"][0].content)
     assert database.execute_count == 1
     assert repeated_result["stats"]["reused"] is True
-    assert repeated_result["resultRef"]["datasetId"] == "result_test"
+    assert repeated_result["resultRef"] == "result:result_test"
+    assert repeated_result["availableActions"] == ["inspect_query_result"]

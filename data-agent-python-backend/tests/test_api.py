@@ -380,10 +380,10 @@ def test_complete_run_populates_frontend_contract() -> None:
         # ToolMessage 携带真实 Schema 预览与读取引用，而不是只有摘要。
         schema_result = json.loads(calls[1][2])
         assert schema_result["preview"]["tables"][0]["name"] == "orders"
-        assert schema_result["resultRef"]["path"] == "schema"
+        assert schema_result["resultRef"] == "schema:current"
         knowledge_result = json.loads(calls[2][2])
         assert knowledge_result["preview"]["documents"]
-        assert knowledge_result["resultRef"]["path"] == "knowledge"
+        assert knowledge_result["resultRef"] == "knowledge:current"
         # 所有工具调用均成功
         assert all(item[3] == "success" for item in calls)
 

@@ -196,6 +196,11 @@ class GraphAnalysisExecutor:
                     return
                 for node, raw_delta in payload.items():
                     delta = _coalesce_node_delta(node, raw_delta)
+                    if delta is None:
+                        # LangGraph Middleware 的 before/after hook 可以合法返回 None，
+                        # 表示本节点没有状态更新；这不是失败，也不应生成空产物。
+                        logger.debug("graph node emitted no state delta: runId=%s node=%s", run_id, node)
+                        continue
                     # 按 LangGraph reducer 语义合并累积状态，不能让增量 observation 覆盖历史。
                     _apply_state_delta(accumulated, delta)
                     await self._persist_node_update(run_id, node, delta, accumulated, active_stages)
@@ -328,8 +333,9 @@ class GraphAnalysisExecutor:
         智能体决策、工具调用结果、检索/知识/计划/SQL 预览与执行、最终分析等，
         并在方法末尾关闭对应的运行阶段（stage）。
         """
-        # 当前节点即对应一个阶段（阶段名与节点名一致）。
-        stage = node
+        # LangChain create_agent 会使用内部节点名；映射回产品阶段，才能关闭
+        # custom 事件先前创建的 input_guard / agent_decide / result 阶段。
+        stage = _node_stage(node)
         async with session_factory() as session:
             repository = Repository(session)
             run = await repository.get_run(run_id)
@@ -341,7 +347,7 @@ class GraphAnalysisExecutor:
             run.current_stage = stage
             await repository.save_run(run)
 
-            if node == "agent_decide" and delta.get("agent_decision"):
+            if node in {"agent_decide", "model"} and delta.get("agent_decision"):
                 # 智能体决策：登记其发出的工具调用并广播决策事件。
                 decision = delta["agent_decision"]
                 for message in delta.get("messages", []):
@@ -468,7 +474,7 @@ class GraphAnalysisExecutor:
                 await self._persist_query_result(repository, run, state)
             elif node == "tools" and "sql_error" in delta and delta.get("sql_error"):
                 await self._persist_query_failure(repository, run, state)
-            elif node == "result" and delta.get("analysis"):
+            elif delta.get("analysis"):
                 # 最终分析结果产物：先做来源归一化，再写入并生成助手消息。
                 analysis = _json_safe(delta["analysis"])
                 queries = await repository.list_queries(run.id)
@@ -769,7 +775,7 @@ class GraphAnalysisExecutor:
                 behavior = "MEMORY_MANAGEMENT"
             elif tool_names & {"execute_sql", "analyze_dataframe", "search_schema", "retrieve_knowledge"}:
                 behavior = "DATA_ANALYSIS"
-            elif tool_names & {"search_conversation_history", "read_conversation_history"}:
+            elif tool_names & {"search_history", "read_conversation_context", "inspect_query_result"}:
                 behavior = "HISTORY_QUERY"
             else:
                 behavior = "CONVERSATION"
@@ -861,12 +867,14 @@ class GraphAnalysisExecutor:
         run_live_event_broker.publish_persistent(event)
 
 
-def _coalesce_node_delta(node: str, raw_delta: Any) -> dict[str, Any]:
+def _coalesce_node_delta(node: str, raw_delta: Any) -> dict[str, Any] | None:
     """把 LangGraph 并行工具返回的多个 Command 更新合并为一个节点增量。
 
     ``messages`` 和 ``observations`` 是 reducer 字段，可以顺序拼接；其它字段若收到
     多个值说明工具组合存在写冲突，立即失败并给出字段名，不能静默覆盖。
     """
+    if raw_delta is None:
+        return None
     if isinstance(raw_delta, dict):
         return raw_delta
     if not isinstance(raw_delta, list):
@@ -925,14 +933,26 @@ def _json_safe(value: Any) -> Any:
 
 
 def _stage_message(node: str, delta: dict[str, Any]) -> str:
-    """根据当前四节点 Graph 的节点名返回阶段完成文案。"""
+    """把 LangChain Agent 内部节点映射为用户可理解的阶段文案。"""
     messages = {
         "input_guard": "请求安全检查完成",
         "agent_decide": "下一步分析动作已确定",
+        "model": "下一步分析动作已确定",
         "tools": "工具调用完成",
         "result": "分析结果已生成",
+        "DataAgentMiddleware.before_agent": "请求安全检查完成",
+        "DataAgentMiddleware.after_agent": "分析结果已生成",
     }
     return messages.get(node, f"{node} 已完成")
+
+
+def _node_stage(node: str) -> str:
+    """把 LangChain/LangGraph 内部节点名映射为持久化阶段名。"""
+    return {
+        "DataAgentMiddleware.before_agent": "input_guard",
+        "DataAgentMiddleware.after_agent": "result",
+        "model": "agent_decide",
+    }.get(node, node)
 
 
 def _normalize_result_sources(analysis: dict[str, Any], result_set_ids: list[str]) -> None:

@@ -9,7 +9,12 @@ import pytest
 from app.domain.errors import ResourceNotFoundError
 from app.infrastructure.persistence.database import initialize_database, session_factory
 from app.infrastructure.persistence.repository import Repository
-from app.workflow.tools import AnalysisToolRegistry
+from app.workflow.tools import (
+    AnalysisToolRegistry,
+    _decode_result_cursor,
+    _encode_result_cursor,
+    _merge_history_matches,
+)
 from app.analysis.datasets import AnalysisDatasetStore
 from app.config import get_settings
 
@@ -62,7 +67,7 @@ async def test_inspect_history_tool_returns_recoverable_error_for_missing_result
             "id": "call_1",
             "args": {
                 "dataset_id": "missing",
-                "offset": 0,
+                "cursor": None,
                 "limit": 20,
                 "state": {"conversation_id": "conv_1", "observations": []},
             },
@@ -72,6 +77,54 @@ async def test_inspect_history_tool_returns_recoverable_error_for_missing_result
     # 缺失结果应标记为失败且不可重试（属数据不存在，重试无意义）
     assert command.update["observations"][-1]["ok"] is False
     assert command.update["observations"][-1]["retryable"] is False
+
+
+def test_history_search_merges_sources_and_routes_each_reference() -> None:
+    """统一搜索应融合多来源线索，但把精读动作分发给类型化读取器。"""
+    matches = _merge_history_matches(
+        current_messages=[
+            {
+                "messageId": "msg_current",
+                "role": "user",
+                "snippet": "刚才讨论了客单价",
+            }
+        ],
+        cross_messages=[
+            {
+                "messageId": "msg_old",
+                "conversationId": "conv_old",
+                "title": "上周分析",
+                "snippet": "历史客单价分析",
+            }
+        ],
+        result_matches=[
+            {
+                "datasetId": "result_1",
+                "question": "统计客单价",
+                "sql": "SELECT AVG(total_amount) FROM orders",
+                "rowCount": 1,
+            }
+        ],
+        limit=5,
+    )
+
+    assert {item["ref"] for item in matches} == {
+        "message:msg_current",
+        "message:msg_old",
+        "result:result_1",
+    }
+    actions = {item["type"]: item["availableActions"] for item in matches}
+    assert actions["conversation_message"] == ["read_conversation_context"]
+    assert actions["query_result"] == ["inspect_query_result"]
+
+
+def test_result_cursor_is_bound_to_dataset() -> None:
+    """分页游标必须绑定结果集，不能被模型拿到另一个数据集上复用。"""
+    cursor = _encode_result_cursor("result_1", 40)
+
+    assert _decode_result_cursor(cursor, "result_1") == 40
+    with pytest.raises(ValueError, match="分页游标格式无效"):
+        _decode_result_cursor(cursor, "result_2")
 
 
 @pytest.mark.asyncio

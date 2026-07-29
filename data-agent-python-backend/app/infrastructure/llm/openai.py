@@ -135,6 +135,26 @@ class OpenAiChatClient:
         except openai.AuthenticationError as error:
             logger.exception("llm stream authentication failed: runId=%s operation=%s", run_id, operation)
             raise InvalidOperationError("LLM 认证失败（401）：请检查 API Key 与 Base URL。") from error
+        except openai.PermissionDeniedError as error:
+            # 403 与 401 不同：凭证被接受，但调用方无权访问该模型/接口。
+            # 典型场景：key 有效却打到了没权限的 Kimi Coding 接口/模型，或请求体内容触发策略。
+            # 必须透出服务端原因，否则只看到笼统的 PermissionDeniedError 无法定位。
+            provider_message = _provider_error_message(error)
+            logger.error(
+                "llm stream permission denied: runId=%s operation=%s model=%s baseUrl=%s "
+                "status=%s requestId=%s providerMessage=%s",
+                run_id,
+                operation,
+                self.settings.llm_model,
+                self.settings.llm_base_url,
+                getattr(error, "status_code", None),
+                getattr(error, "request_id", None) or "-",
+                provider_message,
+            )
+            raise InvalidOperationError(
+                "LLM 流式请求被拒绝（403）：请检查 API Key 是否具备该模型/接口的访问权限"
+                f"（如 Kimi Coding 计划）；服务端原因：{provider_message}"
+            ) from error
         except openai.APIError as error:
             logger.exception("llm stream failed: runId=%s operation=%s", run_id, operation)
             raise InvalidOperationError(f"LLM 流式请求失败：{error.__class__.__name__}") from error
@@ -287,6 +307,23 @@ class OpenAiChatClient:
         except openai.AuthenticationError as error:
             logger.exception("llm agent stream authentication failed: runId=%s", run_id)
             raise InvalidOperationError("LLM 认证失败（401）：请检查 API Key 与 Base URL。") from error
+        except openai.PermissionDeniedError as error:
+            # 403：凭证有效但无权访问该模型/接口。透出服务端原因，便于定位是权限还是内容策略。
+            provider_message = _provider_error_message(error)
+            logger.error(
+                "llm agent stream permission denied: runId=%s model=%s baseUrl=%s "
+                "status=%s requestId=%s providerMessage=%s",
+                run_id,
+                self.settings.llm_model,
+                self.settings.llm_base_url,
+                getattr(error, "status_code", None),
+                getattr(error, "request_id", None) or "-",
+                provider_message,
+            )
+            raise InvalidOperationError(
+                "LLM 流式请求被拒绝（403）：请检查 API Key 是否具备该模型/接口的访问权限"
+                f"（如 Kimi Coding 计划）；服务端原因：{provider_message}"
+            ) from error
         except openai.APIStatusError as error:
             if _is_context_window_error(error):
                 logger.warning(
@@ -534,6 +571,25 @@ class OpenAiChatClient:
             )
             raise InvalidOperationError(
                 "LLM 认证失败（401）：请检查 API Key 是否属于当前 Moonshot 开放平台，以及 Base URL 是否匹配。"
+            ) from error
+        except openai.PermissionDeniedError as error:
+            # 403：凭证有效但无权访问该模型/接口，透出服务端原因。
+            provider_message = _provider_error_message(error)
+            logger.error(
+                "llm permission denied: runId=%s operation=%s model=%s baseUrl=%s "
+                "status=%s requestId=%s providerMessage=%s durationMs=%d",
+                run_id,
+                operation,
+                self.settings.llm_model,
+                self.settings.llm_base_url,
+                getattr(error, "status_code", None),
+                getattr(error, "request_id", None) or "-",
+                provider_message,
+                int((perf_counter() - started) * 1000),
+            )
+            raise InvalidOperationError(
+                "LLM 请求被拒绝（403）：请检查 API Key 是否具备该模型/接口的访问权限"
+                f"（如 Kimi Coding 计划）；服务端原因：{provider_message}"
             ) from error
         except openai.APIStatusError as error:
             logger.error(

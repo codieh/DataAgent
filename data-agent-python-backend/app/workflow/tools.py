@@ -1,25 +1,21 @@
-"""分析 Agent 的工具集与工具节点。
+"""分析 Agent 的领域工具集。
 
 ``AnalysisToolRegistry`` 把数据库查询、Schema 检索、知识召回、历史结果读取、
-Python 分析等业务能力封装成 LangGraph 工具；``LoggingToolNode`` 在工具执行
-前后记录调用名称、入参与返回内容，便于观察 Agent 行为。
+Python 分析等业务能力封装成 LangGraph 工具。工具执行、并发调度和统一日志
+由 ``create_agent`` 及 ``DataAgentMiddleware`` 负责。
 """
 
+import asyncio
+import base64
+import binascii
 import json
-import logging
 from typing import Annotated, Any
 
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import InjectedToolCallId, BaseTool, tool
 from langgraph.config import get_stream_writer
-from langgraph.prebuilt import InjectedState, ToolNode
+from langgraph.prebuilt import InjectedState
 from langgraph.types import Command, interrupt
-
-from app.config import get_settings
-from app.observability.logging_setup import truncate_text
-
-
-logger = logging.getLogger(__name__)
 
 from app.infrastructure.datasource.sql import BusinessDatabase
 from app.domain.errors import ResourceNotFoundError
@@ -35,6 +31,7 @@ from app.workflow.tool_results import (
     build_tool_result,
     json_default,
 )
+from app.workflow.tool_metadata import tool_metadata
 
 
 class AnalysisToolRegistry:
@@ -118,20 +115,61 @@ class AnalysisToolRegistry:
                 observations=[observation],
             )
 
-        @tool("search_schema", description="检索完成当前分析问题所需的数据表及其字段和关联关系。")
+        @tool(
+            "search_schema",
+            description=(
+                "检索数据表。mode=relevance 根据问题召回相关表及字段；"
+                "mode=catalog 仅列出真实表名和注释，用于不知道数据库有哪些表时浏览目录。"
+            ),
+        )
         async def search_schema(
-            query: str,
             state: Annotated[AnalysisState, InjectedState],
             tool_call_id: Annotated[str, InjectedToolCallId],
+            query: str = "",
+            mode: str = "relevance",
         ) -> Command:
             _progress("正在检索相关数据表")
-            previous = _successful_observation(state, "search_schema", query)
+            if mode not in {"relevance", "catalog"}:
+                raise ValueError("search_schema.mode 只能是 relevance 或 catalog")
+            full_schema = state.get("full_schema") or await database.schema_snapshot()
+            if mode == "catalog":
+                catalog = [
+                    {
+                        "name": table.get("name"),
+                        "comment": table.get("comment", ""),
+                    }
+                    for table in full_schema.get("tables", [])
+                ]
+                observation = {
+                    "tool": "search_schema",
+                    "ok": bool(catalog),
+                    "query": query,
+                    "mode": mode,
+                    "summary": f"数据库共有 {len(catalog)} 张表",
+                    "tableNames": [item["name"] for item in catalog],
+                }
+                return _command(
+                    tool_call_id,
+                    observation,
+                    tool_content=build_tool_result(
+                        observation,
+                        preview={"tables": catalog},
+                        result_ref="schema:catalog",
+                        stats={"tableCount": len(catalog)},
+                        available_actions=["inspect_tables", "search_schema"],
+                    ),
+                    # catalog 只缓存完整快照，不把目录误当成已完成的相关表召回。
+                    full_schema=full_schema,
+                    observations=[observation],
+                )
+
+            previous = _successful_observation(state, "search_schema", f"{mode}:{query}")
             if previous is not None and state.get("schema", {}).get("tables"):
                 selected = list(state.get("selected_tables") or [])
                 observation = {
                     "tool": "search_schema",
                     "ok": True,
-                    "query": query,
+                    "query": f"{mode}:{query}",
                     "reused": True,
                     "summary": "相同 Schema 检索已成功完成，复用现有候选表，请继续下一步",
                     "tableNames": selected,
@@ -141,23 +179,19 @@ class AnalysisToolRegistry:
                     observation,
                     tool_content=build_tool_result(
                         observation,
-                        result_ref={
-                            "type": "agent_state",
-                            "path": "schema",
-                            "scope": "current_run",
-                            "readTool": "inspect_tables",
-                        },
+                        result_ref="schema:current",
                         stats={"tableCount": len(selected), "tableNames": selected, "reused": True},
+                        available_actions=["inspect_tables"],
                     ),
                     observations=[observation],
                 )
-            full_schema = await database.schema_snapshot()
             recalled = await retriever.search_schema(query, full_schema)
             selected = [table["name"] for table in recalled["tables"]]
             observation = {
                 "tool": "search_schema",
                 "ok": bool(selected),
-                "query": query,
+                "query": f"{mode}:{query}",
+                "mode": mode,
                 "summary": f"召回 {selected} 作为候选表",
                 "tableNames": selected,
             }
@@ -167,13 +201,9 @@ class AnalysisToolRegistry:
                 tool_content=build_tool_result(
                     observation,
                     preview={"tables": recalled["tables"]},
-                    result_ref={
-                        "type": "agent_state",
-                        "path": "schema",
-                        "scope": "current_run",
-                        "readTool": "inspect_tables",
-                    },
+                    result_ref="schema:current",
                     stats={"tableCount": len(recalled["tables"]), "tableNames": selected},
+                    available_actions=["inspect_tables"],
                 ),
                 full_schema=full_schema,
                 schema={"tables": recalled["tables"]},
@@ -207,16 +237,12 @@ class AnalysisToolRegistry:
                 tool_content=build_tool_result(
                     observation,
                     preview={"tables": inspected},
-                    result_ref={
-                        "type": "agent_state",
-                        "path": "schema",
-                        "scope": "current_run",
-                        "readTool": "inspect_tables",
-                    },
+                    result_ref="schema:current",
                     stats={
                         "tableCount": len(inspected),
                         "tableNames": [table.get("name") for table in inspected],
                     },
+                    available_actions=["inspect_tables"],
                 ),
                 full_schema=full_schema,
                 schema={"tables": list(merged.values())},
@@ -247,17 +273,13 @@ class AnalysisToolRegistry:
                     observation,
                     tool_content=build_tool_result(
                         observation,
-                        result_ref={
-                            "type": "agent_state",
-                            "path": "knowledge",
-                            "scope": "current_run",
-                            "readTool": "retrieve_knowledge",
-                        },
+                        result_ref="knowledge:current",
                         stats={
                             "documentCount": len(knowledge.get("documents", [])),
                             "evidenceCount": len(knowledge.get("evidences", [])),
                             "reused": True,
                         },
+                        available_actions=["retrieve_knowledge"],
                     ),
                     observations=[observation],
                 )
@@ -275,28 +297,33 @@ class AnalysisToolRegistry:
                 tool_content=build_tool_result(
                     observation,
                     preview=knowledge,
-                    result_ref={
-                        "type": "agent_state",
-                        "path": "knowledge",
-                        "scope": "current_run",
-                        "readTool": "retrieve_knowledge",
-                    },
+                    result_ref="knowledge:current",
                     stats={
                         "documentCount": len(knowledge["documents"]),
                         "evidenceCount": len(knowledge["evidences"]),
                     },
+                    available_actions=["retrieve_knowledge"],
                 ),
                 knowledge=knowledge,
                 observations=[observation],
             )
 
-        @tool("execute_sql", description="安全校验并执行一条只读 MySQL SELECT，返回最终查询结果。")
+        @tool(
+            "execute_sql",
+            description=(
+                "安全校验并执行一条只读 MySQL SELECT。purpose=explore 表示为后续分析探查数据，"
+                "purpose=deliver 表示产生面向用户的交付结果；两者执行相同的安全校验。"
+            ),
+        )
         async def execute_sql(
             sql: str,
             state: Annotated[AnalysisState, InjectedState],
             tool_call_id: Annotated[str, InjectedToolCallId],
+            purpose: str = "deliver",
         ) -> Command:
             """在一次原生工具调用内完成校验、审核和执行，只返回最终结果。"""
+            if purpose not in {"explore", "deliver"}:
+                raise ValueError("execute_sql.purpose 只能是 explore 或 deliver")
             _progress("正在检查并执行 SQL")
             policy = inspect_select_sql(
                 sql,
@@ -394,6 +421,7 @@ class AnalysisToolRegistry:
                     "summary": "相同 SQL 已执行成功，直接复用已有结果",
                     "rowCount": int(existing.get("rowCount") or 0),
                     "datasetId": dataset_id,
+                    "purpose": purpose,
                     "reused": True,
                 }
                 return _command(
@@ -401,17 +429,13 @@ class AnalysisToolRegistry:
                     observation,
                     tool_content=build_tool_result(
                         observation,
-                        result_ref={
-                            "type": "query_result",
-                            "datasetId": dataset_id,
-                            "scope": "current_run",
-                            "readTool": "inspect_query_result",
-                        },
+                        result_ref=f"result:{dataset_id}",
                         stats={
                             "rowCount": observation["rowCount"],
                             "datasetId": dataset_id,
                             "reused": True,
                         },
+                        available_actions=["inspect_query_result"],
                     ),
                     sql=safe_sql,
                     sql_error=None,
@@ -420,7 +444,10 @@ class AnalysisToolRegistry:
                 )
 
             human_feedback = {"approved": True, "comment": ""}
-            if state.get("human_review_enabled"):
+            if (
+                state.get("human_review_enabled")
+                and tool_metadata("execute_sql").requires_confirmation
+            ):
                 _progress("SQL 已通过安全检查，等待人工审核")
                 _sql_event(
                     "sql.review_required",
@@ -512,6 +539,7 @@ class AnalysisToolRegistry:
                 "columns": columns,
                 "rowCount": len(rows),
                 "datasetId": dataset["id"],
+                "purpose": purpose,
                 "dataset": {
                     "id": dataset["id"],
                     "rowCount": dataset["rowCount"],
@@ -532,6 +560,7 @@ class AnalysisToolRegistry:
                 "summary": f"查询成功，返回 {len(rows)} 行",
                 "rowCount": len(rows),
                 "datasetId": dataset["id"],
+                "purpose": purpose,
             }
             return _command(
                 tool_call_id,
@@ -539,16 +568,13 @@ class AnalysisToolRegistry:
                 tool_content=build_tool_result(
                     observation,
                     preview={"columns": columns, "rows": preview},
-                    result_ref={
-                        "type": "query_result",
-                        "datasetId": dataset["id"],
-                        "scope": "current_run",
-                        "readTool": "inspect_query_result",
-                    },
+                    result_ref=f"result:{dataset['id']}",
                     stats={
                         "rowCount": len(rows),
                         "datasetId": dataset["id"],
+                        "purpose": purpose,
                     },
+                    available_actions=["inspect_query_result"],
                 ),
                 sql=safe_sql,
                 columns=columns,
@@ -563,65 +589,79 @@ class AnalysisToolRegistry:
                 observations=[observation],
             )
 
-        @tool("search_analysis_history", description="按问题、SQL 或字段关键词搜索当前会话以前产生的查询结果。")
-        async def search_analysis_history(
+        @tool(
+            "search_history",
+            description=(
+                "统一搜索历史消息和历史查询结果。scope=current 仅查当前会话；"
+                "scope=all 还会搜索同一数据源的其他会话。返回条目会明确类型和后续读取工具。"
+            ),
+        )
+        async def search_history(
             query: str,
             state: Annotated[AnalysisState, InjectedState],
             tool_call_id: Annotated[str, InjectedToolCallId],
             scope: str = "all",
             limit: int = 5,
         ) -> Command:
-            if result_history is None:
-                matches = []
-            else:
-                normalized_scope = scope if scope in {"query_results", "analyses", "all"} else "all"
-                matches = await result_history.search(
-                    state["conversation_id"], query, normalized_scope, min(max(limit, 1), 10)
-                )
-            observation = {
-                "tool": "search_analysis_history",
-                "ok": bool(matches),
-                "summary": f"找到 {len(matches)} 个历史查询结果",
-                "resultCount": len(matches),
-            }
-            return _command(
-                tool_call_id,
-                observation,
-                tool_content=build_tool_result(
-                    observation,
-                    preview={"matches": matches},
-                    result_ref={
-                        "type": "result_catalog",
-                        "conversationId": state["conversation_id"],
-                        "readTool": "inspect_query_result",
-                    },
-                    stats={"matchCount": len(matches)},
-                ),
-                observations=[observation],
-            )
+            if scope not in {"current", "all"}:
+                raise ValueError("search_history.scope 只能是 current 或 all")
+            effective_limit = min(max(limit, 1), 10)
 
-        @tool(
-            "search_current_conversation",
-            description="用户提到当前会话前面、之前、刚才说过的内容时，按关键词搜索本会话被摘要覆盖或不在近期窗口中的原始消息。",
-        )
-        async def search_current_conversation(
-            query: str,
-            state: Annotated[AnalysisState, InjectedState],
-            tool_call_id: Annotated[str, InjectedToolCallId],
-            limit: int = 5,
-        ) -> Command:
-            async with session_factory() as session:
-                matches = await Repository(session).search_current_conversation_history(
+            async def search_messages() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+                async with session_factory() as session:
+                    repository = Repository(session)
+                    anchor = await repository.get_conversation(state["conversation_id"])
+                    if anchor is None:
+                        raise ResourceNotFoundError(
+                            "conversation",
+                            state["conversation_id"],
+                        )
+                    current = await repository.search_current_conversation_history(
+                        state["conversation_id"],
+                        query,
+                        effective_limit * 2,
+                        exclude_run_id=state.get("run_id"),
+                    )
+                    if scope == "current":
+                        return current, []
+                    cross = await repository.search_conversation_history(
+                        query,
+                        effective_limit * 3,
+                        datasource_id=anchor.datasource_id,
+                    )
+                    cross = [
+                        item
+                        for item in cross
+                        if item.get("conversationId") != state["conversation_id"]
+                    ]
+                    return current, cross
+
+            result_task = (
+                result_history.search(
                     state["conversation_id"],
                     query,
-                    min(max(limit, 1), 10),
-                    exclude_run_id=state.get("run_id"),
+                    "all",
+                    effective_limit * 2,
                 )
+                if result_history is not None
+                else asyncio.sleep(0, result=[])
+            )
+            (current_messages, cross_messages), result_matches = await asyncio.gather(
+                search_messages(),
+                result_task,
+            )
+            matches = _merge_history_matches(
+                current_messages=current_messages,
+                cross_messages=cross_messages,
+                result_matches=result_matches,
+                limit=effective_limit,
+            )
             observation = {
-                "tool": "search_current_conversation",
+                "tool": "search_history",
                 "ok": bool(matches),
-                "summary": f"在当前会话找到 {len(matches)} 条历史消息",
+                "summary": f"找到 {len(matches)} 条相关历史线索",
                 "resultCount": len(matches),
+                "scope": scope,
             }
             return _command(
                 tool_call_id,
@@ -629,21 +669,28 @@ class AnalysisToolRegistry:
                 tool_content=build_tool_result(
                     observation,
                     preview={"matches": matches},
-                    result_ref={
-                        "type": "conversation_messages",
-                        "conversationId": state["conversation_id"],
-                        "readTool": "read_message_context",
+                    result_ref="history:search",
+                    stats={
+                        "matchCount": len(matches),
+                        "messageMatchCount": len(current_messages) + len(cross_messages),
+                        "resultMatchCount": len(result_matches),
                     },
-                    stats={"matchCount": len(matches)},
+                    available_actions=[
+                        "read_conversation_context",
+                        "inspect_query_result",
+                    ],
                 ),
                 observations=[observation],
             )
 
         @tool(
-            "read_message_context",
-            description="根据 search_current_conversation 返回的消息编号，读取该消息及前后对话，恢复原始语境。",
+            "read_conversation_context",
+            description=(
+                "根据 search_history 返回的 messageId，读取该消息及前后原始对话。"
+                "服务端会验证消息与当前会话使用相同数据源。"
+            ),
         )
-        async def read_message_context(
+        async def read_conversation_context(
             message_id: str,
             state: Annotated[AnalysisState, InjectedState],
             tool_call_id: Annotated[str, InjectedToolCallId],
@@ -651,14 +698,14 @@ class AnalysisToolRegistry:
             after: int = 2,
         ) -> Command:
             async with session_factory() as session:
-                result = await Repository(session).read_message_context(
+                result = await Repository(session).read_accessible_message_context(
                     state["conversation_id"],
                     message_id,
                     min(max(before, 0), 10),
                     min(max(after, 0), 10),
                 )
             observation = {
-                "tool": "read_message_context",
+                "tool": "read_conversation_context",
                 "ok": bool(result["messages"]),
                 "summary": f"读取命中消息附近的 {len(result['messages'])} 条原始消息",
                 "messageId": message_id,
@@ -669,82 +716,9 @@ class AnalysisToolRegistry:
                 tool_content=build_tool_result(
                     observation,
                     preview=result,
-                    result_ref={
-                        "type": "conversation_messages",
-                        "conversationId": state["conversation_id"],
-                        "messageId": message_id,
-                        "readTool": "read_message_context",
-                    },
+                    result_ref=f"message:{message_id}",
                     stats={"messageCount": len(result["messages"])},
-                ),
-                observations=[observation],
-            )
-
-        @tool(
-            "search_conversation_history",
-            description="用户明确提到其他会话或上一次会话时，按关键词搜索跨会话历史，返回候选会话目录。当前会话内查找应使用 search_current_conversation。",
-        )
-        async def search_conversation_history(
-            query: str,
-            state: Annotated[AnalysisState, InjectedState],
-            tool_call_id: Annotated[str, InjectedToolCallId],
-            limit: int = 5,
-        ) -> Command:
-            async with session_factory() as session:
-                matches = await Repository(session).search_conversation_history(query, min(max(limit, 1), 10))
-            observation = {
-                "tool": "search_conversation_history",
-                "ok": bool(matches),
-                "summary": f"找到 {len(matches)} 个相关历史会话",
-                "resultCount": len(matches),
-            }
-            return _command(
-                tool_call_id,
-                observation,
-                tool_content=build_tool_result(
-                    observation,
-                    preview={"matches": matches},
-                    result_ref={
-                        "type": "conversation_catalog",
-                        "readTool": "read_conversation_history",
-                    },
-                    stats={"matchCount": len(matches)},
-                ),
-                observations=[observation],
-            )
-
-        @tool(
-            "read_conversation_history",
-            description="根据 search_conversation_history 返回的会话编号，读取该历史会话的具体消息。",
-        )
-        async def read_conversation_history(
-            conversation_id: str,
-            state: Annotated[AnalysisState, InjectedState],
-            tool_call_id: Annotated[str, InjectedToolCallId],
-            limit: int = 20,
-        ) -> Command:
-            async with session_factory() as session:
-                result = await Repository(session).read_conversation_history(
-                    conversation_id, min(max(limit, 1), 50)
-                )
-            observation = {
-                "tool": "read_conversation_history",
-                "ok": bool(result["messages"]),
-                "summary": f"读取历史会话中的 {len(result['messages'])} 条消息",
-                "conversationId": conversation_id,
-            }
-            return _command(
-                tool_call_id,
-                observation,
-                tool_content=build_tool_result(
-                    observation,
-                    preview=result,
-                    result_ref={
-                        "type": "conversation_messages",
-                        "conversationId": conversation_id,
-                        "readTool": "read_conversation_history",
-                    },
-                    stats={"messageCount": len(result["messages"])},
+                    available_actions=["read_conversation_context"],
                 ),
                 observations=[observation],
             )
@@ -754,11 +728,12 @@ class AnalysisToolRegistry:
             dataset_id: str,
             state: Annotated[AnalysisState, InjectedState],
             tool_call_id: Annotated[str, InjectedToolCallId],
-            offset: int = 0,
+            cursor: str | None = None,
             limit: int = 20,
         ) -> Command:
             if result_history is None:
                 raise RuntimeError("历史结果服务未配置")
+            offset = _decode_result_cursor(cursor, dataset_id)
             try:
                 result = await result_history.inspect(
                     state["conversation_id"], dataset_id, max(offset, 0), min(max(limit, 1), 50)
@@ -790,17 +765,21 @@ class AnalysisToolRegistry:
                 tool_content=build_tool_result(
                     observation,
                     preview=result,
-                    result_ref={
-                        "type": "result_set",
-                        "datasetId": dataset_id,
-                        "conversationId": state["conversation_id"],
-                        "readTool": "inspect_query_result",
-                    },
+                    result_ref=f"result:{dataset_id}",
                     stats={
                         "rowCount": result["rowCount"],
                         "returnedRows": result["returnedRows"],
                     },
                     truncated=bool(result.get("hasMore") or result.get("truncated")),
+                    next_cursor=(
+                        _encode_result_cursor(
+                            dataset_id,
+                            result["offset"] + result["returnedRows"],
+                        )
+                        if result.get("hasMore")
+                        else None
+                    ),
+                    available_actions=["inspect_query_result"],
                 ),
                 observations=[observation],
             )
@@ -843,11 +822,7 @@ class AnalysisToolRegistry:
                     tool_content=build_tool_result(
                         observation,
                         preview=analysis["result"],
-                        result_ref={
-                            "type": "analysis_artifact",
-                            "analysisId": analysis["id"],
-                            "scope": "current_run",
-                        },
+                        result_ref=f"artifact:{analysis['id']}",
                         stats={
                             "datasetIds": analysis.get("datasetIds", dataset_ids or []),
                         },
@@ -901,8 +876,9 @@ class AnalysisToolRegistry:
                 tool_content=build_tool_result(
                     observation,
                     preview={"memory": result["memory"]},
-                    result_ref={"type": "core_memory", "scope": "cross_conversation"},
+                    result_ref="memory:core",
                     stats={"changed": result["changed"]},
+                    available_actions=["rewrite_core_memory"],
                 ),
                 observations=[observation],
             )
@@ -914,12 +890,9 @@ class AnalysisToolRegistry:
             inspect_tables,
             retrieve_knowledge,
             execute_sql,
-            search_analysis_history,
+            search_history,
             inspect_query_result,
-            search_current_conversation,
-            read_message_context,
-            search_conversation_history,
-            read_conversation_history,
+            read_conversation_context,
             analyze_dataframe,
         ]
         if core_memory is not None:
@@ -935,65 +908,15 @@ class AnalysisToolRegistry:
                 # InjectedToolCallId. Exposing args_schema makes the model echo the
                 # entire LangGraph state back inside every tool call.
                 "parameters": item.tool_call_schema.model_json_schema(),
+                "execution": {
+                    "readOnly": tool_metadata(item.name).read_only,
+                    "concurrencySafe": tool_metadata(item.name).concurrency_safe,
+                    "requiresConfirmation": tool_metadata(item.name).requires_confirmation,
+                    "resultPersistence": tool_metadata(item.name).result_persistence,
+                },
             }
             for item in self.tools
         ]
-
-
-class LoggingToolNode(ToolNode):
-    """LangGraph ``ToolNode`` 的子类，在工具执行前后统一记录调用情况。
-
-    它在不改变任何工具行为的前提下，于两个时机写入日志：
-
-    - 执行前：记录模型决定调用的工具名称与入参（``args``），便于确认 Agent
-      的每一步决策。
-    - 执行后：记录工具返回的内容（即写回上下文的 ``ToolMessage``），便于确认
-      工具实际返回了什么（召回了哪些表、SQL 是否成功、Python 分析结论等）。
-
-    日志内容会被截断，避免超大的工具结果（如整张表的预览）刷屏。
-    """
-
-    async def ainvoke(self, input: Any, config: Any = None, **kwargs: Any) -> Any:
-        settings = get_settings()
-        # 执行前：记录每个待执行工具调用的名称与入参。
-        for call in self._last_tool_calls(input):
-            name = call.get("name")
-            args = call.get("args", {})
-            logger.info(
-                "tool call started: name=%s args=%s",
-                name,
-                truncate_text(json.dumps(args, ensure_ascii=False), settings.tool_log_content_chars),
-            )
-        # 执行工具（保持父类行为完全不变）。
-        result = await super().ainvoke(input, config, **kwargs)
-        # 执行后：记录每个工具返回的内容（observation）。
-        # 普通工具返回 {"messages": [...]}；本项目工具返回 Command，其更新内容
-        # 在 command.update["messages"] 里。两种形态都兼容提取。
-        result_items = result if isinstance(result, list) else [result]
-        for item in result_items:
-            messages: list[Any] = []
-            if isinstance(item, dict):
-                messages = item.get("messages", []) or []
-            elif isinstance(item, Command):
-                messages = (getattr(item, "update", None) or {}).get("messages", []) or []
-            for message in messages:
-                content = getattr(message, "content", "")
-                logger.info(
-                    "tool call completed: content=%s",
-                    truncate_text(str(content), settings.tool_log_content_chars),
-                )
-        return result
-
-    @staticmethod
-    def _last_tool_calls(input: Any) -> list[dict[str, Any]]:
-        """从 LangGraph 传入的状态中提取最后一条 AI 消息里的工具调用。"""
-        if not isinstance(input, dict):
-            return []
-        messages = input.get("messages", []) or []
-        if not messages:
-            return []
-        last = messages[-1]
-        return getattr(last, "tool_calls", None) or []
 
 
 def _command(
@@ -1036,6 +959,115 @@ def _successful_observation(
         ):
             return observation
     return None
+
+
+def _merge_history_matches(
+    *,
+    current_messages: list[dict[str, Any]],
+    cross_messages: list[dict[str, Any]],
+    result_matches: list[dict[str, Any]],
+    limit: int,
+) -> list[dict[str, Any]]:
+    """将异构历史来源按加权 RRF 融合为统一线索目录。
+
+    各来源只使用自己的名次，不直接比较 FTS/BM25 原始分数。当前会话略微加权，
+    跨会话结果略微降权，避免陈旧上下文压过用户刚刚讨论的内容。
+    """
+    ranked_sources = (
+        ("current_message", current_messages, 1.1),
+        ("query_result", result_matches, 1.0),
+        ("cross_message", cross_messages, 0.9),
+    )
+    merged: dict[str, dict[str, Any]] = {}
+    for source, items, weight in ranked_sources:
+        for rank, item in enumerate(items, start=1):
+            if source == "query_result":
+                resource_id = str(item.get("datasetId") or "")
+                if not resource_id:
+                    continue
+                ref = f"result:{resource_id}"
+                normalized = {
+                    "type": "query_result",
+                    "ref": ref,
+                    "datasetId": resource_id,
+                    "title": item.get("question") or "历史查询结果",
+                    "summary": item.get("sql") or "",
+                    "metadata": {
+                        "columns": item.get("columns", []),
+                        "rowCount": item.get("rowCount"),
+                        "createdAt": item.get("createdAt"),
+                    },
+                    "availableActions": ["inspect_query_result"],
+                }
+            else:
+                resource_id = str(item.get("messageId") or "")
+                if not resource_id:
+                    continue
+                ref = f"message:{resource_id}"
+                normalized = {
+                    "type": "conversation_message",
+                    "ref": ref,
+                    "messageId": resource_id,
+                    "conversationId": item.get("conversationId"),
+                    "title": item.get("title") or (
+                        "当前会话消息" if source == "current_message" else "历史会话消息"
+                    ),
+                    "summary": item.get("snippet") or "",
+                    "metadata": {
+                        "role": item.get("role"),
+                        "createdAt": item.get("createdAt"),
+                        "scope": "current" if source == "current_message" else "all",
+                    },
+                    "availableActions": ["read_conversation_context"],
+                }
+            score = weight / (60 + rank)
+            existing = merged.get(ref)
+            if existing is None:
+                normalized["_rrfScore"] = score
+                merged[ref] = normalized
+            else:
+                existing["_rrfScore"] += score
+
+    ordered = sorted(
+        merged.values(),
+        key=lambda item: (-float(item["_rrfScore"]), str(item["ref"])),
+    )[:limit]
+    for item in ordered:
+        item.pop("_rrfScore", None)
+    return ordered
+
+
+def _encode_result_cursor(dataset_id: str, offset: int) -> str:
+    """生成不可依赖内部格式的分页游标。"""
+    payload = json.dumps(
+        {"datasetId": dataset_id, "offset": max(offset, 0)},
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+def _decode_result_cursor(cursor: str | None, dataset_id: str) -> int:
+    """解析并校验分页游标，拒绝跨结果集复用或损坏的游标。"""
+    if cursor is None or not cursor.strip():
+        return 0
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded).decode("utf-8"))
+        if payload.get("datasetId") != dataset_id:
+            raise ValueError("分页游标不属于当前结果集")
+        offset = int(payload["offset"])
+        if offset < 0:
+            raise ValueError("分页游标 offset 不能小于 0")
+        return offset
+    except (
+        KeyError,
+        TypeError,
+        ValueError,
+        binascii.Error,
+        json.JSONDecodeError,
+        UnicodeDecodeError,
+    ) as error:
+        raise ValueError("分页游标格式无效") from error
 
 
 def _compact_table(table: dict[str, Any]) -> dict[str, Any]:

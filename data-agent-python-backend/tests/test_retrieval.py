@@ -87,19 +87,39 @@ def test_tool_specifications_hide_runtime_injected_arguments() -> None:
 
     specifications = {item["name"]: item["parameters"] for item in registry.specifications()}
 
-    assert set(specifications["execute_sql"]["properties"]) == {"sql"}
-    assert set(specifications["search_schema"]["properties"]) == {"query"}
+    assert set(specifications["execute_sql"]["properties"]) == {"sql", "purpose"}
+    assert set(specifications["search_schema"]["properties"]) == {"query", "mode"}
     assert set(specifications["analyze_dataframe"]["properties"]) == {"objective", "dataset_ids"}
-    assert set(specifications["search_analysis_history"]["properties"]) == {"query", "scope", "limit"}
-    assert set(specifications["search_current_conversation"]["properties"]) == {"query", "limit"}
-    assert set(specifications["read_message_context"]["properties"]) == {"message_id", "before", "after"}
-    assert set(specifications["search_conversation_history"]["properties"]) == {"query", "limit"}
-    assert set(specifications["read_conversation_history"]["properties"]) == {"conversation_id", "limit"}
-    assert set(specifications["inspect_query_result"]["properties"]) == {"dataset_id", "offset", "limit"}
+    assert set(specifications["search_history"]["properties"]) == {"query", "scope", "limit"}
+    assert set(specifications["read_conversation_context"]["properties"]) == {
+        "message_id",
+        "before",
+        "after",
+    }
+    assert set(specifications["inspect_query_result"]["properties"]) == {
+        "dataset_id",
+        "cursor",
+        "limit",
+    }
     for parameters in specifications.values():
         # 运行时注入参数不得出现在对外开放的工具参数中
         assert "state" not in parameters.get("properties", {})
         assert "tool_call_id" not in parameters.get("properties", {})
+
+
+def test_tool_specifications_expose_runtime_execution_metadata() -> None:
+    """工具运行属性应来自统一元数据表，供调度和可观测层使用。"""
+    registry = AnalysisToolRegistry(database=object(), retriever=object(), result_history=object())
+    specifications = {item["name"]: item["execution"] for item in registry.specifications()}
+
+    assert specifications["search_schema"] == {
+        "readOnly": True,
+        "concurrencySafe": True,
+        "requiresConfirmation": False,
+        "resultPersistence": "summary",
+    }
+    assert specifications["execute_sql"]["concurrencySafe"] is False
+    assert specifications["execute_sql"]["requiresConfirmation"] is True
 
 
 def test_agent_uses_native_tool_schema_and_prefers_reasonable_defaults() -> None:

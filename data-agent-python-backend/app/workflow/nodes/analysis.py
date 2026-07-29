@@ -2,12 +2,10 @@
 
 本模块实现 ``AnalysisNodes``，是 LangGraph 各节点的具体逻辑落地：
 - ``input_guard``：输入侧提示注入安全校验；
-- ``agent_decide``：Agent 决策循环核心，调用 LLM 选定下一步工具或结束；
-- ``tools``：执行原生工具；SQL 校验、人工审核和执行封装在 ``execute_sql`` 内；
 - ``result``：汇总多查询结果，调用 LLM 生成结构化分析报告。
 
-每个节点接收 ``AnalysisState`` 并返回需要合并进全局状态的状态增量（dict）。
-模块级辅助函数负责上下文投影、观察记录、结果清洗与合并等纯逻辑。
+Agent 决策和工具循环由 ``create_agent`` 负责，调用前后的领域规则位于
+``DataAgentMiddleware``。本模块只保留确定性的输入检查与结果生成。
 """
 
 import asyncio
@@ -15,23 +13,19 @@ import json
 from datetime import date, datetime, time
 from decimal import Decimal
 from typing import Any
-from langchain_core.messages import AIMessage
 from langgraph.config import get_stream_writer
 
 from app.infrastructure.datasource.sql import BusinessDatabase
 from app.analysis import AnalysisDatasetStore
 from app.analysis.service import PythonAnalysisService
 from app.context import estimate_tokens
-from app.domain.errors import ContextWindowExceededError, InvalidOperationError
+from app.domain.errors import InvalidOperationError
 from app.retrieval import KnowledgeRetriever
 from app.security import PromptInjectionGuard
-from app.workflow.prompts import (
-    AGENT_SYSTEM,
-    RESULT_STRUCTURE_SYSTEM,
-    RESULT_SUMMARY_SYSTEM,
-)
+from app.workflow.prompts import RESULT_STRUCTURE_SYSTEM, RESULT_SUMMARY_SYSTEM
 from app.workflow.state import AnalysisState
 from app.workflow.tools import AnalysisToolRegistry
+from app.workflow.tool_metadata import tool_metadata
 from app.workflow.ports import LlmClient
 from app.workflow.outputs import AnalysisStructureOutput
 from app.workflow.context_builder import AgentContextBuilder
@@ -87,180 +81,6 @@ class AnalysisNodes:
                 "security": {"passed": False, "type": "prompt_injection", "reason": inspection.reason},
             }
         return {"security": {"passed": True, "type": "input_guard"}}
-
-    async def agent_decide(self, state: AnalysisState) -> dict[str, Any]:
-        """Agent 决策循环核心：决定本轮是调用某个工具还是结束。
-
-        处理层级：
-        1. 达到最大迭代轮次则强制 finish；
-        2. 构建面向模型的上下文并请求工具调用；
-        3. 若尚无 schema 却要查表/执行 SQL，则强制改为 search_schema（先了解结构）；
-        4. schema 检索或 SQL 执行达到上限则强制 finish；
-        5. 若因上述规则改写了动作/参数，则同步修正 LLM 返回的工具调用；
-        6. finish 时落定 ``final_answer`` 与 ``result_mode``。
-        """
-        iteration = state.get("agent_iterations", 0)
-        _progress("agent_decide", f"正在决定第 {iteration + 1} 步分析动作")
-        if iteration >= self.retriever.settings.agent_max_iterations:
-            # 超出轮次预算：使用既有结论收尾，并据“是否已拿到数据行”推断结果模式
-            final_answer = state.get("final_answer") or "分析达到最大轮次，已返回当前可确认的结果。"
-            return {
-                "agent_decision": {"action": "finish", "reasonSummary": "已达到分析轮次上限"},
-                "final_answer": final_answer,
-                "result_mode": state.get("result_mode") or ("success" if state.get("rows") else "budget_exhausted"),
-                "messages": [AIMessage(content=final_answer)],
-            }
-        if self.agent_context_builder is None:
-            raise RuntimeError("AgentContextBuilder 未配置")
-        tool_specifications = self.tool_registry.specifications()
-        context = await self.agent_context_builder.build(
-            state,
-            system=AGENT_SYSTEM,
-            tools=tool_specifications,
-        )
-        writer = get_stream_writer()
-        streamed_final = False
-        streamed_agent_text: list[str] = []
-        stream_message_id = f"agent-message-{iteration + 1}"
-
-        def on_text_delta(delta: str) -> None:
-            """实时展示 Agent 可见文本；响应结束后再判定它是过程说明还是最终回答。"""
-            if not streamed_agent_text:
-                writer({
-                    "type": "agent_message.started",
-                    "stage": "agent_decide",
-                    "data": {"messageId": stream_message_id, "iteration": iteration + 1},
-                })
-            streamed_agent_text.append(delta)
-            writer({
-                "type": "agent_message.delta",
-                "stage": "agent_decide",
-                "data": {"messageId": stream_message_id, "delta": delta},
-            })
-
-        # 让 LLM 以原生工具调用方式决定下一步动作
-        try:
-            response = await self.llm.complete_tool_messages(
-                AGENT_SYSTEM,
-                context.messages,
-                tools=tool_specifications,
-                on_text_delta=on_text_delta,
-            )
-        except ContextWindowExceededError:
-            # 与 cc-haha 的 reactive compact 一致：仅在供应商明确报告 prompt
-            # too long 时强制全量压缩，并重试当前 LLM 调用一次。
-            writer(
-                {
-                    "type": "context.compaction.retrying",
-                    "stage": "agent_decide",
-                    "data": {
-                        "iteration": iteration + 1,
-                        "reason": "provider_context_window_exceeded",
-                    },
-                }
-            )
-            retry_state = {
-                **state,
-                "context_compaction": context.compaction_state,
-            }
-            context = await self.agent_context_builder.build(
-                retry_state,
-                system=AGENT_SYSTEM,
-                tools=tool_specifications,
-                force_full_compact=True,
-            )
-            response = await self.llm.complete_tool_messages(
-                AGENT_SYSTEM,
-                context.messages,
-                tools=tool_specifications,
-                on_text_delta=on_text_delta,
-            )
-        original_tool_calls = list(response.tool_calls)
-        tool_calls = _normalize_tool_calls(
-            original_tool_calls,
-            state=state,
-            schema_search_limit=self.retriever.settings.agent_max_schema_searches,
-            sql_execution_limit=self.retriever.settings.agent_max_sql_executions,
-        )
-        _validate_parallel_state_writes(tool_calls)
-
-        if tool_calls != original_tool_calls:
-            # 护栏可能替换了越序工具或移除了超预算调用，必须同步修正 AIMessage。
-            response = AIMessage(content=response.content, tool_calls=tool_calls)
-
-        if streamed_agent_text:
-            # 有后续工具或查询结果时，这段文本只是过程说明；没有后续工作时才是直接答复。
-            message_kind = "narration" if original_tool_calls or state.get("query_results") else "final"
-            writer({
-                "type": "agent_message.completed",
-                "stage": "agent_decide",
-                "data": {
-                    "messageId": stream_message_id,
-                    "iteration": iteration + 1,
-                    "kind": message_kind,
-                    "text": "".join(streamed_agent_text),
-                    "toolNames": [call["name"] for call in original_tool_calls],
-                },
-            })
-            streamed_final = message_kind == "final"
-
-        # 没有工具调用即视为结束本轮 Agent 循环；兼容保留首动作字段并新增 actions。
-        action = tool_calls[0]["name"] if tool_calls else "finish"
-        arguments = tool_calls[0]["args"] if tool_calls else {}
-        actions = [{"action": call["name"], "arguments": call["args"]} for call in tool_calls]
-        if not tool_calls and original_tool_calls:
-            response = AIMessage(content=_budget_exhausted_message(original_tool_calls, state, self.retriever))
-        updates: dict[str, Any] = {
-            # 记录本轮决策（动作、理由摘要、参数）供后续节点与人工审核使用
-            "agent_decision": {
-                "action": action,
-                "actions": actions,
-                "reasonSummary": str(response.content or ""),
-                "arguments": arguments,
-            },
-            "agent_iterations": iteration + 1,
-            "messages": [response],
-        }
-        if context.stats.get("updated"):
-            # 压缩边界进入 Graph State/checkpoint，下一轮只投影边界之后的新消息。
-            updates["context_compaction"] = context.compaction_state
-            writer(
-                {
-                    "type": "context.compacted",
-                    "stage": "agent_decide",
-                    "data": {
-                        "sequence": context.compaction_state.get("sequence"),
-                        "mode": context.compaction_state.get("mode"),
-                        "stages": context.compaction_state.get("stages", []),
-                        "beforeTokens": context.compaction_state.get("beforeTokens"),
-                        "afterTokens": context.compaction_state.get("afterTokens"),
-                        "coveredMessageCount": context.compaction_state.get(
-                            "coveredMessageCount"
-                        ),
-                    },
-                }
-            )
-        if action == "finish":
-            # 收尾：落定最终答案；若全程未产生查询结果，则按“对话”模式而非成功模式
-            updates["final_answer"] = str(response.content or "") or (
-                "分析已结束，但模型没有返回可展示的结论。"
-            )
-            if not state.get("query_results"):
-                # 无查询结果的闲聊/澄清直接以 Agent 回复作为最终答案。
-                if not streamed_final:
-                    writer({"type": "final_answer.started", "stage": "agent_decide", "data": {}})
-                    writer({
-                        "type": "final_answer.delta",
-                        "stage": "agent_decide",
-                        "data": {"delta": updates["final_answer"]},
-                    })
-                writer({
-                    "type": "final_answer.completed",
-                    "stage": "agent_decide",
-                    "data": {"text": updates["final_answer"]},
-                })
-                updates["result_mode"] = state.get("result_mode") or "conversation"
-        return updates
 
     async def result(self, state: AnalysisState) -> dict[str, Any]:
         """汇总全部查询结果，调用 LLM 生成结构化分析报告（findings/metrics/charts）。
@@ -420,32 +240,6 @@ def _supplemental_memory(state: AnalysisState) -> dict[str, Any]:
     }
 
 
-_TOOL_STATE_WRITES: dict[str, set[str]] = {
-    "update_analysis_plan": {"plan"},
-    "ask_clarification": {"final_answer", "result_mode"},
-    "search_schema": {
-        "full_schema",
-        "schema",
-        "selected_tables",
-        "schema_reasons",
-        "schema_search_count",
-    },
-    "inspect_tables": {"full_schema", "schema", "selected_tables"},
-    "retrieve_knowledge": {"knowledge"},
-    "execute_sql": {
-        "sql",
-        "columns",
-        "rows",
-        "query_results",
-        "analysis_datasets",
-        "sql_execution_count",
-    },
-    "analyze_dataframe": {"python_analysis", "python_analyses"},
-    # 核心记忆虽不写 AnalysisState，但并发改写会造成持久化层的丢失更新。
-    "rewrite_core_memory": {"persistent_core_memory"},
-}
-
-
 def _normalize_tool_calls(
     tool_calls: list[dict[str, Any]],
     *,
@@ -455,8 +249,8 @@ def _normalize_tool_calls(
 ) -> list[dict[str, Any]]:
     """规范化一轮中的全部 Tool Call，同时保留可安全并行的独立调用。
 
-    尚未取得 Schema 时，``inspect_tables`` / ``execute_sql`` 不能越序执行：
-    保留同轮中的其它独立工具，并把第一个越序调用替换为 ``search_schema``。
+    尚未取得 Schema 时，带显式表名的 ``inspect_tables`` 可以直接读取真实结构；
+    ``execute_sql`` 仍不能越序执行，并会被替换为相关表召回。
     """
     normalized: list[dict[str, Any]] = []
     has_schema = bool(state.get("schema", {}).get("tables"))
@@ -466,9 +260,19 @@ def _normalize_tool_calls(
 
     for call in tool_calls:
         name = call["name"]
-        if not has_schema and name in {"inspect_tables", "execute_sql"}:
+        has_explicit_tables = (
+            name == "inspect_tables"
+            and bool(call.get("args", {}).get("tables"))
+        )
+        if not has_schema and name in {"inspect_tables", "execute_sql"} and not has_explicit_tables:
             if not schema_requested and not replacement_added:
-                normalized.append({**call, "name": "search_schema", "args": {"query": query}})
+                normalized.append(
+                    {
+                        **call,
+                        "name": "search_schema",
+                        "args": {"query": query, "mode": "relevance"},
+                    }
+                )
                 replacement_added = True
             continue
         normalized.append(call)
@@ -481,11 +285,14 @@ def _normalize_tool_calls(
 
 
 def _validate_parallel_state_writes(tool_calls: list[dict[str, Any]]) -> None:
-    """拒绝会并发覆盖同一 State 字段的工具组合，并明确报告冲突。"""
+    """依据工具元数据拒绝不安全并发和 State 写集冲突。"""
     owners: dict[str, str] = {}
     for call in tool_calls:
         name = call["name"]
-        for field in _TOOL_STATE_WRITES.get(name, set()):
+        metadata = tool_metadata(name)
+        if len(tool_calls) > 1 and not metadata.concurrency_safe:
+            raise InvalidOperationError(f"工具 {name} 不允许与其它工具并行执行。")
+        for field in metadata.state_writes:
             previous = owners.get(field)
             if previous is not None:
                 raise InvalidOperationError(

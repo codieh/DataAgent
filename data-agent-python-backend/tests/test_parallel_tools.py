@@ -8,10 +8,10 @@ from langchain_core.messages import AIMessage, AnyMessage
 from langchain_core.tools import tool
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
+from langgraph.prebuilt import ToolNode
 
 from app.domain.errors import InvalidOperationError
 from app.workflow.nodes.analysis import _validate_parallel_state_writes
-from app.workflow.tools import LoggingToolNode
 
 
 class ParallelToolState(TypedDict):
@@ -42,7 +42,7 @@ async def test_tool_node_executes_multiple_tool_calls_concurrently() -> None:
         return await wait_for_peer("retrieve_knowledge")
 
     builder = StateGraph(ParallelToolState)
-    builder.add_node("tools", LoggingToolNode([search_schema, retrieve_knowledge]))
+    builder.add_node("tools", ToolNode([search_schema, retrieve_knowledge]))
     builder.add_edge(START, "tools")
     builder.add_edge("tools", END)
     graph = builder.compile()
@@ -78,7 +78,7 @@ async def test_tool_node_executes_multiple_tool_calls_concurrently() -> None:
 
 def test_parallel_tools_reject_conflicting_state_writes() -> None:
     """两个 SQL 提交会争写同一状态，必须在执行前明确失败。"""
-    with pytest.raises(InvalidOperationError, match="都会更新状态字段"):
+    with pytest.raises(InvalidOperationError, match="不允许与其它工具并行"):
         _validate_parallel_state_writes(
             [
                 {"id": "sql_1", "name": "execute_sql", "args": {"sql": "SELECT 1"}},
