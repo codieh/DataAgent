@@ -39,7 +39,7 @@ class AnalysisState(TypedDict, total=False):
     sql_error: str | None  # SQL 执行或校验错误
     result_mode: str | None  # 结果模式（success/conversation/blocked_prompt_injection/...）
     analysis: dict[str, Any]  # 最终结构化分析报告
-    error: str | None  # 顶层错误（用于阻断流程的特殊分支）
+    error: str | None  # 顶层终态错误；单次 SQL 失败应写入 sql_error/observations
     security: dict[str, Any]  # 输入安全校验结论
     agent_decision: dict[str, Any]  # Agent 本轮决策（action/arguments/reasonSummary）
     agent_iterations: int  # Agent 已执行的决策轮数

@@ -86,12 +86,16 @@ class AnalysisNodes:
         """汇总全部查询结果，调用 LLM 生成结构化分析报告（findings/metrics/charts）。
 
         三种分支：
-        - 存在 ``error``：返回拦截/未执行占位分析；
+        - 没有成功结果且存在 ``error``：返回拦截/未执行占位分析；
         - 无数据行但有 ``final_answer``：直接返回模型结论（澄清/对话模式）；
         - 有数据行：并行流式生成总结、生成结构化指标与图表，再合并 Python 分析产物。
+
+        ``error`` 可能来自同一 Run 中较早的失败尝试，不能覆盖随后已经持久化的
+        ``query_results``。是否执行成功必须以结果集为准，而不是依赖调用方清空旧字段。
         """
         _progress("result", "正在整理分析结果")
-        if state.get("error"):
+        query_results = state.get("query_results") or []
+        if _should_render_terminal_error(state):
             blocked = state.get("result_mode") == "blocked_prompt_injection"
             return {
                 "analysis": {
@@ -121,7 +125,6 @@ class AnalysisNodes:
                     "charts": [],
                 }
             }
-        query_results = state.get("query_results") or []
         inspected_results: dict[str, dict[str, Any]] = {}
         if self.result_history is not None:
             # 逐个结果集读取完整明细（最多 50 行预览），用于后续综合解释，而非只看最后一项
@@ -174,6 +177,11 @@ class AnalysisNodes:
         )
         # 把 Python 分析产出的指标/发现/图表并入最终结果
         return {"analysis": _merge_python_analysis(normalized, state.get("python_analyses", []))}
+
+
+def _should_render_terminal_error(state: AnalysisState) -> bool:
+    """只有不存在任何成功结果集时，顶层错误才能决定最终失败页面。"""
+    return bool(state.get("error")) and not bool(state.get("query_results"))
 
 
 def _build_result_payload(

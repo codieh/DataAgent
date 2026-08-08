@@ -16,7 +16,12 @@ import pytest
 from langchain_core.messages import AIMessage
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
 
-from app.workflow.nodes.analysis import AnalysisNodes, _build_result_payload, _json_default
+from app.workflow.nodes.analysis import (
+    AnalysisNodes,
+    _build_result_payload,
+    _json_default,
+    _should_render_terminal_error,
+)
 from app.workflow.middleware import DataAgentMiddleware
 from app.workflow.chat_model import agent_text_delta_handler
 from app.application.executor import _normalize_result_sources
@@ -185,6 +190,17 @@ def test_result_prompt_contains_every_query_result() -> None:
     assert payload["results"][0]["sql"] == "SELECT 1 AS first_value"
     assert payload["results"][1]["rows"] == [{"second_value": 2}]
     assert payload["results"][1]["rowCount"] == 17
+
+
+def test_successful_query_result_wins_over_stale_attempt_error() -> None:
+    """早期 SQL 失败不能覆盖同一 Run 后续已经持久化的成功结果。"""
+    state = {
+        "error": "仅允许执行单条 SELECT 查询。",
+        "query_results": [{"datasetId": "result_success", "rowCount": 0}],
+    }
+
+    assert _should_render_terminal_error(state) is False
+    assert _should_render_terminal_error({"error": state["error"], "query_results": []}) is True
 
 
 def test_analysis_sources_are_preserved_and_invalid_ids_are_removed() -> None:
