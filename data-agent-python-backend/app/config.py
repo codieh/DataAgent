@@ -30,8 +30,8 @@ class Settings(BaseSettings):
         default="",
         validation_alias=AliasChoices("DATA_AGENT_LLM_API_KEY", "OPENAI_API_KEY", "LLM_ANTHROPIC_API_KEY"),
     )
-    llm_base_url: str = "https://api.kimi.com/coding/v1"
-    llm_model: str = "kimi-for-coding"
+    llm_base_url: str = "https://api.deepseek.com/v1"
+    llm_model: str = "deepseek-v4-flash"
     llm_temperature: float = 0.6
     max_context_size: int = 10_000
     context_compact_threshold: float = 0.8
@@ -108,7 +108,7 @@ class Settings(BaseSettings):
     memory_backend: str = "none"
     memory_chroma_collection_name: str = "data_agent_memory"
     memory_retrieval_top_k: int = 6
-    memory_retrieval_min_score: float = 0.2
+    memory_retrieval_min_score: float = 0.3
     memory_extraction_enabled: bool = True
     memory_extraction_min_confidence: float = 0.7
     memory_extraction_max_existing: int = 30
