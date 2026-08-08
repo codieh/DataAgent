@@ -31,6 +31,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -111,12 +112,12 @@ public class SchemaMysqlIntrospectStep implements SearchLiteStep {
 	}
 
 	private SchemaSnapshot loadSchema(List<String> tables) {
+		List<String> tableList = (tables == null || tables.isEmpty()) ? List.of() : tables;
 		PersistedSchemaIndex persisted = recallService.loadPersistedSchemaIndex().orElse(null);
-		if (persisted != null && !persisted.isEmpty()) {
+		if (persisted != null && !persisted.isEmpty() && coversAllTables(persisted, tableList)) {
 			return new SchemaSnapshot(toTableInfos(persisted.schemaTables()), persisted.schemaText(), true);
 		}
 
-		List<String> tableList = (tables == null || tables.isEmpty()) ? List.of() : tables;
 		if (tableList.isEmpty()) {
 			return new SchemaSnapshot(List.of(), "(schema tables not configured)", false);
 		}
@@ -136,6 +137,16 @@ public class SchemaMysqlIntrospectStep implements SearchLiteStep {
 		String schemaText = formatForPrompt(infos);
 		recallService.persistSchemaIndex(infos.stream().map(TableInfo::toSchemaTable).toList(), schemaText);
 		return new SchemaSnapshot(infos, schemaText, false);
+	}
+
+	private static boolean coversAllTables(PersistedSchemaIndex persisted, List<String> requiredTables) {
+		if (requiredTables == null || requiredTables.isEmpty()) {
+			return true;
+		}
+		Set<String> persistedNames = persisted.schemaTables().stream()
+			.map(SchemaTable::name)
+			.collect(Collectors.toSet());
+		return requiredTables.stream().allMatch(t -> persistedNames.contains(t));
 	}
 
 	private static List<TableInfo> toTableInfos(List<SchemaTable> tables) {

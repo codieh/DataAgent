@@ -39,6 +39,44 @@ public final class SearchLiteGraphStateKeys {
 
 	public static final String EXPANDED_QUERIES = "expandedQueries";
 
+	public static final String FEASIBILITY_RESULT = "feasibilityResult";
+
+	public static final String FEASIBILITY_MESSAGE = "feasibilityMessage";
+
+	public static final String HUMAN_REVIEW_ENABLED = "humanReviewEnabled";
+
+	public static final String HUMAN_FEEDBACK_STATUS = "humanFeedbackStatus";
+
+	public static final String HUMAN_FEEDBACK_COMMENT = "humanFeedbackComment";
+
+	public static final String HUMAN_FEEDBACK_DATA = "humanFeedbackData";
+
+	public static final String HUMAN_NEXT_NODE = "humanNextNode";
+
+	public static final String AWAITING_HUMAN_FEEDBACK = "awaitingHumanFeedback";
+
+	public static final String PLAN_STEPS = "planSteps";
+
+	public static final String CURRENT_PLAN_STEP_INDEX = "currentPlanStepIndex";
+
+	public static final String PLANNER_ENABLED = "plannerEnabled";
+
+	public static final String PLANNER_DECISION = "plannerDecision";
+
+	public static final String PLANNER_DECISION_REASON = "plannerDecisionReason";
+
+	public static final String PLAN_FINISHED = "planFinished";
+
+	public static final String PLAN_FINISHED_REASON = "planFinishedReason";
+
+	public static final String PLANNER_RAW_OUTPUT = "plannerRawOutput";
+
+	public static final String PLAN_VALIDATION_STATUS = "planValidationStatus";
+
+	public static final String PLAN_VALIDATION_ERROR = "planValidationError";
+
+	public static final String PLAN_REPAIR_COUNT = "planRepairCount";
+
 	public static final String SQL = "sql";
 
 	public static final String SQL_RETRY_COUNT = "sqlRetryCount";

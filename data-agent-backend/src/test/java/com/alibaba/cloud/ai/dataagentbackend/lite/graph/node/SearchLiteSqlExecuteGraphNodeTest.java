@@ -5,6 +5,7 @@ import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteState;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphStepOutputAdapter;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStep;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStepResult;
+import com.alibaba.cloud.ai.dataagentbackend.lite.trace.SearchLiteTraceRecorder;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Flux;
@@ -45,13 +46,18 @@ class SearchLiteSqlExecuteGraphNodeTest {
 		when(outputAdapter.adapt(any(), any())).thenReturn(Map.of(THREAD_ID, "thread-8", QUERY, "列出高消费用户",
 				ROWS, List.of(Map.of("user_id", 1, "total_spending", 1000))));
 
-		SearchLiteSqlExecuteGraphNode node = new SearchLiteSqlExecuteGraphNode(List.of(sqlExecuteStep), outputAdapter);
+		SearchLiteSqlExecuteGraphNode node = new SearchLiteSqlExecuteGraphNode(List.of(sqlExecuteStep), outputAdapter,
+				traceRecorder());
 
 		Map<String, Object> result = node.apply(graphState);
 
 		assertEquals("thread-8", result.get(THREAD_ID));
 		assertEquals("列出高消费用户", result.get(QUERY));
 		assertEquals(List.of(Map.of("user_id", 1, "total_spending", 1000)), result.get(ROWS));
+	}
+
+	private SearchLiteTraceRecorder traceRecorder() {
+		return mock(SearchLiteTraceRecorder.class);
 	}
 
 }

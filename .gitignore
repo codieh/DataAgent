@@ -64,4 +64,13 @@ vectorstore/*
 /.m2repo/
 
 # ignore generated recall index files
-data-agent-backend/data/recall/*index.json
+data/recall/*index.json
+data/traces/*.json
+/data-agent-backend/docs/*.md
+/data-agent-backend/src/test/java/com/alibaba/cloud/ai/dataagentbackend/lite/architecture/LlmExecutionModelGuardTest.java
+/data-agent-backend/src/test/java/com/alibaba/cloud/ai/dataagentbackend/lite/eval/PlannerEvalDatasetTest.java
+
+/**/*.md
+!/AGENTS.md
+!/data-agent-claude-sdk/**/*.md
+!/data-agent-claude-sdk-frontend/**/*.md

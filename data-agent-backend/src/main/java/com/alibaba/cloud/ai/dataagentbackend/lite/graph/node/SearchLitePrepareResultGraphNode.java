@@ -2,6 +2,7 @@ package com.alibaba.cloud.ai.dataagentbackend.lite.graph.node;
 
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteState;
 import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphStateMapper;
+import com.alibaba.cloud.ai.dataagentbackend.lite.trace.SearchLiteTraceRecorder;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.action.NodeAction;
 import org.slf4j.Logger;
@@ -16,6 +17,12 @@ public class SearchLitePrepareResultGraphNode implements NodeAction {
 
 	private static final Logger log = LoggerFactory.getLogger(SearchLitePrepareResultGraphNode.class);
 
+	private final SearchLiteTraceRecorder traceRecorder;
+
+	public SearchLitePrepareResultGraphNode(SearchLiteTraceRecorder traceRecorder) {
+		this.traceRecorder = traceRecorder;
+	}
+
 	public static final String MODE_SUCCESS = "success";
 
 	public static final String MODE_NO_SCHEMA = "no_schema";
@@ -28,10 +35,38 @@ public class SearchLitePrepareResultGraphNode implements NodeAction {
 
 	public static final String MODE_BLOCKED_WIDE_EXPORT = "blocked_wide_export";
 
+	public static final String MODE_WAITING_HUMAN_FEEDBACK = "waiting_human_feedback";
+
+	public static final String MODE_NEED_CLARIFICATION = "need_clarification";
+
+	public static final String MODE_FREE_CHAT = "free_chat";
+
 	@Override
 	public Map<String, Object> apply(OverAllState state) {
 		SearchLiteState liteState = SearchLiteGraphStateMapper.toSearchLiteState(state);
-		if (StringUtils.hasText(liteState.getResultMode()) && liteState.getResultMode().startsWith("blocked_")) {
+		SearchLiteState beforeState = SearchLiteGraphStateMapper.toSearchLiteState(state);
+		long startedAt = System.nanoTime();
+		if (MODE_NEED_CLARIFICATION.equalsIgnoreCase(liteState.getResultMode())) {
+			if (!StringUtils.hasText(liteState.getResultSummary())) {
+				liteState.setResultSummary(StringUtils.hasText(liteState.getFeasibilityMessage())
+						? liteState.getFeasibilityMessage()
+						: "当前问题信息不足，无法生成准确查询。请补充更明确的业务对象、指标名称或筛选条件后再试。");
+			}
+		}
+		else if (MODE_FREE_CHAT.equalsIgnoreCase(liteState.getResultMode())) {
+			if (!StringUtils.hasText(liteState.getResultSummary())) {
+				liteState.setResultSummary(StringUtils.hasText(liteState.getFeasibilityMessage())
+						? liteState.getFeasibilityMessage()
+						: "当前请求不是数据分析类问题，无法通过数据查询回答。请问您是否有数据分析相关的需求？");
+			}
+		}
+		else if (liteState.isAwaitingHumanFeedback() || MODE_WAITING_HUMAN_FEEDBACK.equalsIgnoreCase(liteState.getResultMode())) {
+			liteState.setResultMode(MODE_WAITING_HUMAN_FEEDBACK);
+			if (!StringUtils.hasText(liteState.getResultSummary())) {
+				liteState.setResultSummary("计划已生成，等待人工审核后继续执行。");
+			}
+		}
+		else if (StringUtils.hasText(liteState.getResultMode()) && liteState.getResultMode().startsWith("blocked_")) {
 			if (!StringUtils.hasText(liteState.getResultSummary())) {
 				liteState.setResultSummary(resolveBlockedSummary(liteState));
 			}
@@ -55,6 +90,8 @@ public class SearchLitePrepareResultGraphNode implements NodeAction {
 			liteState.setError(null);
 		}
 		log.info("graph prepare-result node invoked: mode={}", liteState.getResultMode());
+		traceRecorder.recordStage(liteState.getThreadId(), com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteStage.RESULT,
+				"prepare-result", (System.nanoTime() - startedAt) / 1_000_000, beforeState, liteState, liteState.getError());
 		return SearchLiteGraphStateMapper.fromSearchLiteState(liteState);
 	}
 

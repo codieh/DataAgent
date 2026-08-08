@@ -22,7 +22,7 @@ class DocumentSourceStatusTest {
 				取消订单不计入销售额。
 				""");
 
-		DocumentRepository repository = new DocumentRepository(dir.toString(), new DocumentChunker(120));
+		DocumentRepository repository = new DocumentRepository(dir.toString(), new DocumentChunker(120, 80));
 		DocumentSourceStatus status = repository.status();
 
 		assertTrue(status.exists());

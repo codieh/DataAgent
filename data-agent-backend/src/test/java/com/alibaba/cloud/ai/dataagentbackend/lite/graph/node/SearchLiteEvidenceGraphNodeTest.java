@@ -6,6 +6,7 @@ import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphStepOutpu
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStep;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStepResult;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.impl.EvidenceFileStep;
+import com.alibaba.cloud.ai.dataagentbackend.lite.trace.SearchLiteTraceRecorder;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Flux;
@@ -53,7 +54,7 @@ class SearchLiteEvidenceGraphNodeTest {
 				EVIDENCE_TEXT, "高消费用户：按消费金额排名靠前", DOCUMENT_TEXT, "用户分层定义文档", EVIDENCES, updated.getEvidences()));
 
 		SearchLiteEvidenceGraphNode node = new SearchLiteEvidenceGraphNode(List.<SearchLiteStep>of(evidenceStep),
-				outputAdapter);
+				outputAdapter, traceRecorder());
 
 		Map<String, Object> result = node.apply(graphState);
 
@@ -62,6 +63,10 @@ class SearchLiteEvidenceGraphNodeTest {
 		assertEquals("高消费用户：按消费金额排名靠前", result.get(EVIDENCE_TEXT));
 		assertEquals("用户分层定义文档", result.get(DOCUMENT_TEXT));
 		assertTrue(((List<?>) result.get(EVIDENCES)).size() == 1);
+	}
+
+	private SearchLiteTraceRecorder traceRecorder() {
+		return mock(SearchLiteTraceRecorder.class);
 	}
 
 }

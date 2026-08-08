@@ -3131,3 +3131,335 @@ V1 会补成类似：
 推进到了：
 
 - “具备失败恢复和结果语义收口能力的 workflow”
+
+---
+
+## 37. SQL-only Planner V1：从单 SQL 链路走向多步骤调度
+
+### 37.1 为什么要加 Planner
+
+在没有 Planner 之前，`search-lite` 的主链路更像：
+
+- `一个 query -> 一次 SQL_GENERATE -> 一次 SQL_EXECUTE -> RESULT`
+
+这对简单单轮问题足够，但对多查询或多步骤分析不够自然。
+
+例如：
+
+- “查询销量最高的商品，然后统计这些商品近 6 个月趋势”
+- “列出高消费用户，再统计这些用户的订单数量”
+
+这些请求本质上不是一个单 SQL 任务，而是多个有顺序的分析步骤。
+
+### 37.2 和 management 的关系
+
+`management` 的做法是：
+
+- `PLANNER_NODE -> PLAN_EXECUTOR_NODE`
+- `PLAN_EXECUTOR_NODE -> SQL / PYTHON / REPORT`
+- SQL 或 Python 执行完成后再回到 `PLAN_EXECUTOR_NODE`
+
+这次 lite 没有直接引入完整 Python 链，而是先做 SQL-only 版本：
+
+- `PLANNER_NODE`
+- `PLAN_EXECUTOR_NODE`
+- 多个 SQL step 顺序执行
+- 所有 step 完成后再进入 `PREPARE_RESULT -> RESULT`
+
+也就是说，这一步学的是 management 的“循环调度”思想，而不是一次性照搬全量能力。
+
+### 37.3 当前 Graph 结构
+
+这次之后，SQL 主链路变成：
+
+- `ENHANCE -> PLANNER -> PLAN_EXECUTOR`
+- `PLAN_EXECUTOR -> SQL_GENERATE | PREPARE_RESULT`
+- `SQL_GENERATE -> SQL_EXECUTE | PREPARE_RESULT`
+- `SQL_EXECUTE -> SQL_RETRY | PLAN_EXECUTOR`
+- `SQL_RETRY -> SQL_GENERATE`
+- `PREPARE_RESULT -> RESULT`
+
+关键变化是：
+
+- SQL 执行成功后不再直接进入结果总结
+- 而是回到 `PLAN_EXECUTOR`
+- 由它判断是否还有下一步
+
+### 37.4 新增状态
+
+`SearchLiteState` 增加了 Planner 相关字段：
+
+- `planSteps`
+- `currentPlanStepIndex`
+- `plannerEnabled`
+- `planFinished`
+
+每个 `SearchLitePlanStep` 记录：
+
+- step 编号
+- instruction
+- tool
+- status
+- sql
+- rowCount
+- previewRows
+- error
+
+这些字段让后续 `RESULT` 可以看到完整执行轨迹，而不是只看到最后一次 SQL。
+
+同时，`SQL_GENERATE` 的 prompt 也会带入 plan context：
+
+- 当前 step index
+- 每个 step 的 instruction/status
+- 已完成 step 的 SQL
+- 已完成 step 的 rowCount 和 previewRows
+- 已失败 step 的 error
+
+这样后续 SQL step 可以在需要时参考前一步结果，例如“这些商品”“上述用户”这类依赖上一步输出的追问。
+
+### 37.5 LLM Planner + Plan Repair V1
+
+Planner 进一步升级后，lite 现在不再只做规则拆分，而是：
+
+- 用 LLM 生成结构化 SQL-only plan
+- 用 `PlanExecutor` 做执行前校验
+- 校验失败时通过 Graph 路由回到 `Planner` 做 repair
+
+当前实现学的是 management 的三个关键点：
+
+- **Planner 只负责产出结构化计划**
+- **PlanExecutor 负责校验与决定下一步**
+- **Plan repair 通过 Graph 回环完成，而不是写死在单个节点**
+
+当前 repair V1 的触发来源主要是：
+
+- plan 为空
+- step 编号不连续
+- instruction 为空
+- tool 非 `SQL`
+
+当 `PlanExecutor` 校验失败时，会写入：
+
+- `planValidationStatus=false`
+- `planValidationError`
+- `planRepairCount+1`
+
+随后 `PlanExecutorDispatcher` 会：
+
+- 未超过最大修复次数时 → 回到 `PLANNER_NODE`
+- 超过上限时 → 进入 `PREPARE_RESULT`
+
+### 37.6 当前 Planner V1 的边界
+
+这版仍然保持克制：
+
+- 只支持 `SQL` tool
+- 不接 Python
+- 不接独立 ReportGenerator
+- 不做复杂 plan dependency graph
+- 不做 human feedback
+
+所以它更准确地说是：
+
+- **LLM SQL-first Planner**
+
+而不是 management 的全量 planner 平台。
+
+### 37.7 Planner 收口 V2：多 step 汇总、执行边界与可观测性
+
+在 V1 基础上，Planner 又往“可真正用于多步骤 SQL 分析”的方向收了一步，重点是三件事：
+
+- **多 step 结果不再只靠最后一步 SQL**
+- **PlanExecutor 对什么算成功、什么算失败、什么时候结束，边界更清楚**
+- **Planner / PlanExecutor 的过程对 SSE 和日志更可见**
+
+这次主要补充了：
+
+- `SearchLitePlanStep` 新增 `summarySnippet`
+- `SearchLiteState` 新增 `planFinishedReason`
+- `Result` 在 `plannerEnabled=true` 时，会按全部 step 汇总而不是只总结最后一次 SQL
+- `PlanExecutor` 会为每个已完成 step 记录：
+  - `sql`
+  - `rowCount`
+  - `previewRows`
+  - `error`
+  - `summarySnippet`
+- `PlanExecutor` 会显式记录：
+  - 当前推进到第几步
+  - 校验是否通过
+  - repair 次数
+  - plan 为什么结束
+
+同时，`SQL_GENERATE` 的 plan context 也变得更稳定：
+
+- 每个 step 都固定展示：
+  - step 编号
+  - instruction
+  - status
+  - sql
+  - rowCount
+  - previewRows
+  - summarySnippet
+  - error
+
+这样后续 step 在引用“这些商品”“这些用户”“上一步的分类集合”时，上下文格式更统一，不再只依赖零散字段。
+
+这一版仍然保持现有范围：
+
+- 只支持 SQL-only Planner
+- 只在 **计划校验失败** 时触发 Planner repair
+- 不新增独立 Report 节点，而是继续复用 `RESULT`
+
+### 37.8 HumanFeedback V1：先做人审计划，不做人审执行
+
+为了贴近 management 的人机协同思路，但又不把 lite 做得过重，当前先补了一版 **HumanFeedback V1**：
+
+- 只审核 **Planner 产出的计划**
+- 不审核每一步 SQL 执行
+- 不做复杂 UI 流程
+
+当前行为是：
+
+- 当请求显式开启 `humanReview=true` 时，`PLAN_EXECUTOR` 在计划校验通过后不会直接去 `SQL_GENERATE`
+- 而是先路由到 `HUMAN_FEEDBACK_NODE`
+- 如果还没有提交人工反馈：
+  - Graph 会把 `resultMode` 设为 `waiting_human_feedback`
+  - 返回当前 plan 摘要
+  - 等待用户基于同一个 `threadId` 提交审批结果
+- 如果人工 **APPROVED**：
+  - 复用当前已生成的 plan 继续执行
+- 如果人工 **REJECTED**：
+  - 把反馈意见写入 `planValidationError`
+  - `planRepairCount + 1`
+  - 回到 `PLANNER_NODE` 重新规划
+
+这版的重点不是“做完整的人机协同平台”，而是先把下面这条闭环跑通：
+
+- LLM 生成计划
+- 人工可以审阅
+- 不满意可以驳回并触发 repair
+- 满意则继续执行
+## 38. Observability V1（记录时间：2026-05-04）
+
+为了让当前 lite-backend 不只是“能跑”，而是“出了问题能看清”，本轮补了一个轻量但够用的结构化 trace 方案。
+
+### 38.1 设计目标
+
+当前项目已经同时具备：
+
+- Graph 编排
+- 多知识源 RAG
+- SQL 重试
+- SQL Guard
+- Planner
+- HumanFeedback
+
+这意味着仅靠零散日志已经不够，很难快速回答下面这些问题：
+
+- 这次请求到底走了哪条链路？
+- 哪个节点最慢？
+- `SchemaRecall` 命中了哪些表？
+- `Planner` 拆成了几步？
+- 为什么触发了 repair / human feedback / blocked result？
+
+所以本轮目标是先做一个 **Observability V1**：
+
+- 不上重型监控平台
+- 先做本地结构化 trace
+- 先覆盖请求级和节点级
+
+### 38.2 当前实现内容
+
+新增 trace 模型：
+
+- `SearchLiteTrace`
+- `SearchLiteTraceStep`
+
+新增 recorder：
+
+- `SearchLiteTraceRecorder`
+
+新增摘要器：
+
+- `SearchLiteTraceSummarizer`
+
+当前会记录：
+
+- `threadId`
+- `agentId`
+- `query`
+- `mode`
+- 是否是 human feedback 恢复执行
+- 总耗时
+- 最终：
+  - `intentClassification`
+  - `resultMode`
+  - `planFinishedReason`
+  - `error`
+  - `finishSignal`
+
+每个 step 还会记录：
+
+- `stage`
+- `route`
+- `durationMs`
+- `inputSummary`
+- `outputSummary`
+- `error`
+
+### 38.3 当前接入的主要节点
+
+当前已接入：
+
+- pipeline step 执行边界
+- graph step bridge（`SearchLiteStepGraphNodeSupport`）
+- `Planner`
+- `PlanExecutor`
+- `HumanFeedback`
+- `PrepareResult`
+
+这意味着现在至少这些链路已经能被结构化看到：
+
+- `INTENT`
+- `EVIDENCE`
+- `SCHEMA`
+- `SCHEMA_RECALL`
+- `ENHANCE`
+- `SQL_GENERATE`
+- `SQL_EXECUTE`
+- `RESULT`
+- `PLANNER`
+- `PLAN_EXECUTOR`
+- `HUMAN_FEEDBACK`
+
+### 38.4 输出方式
+
+当前 V1 先不接 OpenTelemetry / Prometheus / Jaeger。
+
+输出方式是：
+
+- 请求结束后写一份 JSON trace
+- 默认目录：
+  - `D:\GitHub\DataAgent\data-agent-backend\data\traces`
+
+对应配置：
+
+- `search.lite.trace.enabled`
+- `search.lite.trace.dir`
+
+### 38.5 这版的价值
+
+这一版最直接的价值不是“可视化面板”，而是：
+
+- 更容易诊断 Recall 问题
+- 更容易诊断 Planner / PlanExecutor 问题
+- 更容易复盘 SQL retry 和 blocked result
+- 后续评测系统可以直接复用 trace 信息
+
+这也让当前项目更像一个：
+
+- **可调试**
+- **可复盘**
+- **可治理**
+
+的 Agent 系统，而不是单纯的模型调用链。

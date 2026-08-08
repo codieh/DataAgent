@@ -1,121 +1,188 @@
 <div align="center">
-  <p>中文 | <a href="./README-en.md">English</a></p>
-  <h1>Spring AI Alibaba DataAgent</h1>
-  <p>
-    <strong>基于 <a href="https://github.com/alibaba/spring-ai-alibaba" target="_blank">Spring AI Alibaba</a> 的企业级智能数据分析师</strong>
-  </p>
-  <p>
-     Text-to-SQL | Python 深度分析 | 智能报告 | MCP 服务器 | RAG 增强
-  </p>
-
-  <p>
-    <a href="https://github.com/alibaba/spring-ai-alibaba"><img src="https://img.shields.io/badge/Spring%20AI%20Alibaba-1.1.0.0-blue" alt="Spring AI Alibaba"></a>
-    <img src="https://img.shields.io/badge/Spring%20Boot-3.4.8+-green" alt="Spring Boot">
-    <img src="https://img.shields.io/badge/Java-17+-orange" alt="Java">
-    <img src="https://img.shields.io/badge/License-Apache%202.0-red" alt="License">
-    <a href="https://deepwiki.com/spring-ai-alibaba/DataAgent"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki"></a>
-  </p>
-
-   <p>
-    <a href="#-项目简介">项目简介</a> • 
-    <a href="#-核心特性">核心特性</a> • 
-    <a href="#-快速开始">快速开始</a> • 
-    <a href="#-文档导航">文档导航</a> • 
-    <a href="#-加入社区--贡献">加入社区</a>
-  </p>
+  <img src="./img/LOGO.png" alt="DataAgent Logo" width="120" />
+  <h1>DataAgent</h1>
+  <p>面向自然语言数据分析场景的桌面 AI Agent</p>
 </div>
 
-<br/>
+DataAgent 将自然语言问题转换为可审查、可执行的分析过程：检索相关表结构和业务知识，规划分析步骤，安全执行 SQL，并生成指标、图表与结论。前端通过 REST 获取持久化结果，通过 SSE 实时展示 Agent 的执行过程。
 
-<div align="center">
-    <img src="img/LOGO.png" alt="DataAgent" width="1807" style="border-radius: 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.1);">
-</div>
+> 当前版本面向本地开发与作品演示，业务数据存储在 MySQL，应用状态存储在 SQLite，向量检索使用嵌入式 Chroma，无需单独部署向量数据库。
 
-<br/>
+## 功能特性
 
-## 📖 项目简介
+- **自然语言数据分析**：从用户问题出发完成 Schema 检索、SQL 查询、Python 分析和结果总结。
+- **受控 Agent 工具循环**：基于 LangGraph 和原生 Tool Calling，让模型按需检索表结构、查询知识并提交 SQL。
+- **混合知识召回**：融合 Chroma 向量检索与中文 BM25，通过 RRF 合并候选结果。
+- **多轮上下文管理**：保存会话历史与长期记忆，并在上下文接近上限时自动压缩旧消息。
+- **SQL 安全治理**：使用 `sqlglot` AST 执行 SELECT Only、表字段白名单、敏感字段和行数限制等检查。
+- **人工审核与故障恢复**：危险或高影响查询可暂停等待审核，运行支持取消、重试和断线恢复。
+- **隔离式 Python 分析**：复杂计算在无网络、只读文件系统和资源受限的 Docker 沙箱中执行。
+- **实时且可恢复的交互**：SSE 推送阶段事件，REST 提供完整结果、分页、历史会话和产物下载。
 
-**DataAgent** 是一个基于 **Spring AI Alibaba Graph** 打造的企业级智能数据分析 Agent。它超越了传统的 Text-to-SQL 工具，进化为一个能够执行 **Python 深度分析**、生成 **多维度图表报告** 的 AI 智能数据分析师。
+## 系统架构
 
-系统采用高度可扩展的架构设计，**全面兼容 OpenAI 接口规范**的对话模型与 Embedding 模型，并支持**灵活挂载任意向量数据库**。无论是私有化部署还是接入主流大模型服务（如 Qwen, Deepseek），都能轻松适配，为企业提供灵活、可控的数据洞察服务。
-
-同时，本项目原生支持 **MCP (Model Context Protocol)**，可作为 MCP 服务器无缝集成到 Claude Desktop 等支持 MCP 的生态工具中。
-
-## ✨ 核心特性
-
-| 特性 | 说明 |
-| :--- | :--- |
-| **智能数据分析** | 基于 StateGraph 的 Text-to-SQL 转换，支持复杂的多表查询和多轮对话意图理解。 |
-| **Python 深度分析** | 内置 Docker/Local Python 执行器，自动生成并执行 Python 代码进行统计分析与机器学习预测。 |
-| **智能报告生成** | 分析结果自动汇总为包含 ECharts 图表的 HTML/Markdown 报告，所见即所得。 |
-| **人工反馈机制** | 独创的 Human-in-the-loop 机制，支持用户在计划生成阶段进行干预和调整。 |
-| **RAG 检索增强** | 集成向量数据库，支持对业务元数据、术语库的语义检索，提升 SQL生成准确率。 |
-| **多模型调度** | 内置模型注册表，支持运行时动态切换不同的 LLM 和 Embedding 模型。 |
-| **MCP 服务器** | 遵循 MCP 协议，支持作为 Tool Server 对外提供 NL2SQL 和 智能体管理能力。 |
-| **API Key 管理** | 完善的 API Key 生命周期管理，支持细粒度的权限控制。 |
-
-## 🏗️ 项目结构
-
-![dataagent-structure](img/dataagent-structure.png)
-
-
-## 🚀 快速开始
-
-> 详细的安装和配置指南请参考 [📑 快速开始文档](docs/QUICK_START.md)。
-
-### 1. 准备环境
-- JDK 17+
-- MySQL 5.7+
-- Node.js 16+
-
-### 2. 启动服务
-
-```bash
-# 1. 导入数据库
-mysql -u root -p < data-agent-management/src/main/resources/sql/schema.sql
-
-# 2. 启动后端
-cd data-agent-management
-./mvnw spring-boot:run
-
-# 3. 启动前端
-cd data-agent-frontend
-npm install && npm run dev
+```mermaid
+flowchart LR
+    UI["Electron + React"] -->|"REST"| API["FastAPI"]
+    API -->|"SSE events"| UI
+    API --> APP["Application Services"]
+    APP --> GRAPH["LangGraph Agent Workflow"]
+    GRAPH --> LLM["OpenAI-compatible LLM"]
+    GRAPH --> RAG["BM25 + Chroma"]
+    GRAPH --> SAFE["SQL Safety Policy"]
+    SAFE --> MYSQL[("MySQL Business Data")]
+    GRAPH --> PY["Docker Python Sandbox"]
+    APP --> SQLITE[("SQLite State + Checkpoints")]
 ```
 
-### 3. 访问系统
-打开浏览器访问 `http://localhost:3000`，开始创建您的第一个数据智能体！
+一次分析运行的主要流程：
 
-## 📚 文档导航
+```text
+输入安全检查
+  → 意图识别
+  → Agent 工具循环
+      ├─ Schema 检索与表结构查看
+      ├─ 业务知识检索
+      ├─ 分析计划更新
+      └─ SQL 提交
+  → SQL 确定性安全检查
+  → 必要时人工审核
+  → MySQL 查询 / Docker Python 分析
+  → 结构化结果总结
+```
 
-| 文档 | 此文档包含的内容 |
-| :--- | :--- |
-| [快速开始](docs/QUICK_START.md) | 环境要求、数据库导入、基础配置、系统初体验 |
-| [架构设计](docs/ARCHITECTURE.md) | 系统分层架构、StateGraph与工作流设计、核心模块时序图 |
-| [开发者指南](docs/DEVELOPER_GUIDE.md) | 开发环境搭建、详细配置手册、代码规范、扩展开发(向量库/模型) |
-| [高级功能](docs/ADVANCED_FEATURES.md) | API Key 调用、MCP 服务器配置、自定义混合检索策略、Python执行器配置 |
-| [知识配置最佳实践](docs/KNOWLEDGE_USAGE.md) | 语义模型，业务知识，智能体知识的解释和使用 |
+## 技术栈
 
-## 🤝 加入社区 & 贡献
+| 模块 | 技术 |
+| --- | --- |
+| 桌面端 | Electron、React、TypeScript、Vite |
+| API 与实时通信 | FastAPI、SSE |
+| Agent 工作流 | LangGraph、OpenAI Python SDK、原生 Tool Calling |
+| 应用状态 | SQLite、SQLAlchemy、LangGraph SQLite Checkpointer |
+| 业务数据 | MySQL、PyMySQL |
+| 知识召回 | Chroma、BM25、RRF、Embedding API |
+| SQL 安全 | sqlglot AST、只读会话、查询超时 |
+| Python 分析 | Docker、Pandas、受限执行环境 |
 
-- **钉钉交流群**: `154405001431` ("DataAgent用户1群") 部分用户可能因为账号安全问题无法加入，条件允许的情况下可换账号申请。
-- **贡献指南**: 欢迎社区贡献！请查阅 [开发者文档](docs/DEVELOPER_GUIDE.md) 了解如何提交 PR。
+## 项目结构
 
-## 📄 许可证
+```text
+DataAgent/
+├── data-agent-frontend/        # Electron + React 桌面端
+├── data-agent-python-backend/  # FastAPI + LangGraph 后端
+├── docs/                       # 架构设计、产品需求和界面参考
+├── data/                       # 本地知识索引与运行数据
+└── img/                        # README 与项目截图
+```
 
-本项目采用 Apache License 2.0 许可证。
-## Star 历史
+## 快速开始
 
-[![Star History Chart](https://api.star-history.com/svg?repos=spring-ai-alibaba/DataAgent&type=Date)](https://star-history.com/#spring-ai-alibaba/DataAgent&Date)
+### 1. 环境要求
 
-## 贡献者名单
+- Python 3.11+
+- Node.js 18+
+- MySQL 8+
+- Docker（仅 Python 复杂分析需要）
+- [`uv`](https://docs.astral.sh/uv/)（推荐的 Python 包管理器）
 
-<a href="https://github.com/spring-ai-alibaba/DataAgent/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=spring-ai-alibaba/DataAgent" />
-</a>
+### 2. 启动 Python 后端
 
----
+```bash
+cd data-agent-python-backend
+uv sync
+```
 
-<div align="center">
-    Made with ❤️ by Spring AI Alibaba DataAgent Team
-</div>
+配置 LLM、业务数据库和 Embedding 服务：
+
+```bash
+export DATA_AGENT_LLM_API_KEY="your-api-key"
+export DATA_AGENT_LLM_BASE_URL="https://api.moonshot.ai/v1"
+export DATA_AGENT_LLM_MODEL="kimi-k2.5"
+export DATA_AGENT_PRODUCT_DATABASE_URL="mysql+pymysql://user:password@127.0.0.1:3306/product_db"
+export DATA_AGENT_EMBEDDING_BASE_URL="http://127.0.0.1:1234"
+export DATA_AGENT_EMBEDDING_MODEL="text-embedding-bge-m3"
+```
+
+启动服务：
+
+```bash
+uv run uvicorn app.main:app --reload --port 8000
+```
+
+首次运行可以生成一套包含用户、商品、订单、促销、渠道和退款的演示数据：
+
+```bash
+uv run python -m scripts.demo_data.generate \
+  --database-url "mysql+pymysql://user:password@127.0.0.1:3306/product_db" \
+  --preset medium \
+  --reset
+```
+
+`--reset` 会重建演示表，执行前请确认连接的是本地演示数据库。详细参数见 [演示数据生成器文档](./data-agent-python-backend/scripts/demo_data/README.md)。
+
+- OpenAPI：<http://localhost:8000/docs>
+- 健康检查：<http://localhost:8000/api/v1/health>
+
+如需使用 Python 分析，先构建沙箱镜像：
+
+```bash
+docker build -t data-agent-python-sandbox:latest sandbox/python
+```
+
+### 3. 启动桌面端
+
+```bash
+cd data-agent-frontend
+npm install
+npm run dev
+```
+
+## 配置说明
+
+所有后端环境变量使用 `DATA_AGENT_` 前缀，默认值和完整配置位于 [`data-agent-python-backend/app/config.py`](./data-agent-python-backend/app/config.py)。常用配置如下：
+
+| 配置项 | 用途 | 默认值 |
+| --- | --- | --- |
+| `DATA_AGENT_DATABASE_URL` | 应用状态与会话数据库 | `sqlite+aiosqlite:///.../data/app.db` |
+| `DATA_AGENT_PRODUCT_DATABASE_URL` | 只读业务数据库连接 | 本地 `product_db` |
+| `DATA_AGENT_LLM_BASE_URL` | OpenAI 兼容接口地址 | Kimi Coding API |
+| `DATA_AGENT_LLM_MODEL` | 对话模型 | `kimi-for-coding` |
+| `DATA_AGENT_MAX_CONTEXT_SIZE` | 模型上下文上限 | `200000` |
+| `DATA_AGENT_RETRIEVAL_BACKEND` | 知识检索后端 | `chroma` |
+| `DATA_AGENT_CHROMA_PATH` | Chroma 本地目录 | `data/chroma` |
+| `DATA_AGENT_SQL_ROW_LIMIT` | SQL 最大返回行数 | `200` |
+| `DATA_AGENT_SQL_TIMEOUT_SECONDS` | SQL 执行超时 | `10` |
+
+生产或共享环境中，请为业务数据库创建仅拥有目标表 `SELECT` 权限的专用账号，并关闭完整模型响应日志。
+
+## 测试
+
+```bash
+cd data-agent-python-backend
+uv run pytest
+```
+
+前端静态检查与构建：
+
+```bash
+cd data-agent-frontend
+npm run lint
+npm run build
+```
+
+## 文档
+
+- [Python 后端架构设计](./docs/python-backend-architecture-design.md)
+- [前端产品需求文档](./docs/前端产品需求文档.md)
+- [Python 后端依赖审计](./docs/python-backend-dependency-audit.md)
+- [前端界面参考](./docs/frontend-reference/README.md)
+- [Python 后端详细说明](./data-agent-python-backend/README.md)
+- [Python 后端消息组装说明](./docs/python-backend-message-assembly.md)
+
+## 安全说明
+
+DataAgent 的模型输出不会直接执行。候选 SQL 必须经过确定性 AST 检查，数据库连接也应使用最小权限账号。不过，本项目仍处于本地开发阶段，不应在未经额外鉴权、审计和隔离的情况下直接暴露到公网。
+
+## License
+
+详见 [LICENSE](./LICENSE)。

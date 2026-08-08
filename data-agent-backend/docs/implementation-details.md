@@ -501,6 +501,8 @@ Schema 侧：
 核心类：
 
 - `D:\GitHub\DataAgent\data-agent-backend\src\main\java\com\alibaba\cloud\ai\dataagentbackend\lite\recall\embedding\LocalEmbeddingClient.java`
+- `D:\GitHub\DataAgent\data-agent-backend\src\main\java\com\alibaba\cloud\ai\dataagentbackend\lite\recall\HybridRecallEngine.java`
+- `D:\GitHub\DataAgent\data-agent-backend\src\main\java\com\alibaba\cloud\ai\dataagentbackend\lite\recall\pgvector\PgVectorSearchService.java`
 
 当前方式：
 
@@ -508,12 +510,16 @@ Schema 侧：
   - `http://localhost:11434/v1/embeddings`
 - model:
   - `bge-m3`
+- recall provider：
+  - `bm25-pgvector-rerank`
 
 实现细节：
 
 - 使用 JDK `HttpClient`
 - 返回 embedding 向量
 - 写入 recall 文档 metadata
+- 将 BM25 召回与 `pgvector` 召回做候选融合
+- 再通过 lightweight reranker 做最终排序收敛
 
 配合：
 
@@ -523,6 +529,89 @@ Schema 侧：
 
 - 确保索引文档有 embedding
 - 没有就补齐
+
+### 6.1 `pgvector` 是怎么接进来的
+
+当前项目不是把业务 SQL 数据源改成 PostgreSQL，而是只把 **recall 向量检索层** 切到了 `pgvector`。
+
+也就是说，当前有两套数据库职责：
+
+- **MySQL**
+  - 业务 SQL 查询
+  - `users / products / orders / order_items ...`
+- **PostgreSQL + pgvector**
+  - recall 向量检索
+  - evidence / document / schema table / schema column 的向量召回
+
+当前 recall provider 支持：
+
+- `keyword`
+- `bm25`
+- `vector`
+- `hybrid`
+- `pgvector`
+- `hybrid-pgvector`
+ - `bm25-pgvector-rerank`
+
+默认已经切到：
+
+- `bm25-pgvector-rerank`
+
+### 6.2 当前 `pgvector` 的工作方式
+
+`PgVectorSearchService` 的策略尽量保持和原有向量召回层一致：
+
+1. 先用 `RecallEmbeddingService` 为 `RecallDocument` 补 embedding
+2. 查询时如果开启 `sync-on-search`
+   - 把带 embedding 的 recall 文档 upsert 到 PostgreSQL
+3. 使用：
+   - `embedding <=> queryVector`
+   做余弦距离检索
+4. 返回候选命中后，再和 BM25 候选一起进入 `HybridRecallEngine` 融合
+5. 候选融合后，再交给 lightweight reranker 做最后排序
+
+这次这轮 recall 升级的重点是：
+
+- **替换向量库**
+- **把 lexical / dense / rerank 三层结构拆清楚**
+- **不推翻现有 recall 主结构**
+
+所以这不是一次“大改 recall”，而是：
+
+> **在保留 RecallDocument / RecallService / HybridRecallEngine 主结构的前提下，将向量检索后端统一收敛为 pgvector。**
+
+### 6.3 当前配置入口
+
+配置位置：
+
+- `D:\GitHub\DataAgent\data-agent-backend\src\main\resources\application.yml`
+
+当前关键配置：
+
+- `search.lite.recall.provider: bm25-pgvector-rerank`
+- `search.lite.recall.bm25.k1`
+- `search.lite.recall.bm25.b`
+- `search.lite.recall.bm25.title-boost`
+- `search.lite.recall.rerank.base-score-weight`
+- `search.lite.recall.rerank.coverage-weight`
+- `search.lite.recall.rerank.exact-match-boost`
+- `search.lite.recall.pgvector.url`
+- `search.lite.recall.pgvector.username`
+- `search.lite.recall.pgvector.password`
+- `search.lite.recall.pgvector.table-name`
+- `search.lite.recall.pgvector.dimensions`
+
+### 6.4 当前边界
+
+当前这版 pgvector 接入仍然有明确边界：
+
+- 如果 pgvector 不可用，会回退到本地 `VectorRecallEngine`
+- `RecallDocumentStore` 仍然是本地文件持久化
+- 当前还没有把：
+  - 会话
+  - 评测结果
+  - recall 索引元数据
+  全部统一落到 PostgreSQL
 
 ---
 
@@ -560,6 +649,149 @@ Schema 侧：
 - table -> column 两段式 schema recall
 - keyword / vector / hybrid recall
 
+---
+
+## 9. Lite Debug UI（记录时间：2026-05-04）
+
+为了更顺手地联调 `lite-backend` 的 SSE、Graph、Planner、HumanFeedback 和结果收口，当前项目新增了一个轻量调试页：
+
+- `D:\GitHub\DataAgent\data-agent-backend\src\main\resources\static\lite-debug.html`
+
+本地启动 backend 后可直接访问：
+
+- `http://localhost:8080/lite-debug.html`
+
+这个页面当前重点承接的是“测试体验”，不是正式产品前端。它支持：
+
+- 发起 `/api/stream/search-lite` SSE 请求
+- 实时查看 stage 时间线
+- 查看 Planner / PlanExecutor 的 step 信息
+- 查看 SQL、结果集、summary、`resultMode`
+- 在 `waiting_human_feedback` 时直接 approve / reject 继续联调
+
+所以它更准确的定位是：
+
+> **lite-backend 的调试与联调 playground**
+
+---
+
+## 10. HumanFeedback 恢复链路（记录时间：2026-05-05）
+
+这块后来能稳定跑通，关键不是单个判断分支修对了，而是把 HumanFeedback 的职责重新收敛了。
+
+### 10.1 当前采用的恢复思路
+
+当前 `search-lite` 采用的是：
+
+- `interruptBefore(HUMAN_FEEDBACK_NODE)`
+- 首轮请求在 `humanFeedbackNode` 前暂停
+- `SearchLiteGraphService` 负责把前端看到的等待态补发出来
+- 用户 approve / reject 后，`SearchLiteGraphService.resumeFinalState(...)` 只向 graph 写入最小反馈输入
+- 然后继续用 `compiledGraph.updateState(...) + compiledGraph.stream(null, resumeConfig)` 恢复执行
+
+也就是说，现在恢复时不再由 service 层重建整份 `SearchLiteState`，也不再显式指定下一跳节点，而是把反馈数据交回 graph，让 `HumanFeedbackNode` 自己推进。
+
+相关实现：
+
+- `D:\GitHub\DataAgent\data-agent-backend\src\main\java\com\alibaba\cloud\ai\dataagentbackend\lite\graph\SearchLiteGraphService.java`
+- `D:\GitHub\DataAgent\data-agent-backend\src\main\java\com\alibaba\cloud\ai\dataagentbackend\lite\graph\node\SearchLiteHumanFeedbackGraphNode.java`
+- `D:\GitHub\DataAgent\data-agent-backend\src\main\java\com\alibaba\cloud\ai\dataagentbackend\lite\graph\dispatcher\SearchLiteHumanFeedbackDispatcher.java`
+
+### 10.2 当前这条链是怎么分工的
+
+`SearchLiteGraphService`
+
+- 编译 graph 时开启 `interruptBefore(HUMAN_FEEDBACK_NODE)`
+- 首轮执行后，如果发现处于待审核状态，则统一设置：
+  - `awaitingHumanFeedback=true`
+  - `planFinishedReason=waiting_human_feedback`
+  - `resultMode=waiting_human_feedback`
+- 同时补发一条 `HUMAN_FEEDBACK / WAITING` 的 SSE 消息给前端
+- 恢复执行时只写入 `HUMAN_FEEDBACK_DATA`
+
+`SearchLiteHumanFeedbackGraphNode`
+
+- 读取 `HUMAN_FEEDBACK_DATA`
+- `APPROVED` 时：
+  - 写 `humanFeedbackStatus=APPROVED`
+  - 关闭 `humanReviewEnabled`
+  - 清空等待态
+  - 返回 `HUMAN_NEXT_NODE=PLAN_EXECUTOR_NODE`
+- `REJECTED` 时：
+  - 写 `humanFeedbackStatus=REJECTED`
+  - 写 `planValidationError`
+  - `planRepairCount + 1`
+  - 重置 plan step 状态
+  - 返回 `HUMAN_NEXT_NODE=PLANNER_NODE`
+
+`SearchLiteHumanFeedbackDispatcher`
+
+- 只负责把 `HUMAN_NEXT_NODE` 翻译成真正下一跳
+- `WAIT_FOR_FEEDBACK -> END`
+- `PLAN_EXECUTOR_NODE -> PLAN_EXECUTOR_NODE`
+- `PLANNER_NODE -> PLANNER_NODE`
+
+这套职责边界和 `management` 的思想已经比较接近了：
+
+- service 负责暂停与恢复入口
+- node 负责根据反馈改业务状态
+- dispatcher 负责真正路由
+
+### 10.3 为什么之前一直走不通
+
+之前踩坑主要有两类。
+
+第一类是“恢复模型混用”：
+
+- 一部分逻辑想走 `management` 风格的 checkpoint resume
+- 另一部分逻辑又想在 service 层：
+  - 直接改整份 state
+  - 算下一跳
+  - clone state
+  - `streamFromInitialNode(...)`
+
+这两套思路混在一起之后，图的恢复语义会变得不稳定，日志上经常会出现：
+
+- `HumanFeedbackNode` 执行了
+- dispatcher 也返回了目标节点
+- 但 graph 没有继续往后跑
+
+第二类是“state 富对象污染”：
+
+- graph checkpoint 里的 `schemaTableDetails` 在恢复时可能混入 `LinkedHashMap`
+- 一旦 service 层尝试 clone 整份 state，Jackson 就会在 `SchemaTable -> columns -> name` 这类路径上报错
+- 典型异常：
+  - `object is not an instance of declaring class`
+
+所以后面的结论很明确：
+
+- 恢复路径尽量只更新最小输入
+- 不要在 service 层无必要地 clone 整份 graph state
+
+### 10.4 当前实现为什么会稳定很多
+
+因为现在真正稳定下来的点有两个：
+
+1. 恢复主线简化了  
+现在恢复时只传 `HUMAN_FEEDBACK_DATA`，不再让 service 承担“计算完整恢复态”的职责。
+
+2. state 映射更干净了  
+`SearchLiteGraphStateMapper` 现在会把 `schemaTableDetails`、`SchemaTable`、`SchemaColumn`、`SchemaForeignKey` 这类对象显式规范化，避免后续再出现原始 `Map` 和强类型对象混用的问题。
+
+相关实现：
+
+- `D:\GitHub\DataAgent\data-agent-backend\src\main\java\com\alibaba\cloud\ai\dataagentbackend\lite\graph\SearchLiteGraphStateMapper.java`
+
+### 10.5 经验结论
+
+对 `search-lite` 这条链路来说，当前更稳的原则是：
+
+- 首轮等待：交给 `interruptBefore(HUMAN_FEEDBACK_NODE)` + service 补发 waiting 状态
+- 恢复执行：只更新最小反馈输入，让 graph 自己恢复
+- rich state 映射：尽量保持强类型，不要把 `LinkedHashMap` 残留到后续恢复链路里
+
+如果后面继续扩 HumanFeedback 或 Planner，优先保持这条边界，不要再把“service 层显式跳节点”和“checkpoint resume”混在一起。
+
 还没完全达到的部分：
 
 - agentId 级知识范围控制
@@ -570,16 +802,16 @@ Schema 侧：
 
 ---
 
-## 9. 当前项目最值得继续优化的点
+## 11. 当前项目最值得继续优化的点
 
-### 9.1 完善 recall
+### 11.1 完善 recall
 
 重点：
 
 - 继续优化 evidence / schema / hybrid
 - 做 recall 效果诊断与量化
 
-### 9.2 接入 document RAG
+### 11.2 接入 document RAG
 
 方向：
 
@@ -588,7 +820,7 @@ Schema 侧：
 - 建立文档索引
 - 接入主链路
 
-### 9.3 落地评测系统
+### 11.3 落地评测系统
 
 方向：
 
@@ -599,7 +831,7 @@ Schema 侧：
 
 ---
 
-## 10. 一句话总结
+## 12. 一句话总结
 
 当前这个项目的实现，本质上已经不是“简单调用一次模型”，而是：
 

@@ -1,0 +1,31 @@
+:root {
+  font-family: "Avenir Next", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  color: #1e2823;
+  background: #f3f0e9;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  --paper: #f3f0e9;
+  --paper-light: #faf8f3;
+  --paper-deep: #e7e2d8;
+  --ink: #1e2823;
+  --muted: #737873;
+  --faint: #a3a69e;
+  --line: rgba(39, 57, 48, .16);
+  --forest: #113f32;
+  --forest-deep: #0a2c23;
+  --sage: #88a79a;
+  --copper: #bf613b;
+  --danger: #b64d3c;
+  --mono: "SFMono-Regular", "Cascadia Code", "Roboto Mono", monospace;
+}
+
+* { box-sizing: border-box; }
+html, body, #root { width: 100%; height: 100%; min-width: 320px; min-height: 100dvh; }
+body { margin: 0; overflow: hidden; }
+button, input, textarea { font: inherit; }
+button { color: inherit; cursor: pointer; }
+button:disabled { cursor: default; opacity: .55; }
+button, input, textarea { outline: none; }
+button:focus-visible, input:focus-visible, textarea:focus-visible { box-shadow: 0 0 0 3px rgba(191, 97, 59, .2); }
+::selection { color: var(--paper-light); background: var(--forest); }

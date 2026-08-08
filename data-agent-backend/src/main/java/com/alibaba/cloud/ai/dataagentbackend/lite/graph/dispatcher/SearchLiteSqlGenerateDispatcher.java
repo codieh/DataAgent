@@ -8,7 +8,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import static com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphConfiguration.PREPARE_RESULT_NODE;
-import static com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphConfiguration.SQL_EXECUTE_NODE;
+import static com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphConfiguration.SQL_CONSISTENCY_NODE;
 
 @Component
 public class SearchLiteSqlGenerateDispatcher implements EdgeAction {
@@ -24,8 +24,8 @@ public class SearchLiteSqlGenerateDispatcher implements EdgeAction {
 			.orElse("");
 
 		if (isUsableSql(sql)) {
-			log.info("graph sql-generate dispatcher: sqlLen={}, route to {}", sql.length(), SQL_EXECUTE_NODE);
-			return SQL_EXECUTE_NODE;
+			log.info("graph sql-generate dispatcher: sqlLen={}, route to {}", sql.length(), SQL_CONSISTENCY_NODE);
+			return SQL_CONSISTENCY_NODE;
 		}
 
 		log.info("graph sql-generate dispatcher: empty or invalid sql, route to {}", PREPARE_RESULT_NODE);

@@ -22,6 +22,8 @@ public final class LiteEvalCliApplication {
 			return;
 		}
 		String[] applicationArgs = mergeSuiteArgument(args);
+		log.info("lite eval starting: args={}, resolvedSuite={}", java.util.Arrays.toString(args),
+				resolveSuiteForLog(applicationArgs));
 		ConfigurableApplicationContext context = new SpringApplicationBuilder(DataAgentBackendApplication.class)
 			.web(WebApplicationType.NONE)
 			.run(applicationArgs);
@@ -66,6 +68,16 @@ public final class LiteEvalCliApplication {
 			}
 		}
 		return false;
+	}
+
+	private static String resolveSuiteForLog(String[] args) {
+		for (String arg : args) {
+			if (arg != null && arg.startsWith(SUITE_PROPERTY)) {
+				String suite = arg.substring(SUITE_PROPERTY.length()).trim();
+				return suite.isBlank() ? "quick" : suite;
+			}
+		}
+		return "quick";
 	}
 
 }

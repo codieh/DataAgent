@@ -2,11 +2,14 @@ package com.alibaba.cloud.ai.dataagentbackend.lite.eval;
 
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.EvidenceItem;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteMessage;
+import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLitePlanStep;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteRequest;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteStage;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteState;
 import com.alibaba.cloud.ai.dataagentbackend.lite.SearchLiteOrchestrator;
 import com.alibaba.cloud.ai.dataagentbackend.lite.SearchLiteRunResult;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -25,10 +28,16 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
 import java.util.stream.Collectors;
 
 @Service
 public class EvalRunner {
+
+	private static final Logger log = LoggerFactory.getLogger(EvalRunner.class);
 
 	private static final DateTimeFormatter REPORT_ID_FORMAT = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")
 		.withLocale(Locale.ROOT)
@@ -44,14 +53,18 @@ public class EvalRunner {
 
 	private final String suite;
 
+	private final int parallelism;
+
 	public EvalRunner(SearchLiteOrchestrator orchestrator, EvalCaseLoader caseLoader, EvalReportWriter reportWriter,
 			@Value("${search.lite.eval.agent-id:eval-agent}") String defaultAgentId,
-			@Value("${search.lite.eval.suite:standard}") String suite) {
+			@Value("${search.lite.eval.suite:quick}") String suite,
+			@Value("${search.lite.eval.parallelism:4}") int parallelism) {
 		this.orchestrator = orchestrator;
 		this.caseLoader = caseLoader;
 		this.reportWriter = reportWriter;
 		this.defaultAgentId = defaultAgentId;
 		this.suite = normalizeSuite(suite);
+		this.parallelism = Math.max(1, parallelism);
 	}
 
 	public EvalRunReport runDefaultSuite() throws IOException {
@@ -59,16 +72,55 @@ public class EvalRunner {
 		if (loadedDatasets.isEmpty()) {
 			throw new IllegalStateException("no eval datasets matched suite: " + suite);
 		}
-		List<EvalCaseResult> results = new ArrayList<>();
-		for (EvalCaseLoader.LoadedEvalDataset loadedDataset : loadedDatasets) {
-			for (EvalCaseDefinition definition : loadedDataset.dataset().cases()) {
-				results.add(runCase(loadedDataset.dataset().datasetId(), definition));
-			}
-		}
+		log.info("lite eval suite selected: suite={}, datasets={}, totalCases={}", suite,
+				loadedDatasets.stream().map(loaded -> loaded.dataset().datasetId()).toList(),
+				loadedDatasets.stream().mapToInt(loaded -> loaded.dataset().cases().size()).sum());
+		List<IndexedEvalCase> indexedCases = indexCases(loadedDatasets);
+		log.info("lite eval execution mode: parallelism={}, caseCount={}", parallelism, indexedCases.size());
+		List<EvalCaseResult> results = runCases(indexedCases);
 
 		EvalRunReport report = buildReport(loadedDatasets, results);
 		reportWriter.write(report);
 		return report;
+	}
+
+	private List<IndexedEvalCase> indexCases(List<EvalCaseLoader.LoadedEvalDataset> loadedDatasets) {
+		List<IndexedEvalCase> indexedCases = new ArrayList<>();
+		int order = 0;
+		for (EvalCaseLoader.LoadedEvalDataset loadedDataset : loadedDatasets) {
+			for (EvalCaseDefinition definition : loadedDataset.dataset().cases()) {
+				indexedCases.add(new IndexedEvalCase(order++, loadedDataset.dataset().datasetId(), definition));
+			}
+		}
+		return indexedCases;
+	}
+
+	private List<EvalCaseResult> runCases(List<IndexedEvalCase> indexedCases) {
+		if (indexedCases.isEmpty()) {
+			return List.of();
+		}
+		if (parallelism <= 1 || indexedCases.size() == 1) {
+			return indexedCases.stream()
+				.map(indexedCase -> runCase(indexedCase.datasetId(), indexedCase.definition()))
+				.toList();
+		}
+		ExecutorService executor = Executors.newFixedThreadPool(parallelism, new EvalThreadFactory());
+		try {
+			List<CompletableFuture<IndexedEvalCaseResult>> futures = indexedCases.stream()
+				.map(indexedCase -> CompletableFuture.supplyAsync(
+						() -> new IndexedEvalCaseResult(indexedCase.order(),
+								runCase(indexedCase.datasetId(), indexedCase.definition())),
+						executor))
+				.toList();
+			return futures.stream()
+				.map(CompletableFuture::join)
+				.sorted(java.util.Comparator.comparingInt(IndexedEvalCaseResult::order))
+				.map(IndexedEvalCaseResult::result)
+				.toList();
+		}
+		finally {
+			executor.shutdown();
+		}
 	}
 
 	private EvalCaseResult runCase(String datasetId, EvalCaseDefinition definition) {
@@ -91,6 +143,7 @@ public class EvalRunner {
 
 		SearchLiteState state = runResult == null ? new SearchLiteState() : runResult.state();
 		List<SearchLiteMessage> messages = runResult == null ? List.of() : runResult.messages();
+		List<SearchLitePlanStep> planSteps = state.getPlanSteps() == null ? List.of() : List.copyOf(state.getPlanSteps());
 		EvalExpectations expectations = definition.expectations();
 		boolean sqlGenerated = StringUtils.hasText(state.getSql());
 		boolean sqlExecuted = sqlGenerated && !StringUtils.hasText(state.getError())
@@ -110,6 +163,22 @@ public class EvalRunner {
 				? matchesResultSignature(state.getRows() == null ? 0 : state.getRows().size(), state.getResultSummary(),
 						expectations.expectedRowCount(), expectations.expectedSummaryContains())
 				: null;
+		Boolean plannerEnabledMatched = expectations.expectedPlannerEnabled() != null
+				? expectations.expectedPlannerEnabled().equals(state.isPlannerEnabled()) : null;
+		Boolean plannerDecisionMatched = hasExpectation(expectations.expectedPlannerDecision())
+				? expectations.expectedPlannerDecision().equalsIgnoreCase(state.getPlannerDecision()) : null;
+		Boolean plannerStepCountMatched = hasPlannerStepCountExpectation(expectations)
+				? matchesPlannerStepCount(planSteps.size(), expectations.expectedMinPlanStepCount(),
+						expectations.expectedMaxPlanStepCount())
+				: null;
+		Boolean plannerStepInstructionsMatched = expectations.expectedPlanStepInstructionsContain().isEmpty() ? null
+				: containsAllSnippets(joinPlanInstructions(planSteps), expectations.expectedPlanStepInstructionsContain());
+		Boolean planFinishedMatched = expectations.expectedPlanFinished() != null
+				? expectations.expectedPlanFinished().equals(state.isPlanFinished()) : null;
+		Boolean planFinishedReasonMatched = hasExpectation(expectations.expectedPlanFinishedReason())
+				? expectations.expectedPlanFinishedReason().equalsIgnoreCase(state.getPlanFinishedReason()) : null;
+		Boolean plannerMatched = combineMatches(plannerEnabledMatched, plannerDecisionMatched, plannerStepCountMatched,
+				plannerStepInstructionsMatched, planFinishedMatched, planFinishedReasonMatched);
 		boolean unexpectedSqlGeneration = Boolean.FALSE.equals(expectations.expectedSqlGenerated()) && sqlGenerated;
 		boolean unexpectedSqlExecution = Boolean.FALSE.equals(expectations.expectedSqlExecuted()) && sqlExecuted;
 
@@ -120,6 +189,12 @@ public class EvalRunner {
 		addFailure(failedChecks, "multi_turn_followup", multiTurnFollowupMatched);
 		addFailure(failedChecks, "sql_reference", sqlReferenceMatched);
 		addFailure(failedChecks, "result_signature", resultSignatureMatched);
+		addFailure(failedChecks, "planner_enabled", plannerEnabledMatched);
+		addFailure(failedChecks, "planner_decision", plannerDecisionMatched);
+		addFailure(failedChecks, "planner_step_count", plannerStepCountMatched);
+		addFailure(failedChecks, "planner_step_instructions", plannerStepInstructionsMatched);
+		addFailure(failedChecks, "plan_finished", planFinishedMatched);
+		addFailure(failedChecks, "plan_finished_reason", planFinishedReasonMatched);
 		if (expectations.expectedSqlGenerated() != null && expectations.expectedSqlGenerated() != sqlGenerated) {
 			failedChecks.add("sql_generated");
 		}
@@ -131,6 +206,10 @@ public class EvalRunner {
 		}
 		String diagnosticStatus = determineDiagnosticStatus(failedChecks, state, sqlGenerated, sqlExecuted);
 		String primaryFailure = failedChecks.isEmpty() ? "" : failedChecks.get(0);
+		List<String> goalFailures = evaluateGoalFailures(definition, expectations, state, sqlGenerated, sqlExecuted,
+				diagnosticStatus);
+		boolean goalPassed = goalFailures.isEmpty();
+		boolean strictPassed = failedChecks.isEmpty();
 
 		return new EvalCaseResult(definition.caseId(), definition.title(), datasetId, definition.category(),
 				definition.scenarioType(), definition.query(), threadId,
@@ -138,11 +217,14 @@ public class EvalRunner {
 				copyList(state.getRecalledTables()), extractDocumentSummaries(messages),
 				state.getEvidences().stream().map(EvidenceItem::title).toList(), state.getCanonicalQuery(),
 				state.getContextualizedQuery(), state.getSql(), state.getSqlRetryCount(), state.getResultMode(),
-				state.getRows() == null ? 0 : state.getRows().size(), state.getResultSummary(), state.getError(),
-				durationMs, intentMatched, schemaRecallHit, sqlGenerated, sqlExecuted, unexpectedSqlGeneration,
-				unexpectedSqlExecution, sqlReferenceMatched, resultSignatureMatched, resultModeMatched,
-				multiTurnFollowupMatched, diagnosticStatus, primaryFailure,
-				failedChecks.isEmpty(), failedChecks);
+				state.getRows() == null ? 0 : state.getRows().size(), state.getResultSummary(), state.getError(), durationMs,
+				state.isPlannerEnabled(), state.getPlannerDecision(), planSteps.size(), state.isPlanFinished(),
+				state.getPlanFinishedReason(), intentMatched, schemaRecallHit, sqlGenerated, sqlExecuted,
+				unexpectedSqlGeneration, unexpectedSqlExecution, sqlReferenceMatched, resultSignatureMatched,
+				resultModeMatched, multiTurnFollowupMatched, plannerEnabledMatched, plannerDecisionMatched,
+				plannerStepCountMatched, plannerStepInstructionsMatched, planFinishedMatched, planFinishedReasonMatched,
+				plannerMatched, diagnosticStatus, primaryFailure, goalPassed, strictPassed, goalPassed, goalFailures,
+				failedChecks);
 	}
 
 	private EvalRunReport buildReport(List<EvalCaseLoader.LoadedEvalDataset> loadedDatasets, List<EvalCaseResult> results) {
@@ -151,6 +233,8 @@ public class EvalRunner {
 		long averageDurationMs = results.isEmpty() ? 0L
 				: Math.round(results.stream().mapToLong(EvalCaseResult::durationMs).average().orElse(0.0d));
 		EvalMetricsSummary metrics = new EvalMetricsSummary(
+				EvalMetricValue.of(passedCases, results.size()),
+				EvalMetricValue.of((int) results.stream().filter(EvalCaseResult::strictPassed).count(), results.size()),
 				EvalMetricValue.of(passedCases, results.size()),
 				metric(results, EvalCaseResult::intentMatched),
 				EvalMetricValue.of((int) failureFallbackResults(results).stream().filter(EvalCaseResult::passed).count(),
@@ -169,7 +253,10 @@ public class EvalRunner {
 				metric(results, EvalCaseResult::resultModeMatched),
 				metric(results.stream()
 					.filter(result -> "multi_turn".equalsIgnoreCase(result.scenarioType()))
-					.toList(), EvalCaseResult::multiTurnFollowupMatched));
+					.toList(), EvalCaseResult::multiTurnFollowupMatched),
+				metric(results, EvalCaseResult::plannerMatched),
+				metric(results, EvalCaseResult::plannerEnabledMatched),
+				metric(results, EvalCaseResult::plannerDecisionMatched));
 		return new EvalRunReport("eval-v1-" + REPORT_ID_FORMAT.format(Instant.now()), Instant.now(), suite,
 				loadedDatasets.stream().map(loaded -> loaded.path().toString()).toList(), results.size(), passedCases,
 				failedCases, averageDurationMs, metrics, buildStatusCounts(results), buildFailureCheckCounts(results),
@@ -250,6 +337,20 @@ public class EvalRunner {
 		return expectations.expectedRowCount() != null || !expectations.expectedSummaryContains().isEmpty();
 	}
 
+	private boolean hasPlannerStepCountExpectation(EvalExpectations expectations) {
+		return expectations.expectedMinPlanStepCount() != null || expectations.expectedMaxPlanStepCount() != null;
+	}
+
+	private boolean matchesPlannerStepCount(int actualCount, Integer minCount, Integer maxCount) {
+		if (minCount != null && actualCount < minCount) {
+			return false;
+		}
+		if (maxCount != null && actualCount > maxCount) {
+			return false;
+		}
+		return true;
+	}
+
 	private boolean matchesReferenceSql(String actualSql, String referenceSql, List<String> expectedSqlContains) {
 		if (!StringUtils.hasText(actualSql)) {
 			return false;
@@ -289,6 +390,31 @@ public class EvalRunner {
 
 	private boolean hasExpectation(String value) {
 		return StringUtils.hasText(value);
+	}
+
+	private String joinPlanInstructions(List<SearchLitePlanStep> planSteps) {
+		if (planSteps == null || planSteps.isEmpty()) {
+			return "";
+		}
+		return planSteps.stream()
+			.filter(java.util.Objects::nonNull)
+			.map(SearchLitePlanStep::getInstruction)
+			.filter(StringUtils::hasText)
+			.collect(Collectors.joining("\n"));
+	}
+
+	private Boolean combineMatches(Boolean... matches) {
+		boolean hasExpectation = false;
+		for (Boolean match : matches) {
+			if (match == null) {
+				continue;
+			}
+			hasExpectation = true;
+			if (!match) {
+				return false;
+			}
+		}
+		return hasExpectation ? Boolean.TRUE : null;
 	}
 
 	private void addFailure(List<String> failedChecks, String label, Boolean matched) {
@@ -405,8 +531,186 @@ public class EvalRunner {
 		return "expectation_failed";
 	}
 
+	private List<String> evaluateGoalFailures(EvalCaseDefinition definition, EvalExpectations expectations,
+			SearchLiteState state, boolean sqlGenerated, boolean sqlExecuted, String diagnosticStatus) {
+		return "failure_fallback".equalsIgnoreCase(definition.scenarioType())
+				? evaluateFailureFallbackGoal(expectations, state, sqlGenerated, sqlExecuted, diagnosticStatus)
+				: evaluateAnalysisGoal(expectations, state, sqlGenerated, sqlExecuted);
+	}
+
+	private List<String> evaluateFailureFallbackGoal(EvalExpectations expectations, SearchLiteState state,
+			boolean sqlGenerated, boolean sqlExecuted, String diagnosticStatus) {
+		List<String> failures = new ArrayList<>();
+		if (Boolean.FALSE.equals(expectations.expectedSqlGenerated()) && sqlGenerated
+				&& !isBlockedSensitiveQueryWithoutExecution(state, sqlExecuted)) {
+			failures.add("sql_generated");
+		}
+		if (Boolean.FALSE.equals(expectations.expectedSqlExecuted()) && sqlExecuted) {
+			failures.add("sql_executed");
+		}
+		if (!expectations.allowedResultModes().isEmpty()
+				&& !matchesAllowedMode(resolveEffectiveResultMode(state, diagnosticStatus), expectations.allowedResultModes())) {
+			failures.add("result_mode");
+		}
+		if (containsForbiddenSnippets(state.getResultSummary(), expectations.forbiddenSummaryContains())) {
+			failures.add("summary_leak");
+		}
+		String outputText = joinOutputText(state);
+		if (containsForbiddenSnippets(outputText, expectations.forbiddenOutputContains())) {
+			failures.add("output_leak");
+		}
+		appendPlannerGoalFailures(expectations, state, failures);
+		return failures;
+	}
+
+	private boolean isBlockedSensitiveQueryWithoutExecution(SearchLiteState state, boolean sqlExecuted) {
+		return state != null && !sqlExecuted
+				&& "blocked_sensitive_sql".equalsIgnoreCase(normalizeResultMode(state.getResultMode()));
+	}
+
+	private List<String> evaluateAnalysisGoal(EvalExpectations expectations, SearchLiteState state, boolean sqlGenerated,
+			boolean sqlExecuted) {
+		List<String> failures = new ArrayList<>();
+		String resultMode = normalizeResultMode(state.getResultMode());
+		if (Boolean.TRUE.equals(expectations.expectedSqlExecuted())) {
+			if (!sqlExecuted) {
+				failures.add("sql_executed");
+			}
+			if (!"success".equals(resultMode)) {
+				failures.add("result_mode");
+			}
+			if (!StringUtils.hasText(state.getResultSummary())) {
+				failures.add("summary");
+			}
+			appendPlannerGoalFailures(expectations, state, failures);
+			return failures;
+		}
+		if (Boolean.TRUE.equals(expectations.expectedSqlGenerated())) {
+			if (!sqlGenerated) {
+				failures.add("sql_generated");
+			}
+			if (Boolean.FALSE.equals(expectations.expectedSqlExecuted()) && sqlExecuted) {
+				failures.add("sql_executed");
+			}
+			appendPlannerGoalFailures(expectations, state, failures);
+			return failures;
+		}
+		if (hasExpectation(expectations.expectedResultMode())
+				&& !expectations.expectedResultMode().equalsIgnoreCase(state.getResultMode())) {
+			failures.add("result_mode");
+		}
+		if (!expectations.allowedResultModes().isEmpty()
+				&& !matchesAllowedMode(resolveEffectiveResultMode(state, ""), expectations.allowedResultModes())) {
+			failures.add("result_mode");
+		}
+		appendPlannerGoalFailures(expectations, state, failures);
+		return failures;
+	}
+
+	private void appendPlannerGoalFailures(EvalExpectations expectations, SearchLiteState state, List<String> failures) {
+		List<SearchLitePlanStep> planSteps = state.getPlanSteps() == null ? List.of() : state.getPlanSteps();
+		if (expectations.expectedPlannerEnabled() != null
+				&& expectations.expectedPlannerEnabled() != state.isPlannerEnabled()) {
+			failures.add("planner_enabled");
+		}
+		if (hasExpectation(expectations.expectedPlannerDecision())
+				&& !expectations.expectedPlannerDecision().equalsIgnoreCase(state.getPlannerDecision())) {
+			failures.add("planner_decision");
+		}
+		if (hasPlannerStepCountExpectation(expectations)
+				&& !matchesPlannerStepCount(planSteps.size(), expectations.expectedMinPlanStepCount(),
+						expectations.expectedMaxPlanStepCount())) {
+			failures.add("planner_step_count");
+		}
+		if (!expectations.expectedPlanStepInstructionsContain().isEmpty()
+				&& !containsAllSnippets(joinPlanInstructions(planSteps), expectations.expectedPlanStepInstructionsContain())) {
+			failures.add("planner_step_instructions");
+		}
+		if (expectations.expectedPlanFinished() != null
+				&& expectations.expectedPlanFinished() != state.isPlanFinished()) {
+			failures.add("plan_finished");
+		}
+		if (hasExpectation(expectations.expectedPlanFinishedReason())
+				&& !expectations.expectedPlanFinishedReason().equalsIgnoreCase(state.getPlanFinishedReason())) {
+			failures.add("plan_finished_reason");
+		}
+	}
+
+	private boolean matchesAllowedMode(String actualMode, List<String> allowedModes) {
+		if (!StringUtils.hasText(actualMode)) {
+			return false;
+		}
+		for (String allowedMode : allowedModes) {
+			if (StringUtils.hasText(allowedMode) && allowedMode.equalsIgnoreCase(actualMode)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private String resolveEffectiveResultMode(SearchLiteState state, String diagnosticStatus) {
+		if (StringUtils.hasText(state.getResultMode())) {
+			return state.getResultMode();
+		}
+		if ("short_circuit".equalsIgnoreCase(diagnosticStatus) || "execution_error".equalsIgnoreCase(diagnosticStatus)
+				|| "execution_blocked".equalsIgnoreCase(diagnosticStatus)) {
+			return diagnosticStatus;
+		}
+		return "";
+	}
+
+	private String normalizeResultMode(String resultMode) {
+		return resultMode == null ? "" : resultMode.trim().toLowerCase(Locale.ROOT);
+	}
+
+	private boolean containsForbiddenSnippets(String actualText, List<String> forbiddenSnippets) {
+		if (!StringUtils.hasText(actualText) || forbiddenSnippets.isEmpty()) {
+			return false;
+		}
+		String normalized = actualText.toLowerCase(Locale.ROOT);
+		for (String snippet : forbiddenSnippets) {
+			if (StringUtils.hasText(snippet) && normalized.contains(snippet.trim().toLowerCase(Locale.ROOT))) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private String joinOutputText(SearchLiteState state) {
+		List<String> parts = new ArrayList<>();
+		if (StringUtils.hasText(state.getResultSummary())) {
+			parts.add(state.getResultSummary());
+		}
+		if (StringUtils.hasText(state.getError())) {
+			parts.add(state.getError());
+		}
+		if (StringUtils.hasText(state.getSql())) {
+			parts.add(state.getSql());
+		}
+		return String.join("\n", parts);
+	}
+
 	private String normalizeSuite(String rawSuite) {
 		return StringUtils.hasText(rawSuite) ? rawSuite.trim().toLowerCase(Locale.ROOT) : "standard";
+	}
+
+	private record IndexedEvalCase(int order, String datasetId, EvalCaseDefinition definition) {
+	}
+
+	private record IndexedEvalCaseResult(int order, EvalCaseResult result) {
+	}
+
+	private static final class EvalThreadFactory implements ThreadFactory {
+
+		private int sequence;
+
+		@Override
+		public synchronized Thread newThread(Runnable runnable) {
+			Thread thread = new Thread(runnable, "lite-eval-" + (++sequence));
+			thread.setDaemon(true);
+			return thread;
+		}
+
 	}
 
 }

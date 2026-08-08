@@ -24,7 +24,7 @@ public class EvalReportWriter {
 	private final Path reportsDir;
 
 	public EvalReportWriter(ObjectMapper objectMapper, EvalMarkdownReportRenderer markdownReportRenderer,
-			@Value("${search.lite.eval.reports-dir:D:/GitHub/DataAgent/data-agent-backend/data/eval-reports}") String reportsDir) {
+			@Value("${search.lite.eval.reports-dir:data/eval-reports}") String reportsDir) {
 		this.objectMapper = objectMapper;
 		this.markdownReportRenderer = markdownReportRenderer;
 		this.reportsDir = Path.of(reportsDir);

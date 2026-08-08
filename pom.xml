@@ -12,7 +12,6 @@
 
   <modules>
     <module>data-agent-backend</module>
-    <module>data-agent-management</module>
   </modules>
   <scm>
     <connection>git://github.com/spring-ai-alibaba/DataAgent.git</connection>
@@ -29,7 +28,7 @@
     <dashscope-sdk-java.version>2.15.1</dashscope-sdk-java.version>
 
     <!-- Maven project basic config -->
-    <java.version>17</java.version>
+    <java.version>21</java.version>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
     <maven.compiler.source>${java.version}</maven.compiler.source>

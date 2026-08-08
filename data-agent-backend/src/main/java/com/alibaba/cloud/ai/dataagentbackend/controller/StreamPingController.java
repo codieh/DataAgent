@@ -6,12 +6,14 @@ import java.time.Instant;
 import java.util.UUID;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
+import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Flux;
 
 @RestController
+@CrossOrigin(origins = "*")
 @RequestMapping("/api/stream")
 public class StreamPingController {
 
@@ -24,11 +26,11 @@ public class StreamPingController {
 				.event("message")
 				.id(threadId + ":" + seq)
 				.build())
-			.concatWith(Flux.just(ServerSentEvent.<StreamMessage>builder()
+			.concatWith(Flux.just(ServerSentEvent.builder(
+					new StreamMessage(threadId, "COMPLETE", "ping stream complete", 10, Instant.now()))
 				.event("complete")
 				.id(threadId + ":complete")
 				.build()));
 	}
 
 }
-

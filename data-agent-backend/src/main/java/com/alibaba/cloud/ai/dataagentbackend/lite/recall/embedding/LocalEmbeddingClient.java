@@ -11,6 +11,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.net.http.HttpTimeoutException;
 import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
@@ -33,7 +34,10 @@ public class LocalEmbeddingClient implements EmbeddingClient {
 	public LocalEmbeddingClient(EmbeddingProperties properties, ObjectMapper objectMapper) {
 		this.properties = Objects.requireNonNull(properties, "properties");
 		this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper");
-		this.httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
+		this.httpClient = HttpClient.newBuilder()
+			.connectTimeout(Duration.ofSeconds(resolveConnectTimeoutSeconds()))
+			.version(HttpClient.Version.HTTP_1_1)
+			.build();
 	}
 
 	@Override
@@ -45,10 +49,14 @@ public class LocalEmbeddingClient implements EmbeddingClient {
 
 		EmbeddingRequest request = new EmbeddingRequest(
 				StringUtils.hasText(properties.model()) ? properties.model().trim() : "bge-m3", content);
+		String url = resolveUrl();
+		long startedAt = System.nanoTime();
 		try {
+			log.info("embedding 请求开始：url={}, model={}, textLen={}, connectTimeoutSec={}, requestTimeoutSec={}", url,
+					request.model(), content.length(), resolveConnectTimeoutSeconds(), resolveRequestTimeoutSeconds());
 			HttpRequest.Builder builder = HttpRequest.newBuilder()
-				.uri(URI.create(resolveUrl()))
-				.timeout(Duration.ofSeconds(30))
+				.uri(URI.create(url))
+				.timeout(Duration.ofSeconds(resolveRequestTimeoutSeconds()))
 				.header("Content-Type", "application/json");
 			if (StringUtils.hasText(properties.apiKey())) {
 				builder.header("Authorization", "Bearer " + properties.apiKey().trim());
@@ -57,29 +65,38 @@ public class LocalEmbeddingClient implements EmbeddingClient {
 			HttpResponse<String> response = httpClient.send(
 					builder.POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(request))).build(),
 					HttpResponse.BodyHandlers.ofString());
+			long tookMs = (System.nanoTime() - startedAt) / 1_000_000;
+			log.info("embedding 请求结束：url={}, model={}, status={}, textLen={}, tookMs={}", url, request.model(),
+					response.statusCode(), content.length(), tookMs);
 
 			if (response.statusCode() >= 400) {
-				log.warn("embedding 调用失败：baseUrl={}, model={}, status={}", properties.baseUrl(), request.model(),
-						response.statusCode());
+				log.warn("embedding 调用失败：url={}, model={}, status={}, textLen={}, tookMs={}", url, request.model(),
+						response.statusCode(), content.length(), tookMs);
 				return List.of();
 			}
 
 			EmbeddingResponse body = objectMapper.readValue(response.body(), EmbeddingResponse.class);
 			if (body == null || body.data() == null || body.data().isEmpty() || body.data().get(0).embedding() == null) {
-				log.warn("embedding 响应为空：model={}, textLen={}", request.model(), content.length());
+				log.warn("embedding 响应为空：url={}, model={}, textLen={}, tookMs={}", url, request.model(),
+						content.length(), tookMs);
 				return List.of();
 			}
 			return body.data().get(0).embedding();
 		}
+		catch (HttpTimeoutException e) {
+			log.warn("embedding 调用超时：url={}, model={}, textLen={}, requestTimeoutSec={}, error={}", url,
+					request.model(), content.length(), resolveRequestTimeoutSeconds(), e.getMessage());
+			return List.of();
+		}
 		catch (Exception e) {
-			log.warn("embedding 调用失败：baseUrl={}, model={}, error={}", properties.baseUrl(), request.model(),
-					e.getMessage());
+			log.warn("embedding 调用失败：url={}, model={}, textLen={}, error={}", url, request.model(),
+					content.length(), e.getMessage());
 			return List.of();
 		}
 	}
 
 	private String resolveUrl() {
-		String baseUrl = StringUtils.hasText(properties.baseUrl()) ? properties.baseUrl().trim() : "http://localhost:11434";
+		String baseUrl = StringUtils.hasText(properties.baseUrl()) ? properties.baseUrl().trim() : "http://127.0.0.1:1234";
 		String path = StringUtils.hasText(properties.path()) ? properties.path().trim() : "/v1/embeddings";
 		if (!path.startsWith("/")) {
 			path = "/" + path;
@@ -88,6 +105,14 @@ public class LocalEmbeddingClient implements EmbeddingClient {
 			baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
 		}
 		return baseUrl + path;
+	}
+
+	private int resolveConnectTimeoutSeconds() {
+		return properties.connectTimeoutSeconds() == null ? 10 : Math.max(1, properties.connectTimeoutSeconds());
+	}
+
+	private int resolveRequestTimeoutSeconds() {
+		return properties.requestTimeoutSeconds() == null ? 30 : Math.max(1, properties.requestTimeoutSeconds());
 	}
 
 	private record EmbeddingRequest(String model, String input) {

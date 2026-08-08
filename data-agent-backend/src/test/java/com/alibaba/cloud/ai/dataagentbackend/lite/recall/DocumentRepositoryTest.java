@@ -27,7 +27,7 @@ class DocumentRepositoryTest {
 		Files.writeString(dir.resolve("faq.txt"), "销售额默认不含取消订单");
 		Files.writeString(dir.resolve("ignore.csv"), "a,b,c");
 
-		DocumentRepository repository = new DocumentRepository(dir.toString(), new DocumentChunker(120));
+		DocumentRepository repository = new DocumentRepository(dir.toString(), new DocumentChunker(120, 80));
 		List<DocumentIndexBuilder.SourceDocument> documents = repository.listAll();
 
 		assertEquals(3, documents.size());

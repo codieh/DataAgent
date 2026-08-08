@@ -29,7 +29,7 @@ public class SqlPolicyChecker {
 			return PolicyDecision.allow();
 		}
 		String lower = normalized.toLowerCase(Locale.ROOT);
-		if (containsSensitiveField(lower)) {
+		if (containsSensitiveField(lower) && looksLikeSensitiveDetailExport(lower)) {
 			return PolicyDecision.block("blocked_sensitive_sql",
 					"SQL 命中了敏感字段，当前策略不允许直接查询或导出这类明细。");
 		}
@@ -43,12 +43,17 @@ public class SqlPolicyChecker {
 	}
 
 	private boolean containsSensitiveField(String lowerSql) {
+		String selectClause = selectClause(lowerSql);
 		for (String keyword : sensitiveFieldKeywords) {
-			if (lowerSql.contains(keyword)) {
+			if (selectClause.contains(keyword)) {
 				return true;
 			}
 		}
 		return false;
+	}
+
+	private static boolean looksLikeSensitiveDetailExport(String lowerSql) {
+		return !isAggregateQuery(lowerSql) && !hasLimit(lowerSql) && lowerSql.startsWith("select ");
 	}
 
 	private static boolean containsSelectAll(String lowerSql) {
@@ -56,15 +61,30 @@ public class SqlPolicyChecker {
 	}
 
 	private static boolean looksLikeWideDetailExport(String lowerSql) {
-		if (lowerSql.contains(" limit ") || isAggregateQuery(lowerSql)) {
+		if (hasLimit(lowerSql) || isAggregateQuery(lowerSql)) {
 			return false;
 		}
 		return lowerSql.startsWith("select ");
 	}
 
+	private static boolean hasLimit(String lowerSql) {
+		return lowerSql.contains(" limit ");
+	}
+
 	private static boolean isAggregateQuery(String lowerSql) {
 		return lowerSql.contains(" count(") || lowerSql.contains(" sum(") || lowerSql.contains(" avg(")
 				|| lowerSql.contains(" min(") || lowerSql.contains(" max(") || lowerSql.contains(" group by ");
+	}
+
+	private static String selectClause(String lowerSql) {
+		if (!StringUtils.hasText(lowerSql) || !lowerSql.startsWith("select ")) {
+			return lowerSql == null ? "" : lowerSql;
+		}
+		int fromIndex = lowerSql.indexOf(" from ");
+		if (fromIndex < 0) {
+			return lowerSql;
+		}
+		return lowerSql.substring(0, fromIndex);
 	}
 
 	public record PolicyDecision(boolean blocked, String resultMode, String reason) {

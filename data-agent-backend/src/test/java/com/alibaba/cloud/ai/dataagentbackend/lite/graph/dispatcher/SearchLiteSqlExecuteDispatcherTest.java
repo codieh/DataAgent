@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 import java.util.Optional;
 
+import static com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphConfiguration.PLAN_EXECUTOR_NODE;
 import static com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphConfiguration.PREPARE_RESULT_NODE;
 import static com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphConfiguration.SQL_RETRY_NODE;
 import static com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphStateKeys.ERROR;
@@ -40,7 +41,7 @@ class SearchLiteSqlExecuteDispatcherTest {
 		when(state.value(SQL)).thenReturn(Optional.of("select bad"));
 		when(state.value(SQL_RETRY_COUNT)).thenReturn(Optional.of(1));
 
-		assertEquals(PREPARE_RESULT_NODE, dispatcher.apply(state));
+		assertEquals(PLAN_EXECUTOR_NODE, dispatcher.apply(state));
 	}
 
 	@Test
@@ -50,7 +51,7 @@ class SearchLiteSqlExecuteDispatcherTest {
 		when(state.value(ERROR)).thenReturn(Optional.of(""));
 		when(state.value(ROWS)).thenReturn(Optional.of(List.of(List.of("ok"))));
 
-		assertEquals(PREPARE_RESULT_NODE, dispatcher.apply(state));
+		assertEquals(PLAN_EXECUTOR_NODE, dispatcher.apply(state));
 	}
 
 }

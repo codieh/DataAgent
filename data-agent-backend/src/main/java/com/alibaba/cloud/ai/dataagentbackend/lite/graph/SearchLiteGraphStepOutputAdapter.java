@@ -23,7 +23,12 @@ public class SearchLiteGraphStepOutputAdapter {
 	}
 
 	public Map<String, Object> adapt(OverAllStateSnapshot snapshot, SearchLiteStepResult stepResult) {
+		return adaptWithState(snapshot, stepResult).mappedState();
+	}
+
+	public AdaptedOutput adaptWithState(OverAllStateSnapshot snapshot, SearchLiteStepResult stepResult) {
 		SearchLiteState originalState = snapshot.originalState();
+		// graph node 的 apply(...) 目前是同步接口，这里是同步边界适配，不是业务 step 内部阻塞。
 		SearchLiteState updatedState = stepResult.updatedState().defaultIfEmpty(originalState).block();
 		Map<String, Object> mappedState = SearchLiteGraphStateMapper
 			.fromSearchLiteState(updatedState == null ? originalState : updatedState);
@@ -42,10 +47,13 @@ public class SearchLiteGraphStepOutputAdapter {
 			}
 			mappedState.put(SearchLiteGraphStateKeys.GRAPH_MESSAGES, mergedMessages);
 		}
-		return mappedState;
+		return new AdaptedOutput(updatedState == null ? originalState : updatedState, mappedState);
 	}
 
 	public record OverAllStateSnapshot(String threadId, SearchLiteState originalState, List<SearchLiteMessage> existingMessages) {
+	}
+
+	public record AdaptedOutput(SearchLiteState updatedState, Map<String, Object> mappedState) {
 	}
 
 }

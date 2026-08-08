@@ -5,6 +5,7 @@ import com.alibaba.cloud.ai.dataagentbackend.lite.graph.SearchLiteGraphStepOutpu
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStep;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.SearchLiteStepResult;
 import com.alibaba.cloud.ai.dataagentbackend.lite.step.impl.IntentMinimaxStep;
+import com.alibaba.cloud.ai.dataagentbackend.lite.trace.SearchLiteTraceRecorder;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Flux;
@@ -45,13 +46,18 @@ class SearchLiteIntentGraphNodeTest {
 
 		when(outputAdapter.adapt(any(), any())).thenReturn(Map.of(THREAD_ID, "thread-1", QUERY, "查询高消费用户", "intentClassification", "DATA_ANALYSIS"));
 
-		SearchLiteIntentGraphNode node = new SearchLiteIntentGraphNode(List.<SearchLiteStep>of(intentStep), outputAdapter);
+		SearchLiteIntentGraphNode node = new SearchLiteIntentGraphNode(List.<SearchLiteStep>of(intentStep), outputAdapter,
+				traceRecorder());
 
 		Map<String, Object> result = node.apply(graphState);
 
 		assertEquals("thread-1", result.get(THREAD_ID));
 		assertEquals("查询高消费用户", result.get(QUERY));
 		assertEquals("DATA_ANALYSIS", result.get("intentClassification"));
+	}
+
+	private SearchLiteTraceRecorder traceRecorder() {
+		return mock(SearchLiteTraceRecorder.class);
 	}
 
 }

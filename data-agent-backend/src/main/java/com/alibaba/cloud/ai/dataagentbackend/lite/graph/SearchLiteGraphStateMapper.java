@@ -1,9 +1,14 @@
 package com.alibaba.cloud.ai.dataagentbackend.lite.graph;
 
+import com.alibaba.cloud.ai.dataagentbackend.api.lite.SchemaColumn;
+import com.alibaba.cloud.ai.dataagentbackend.api.lite.SchemaForeignKey;
+import com.alibaba.cloud.ai.dataagentbackend.api.lite.SchemaTable;
 import com.alibaba.cloud.ai.dataagentbackend.api.lite.SearchLiteState;
 import com.alibaba.cloud.ai.graph.OverAllState;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 public final class SearchLiteGraphStateMapper {
@@ -33,6 +38,23 @@ public final class SearchLiteGraphStateMapper {
 		values.put(SearchLiteGraphStateKeys.RECALLED_SCHEMA_TEXT, state.getRecalledSchemaText());
 		values.put(SearchLiteGraphStateKeys.CANONICAL_QUERY, state.getCanonicalQuery());
 		values.put(SearchLiteGraphStateKeys.EXPANDED_QUERIES, state.getExpandedQueries());
+		values.put(SearchLiteGraphStateKeys.FEASIBILITY_RESULT, state.getFeasibilityResult());
+		values.put(SearchLiteGraphStateKeys.FEASIBILITY_MESSAGE, state.getFeasibilityMessage());
+		values.put(SearchLiteGraphStateKeys.HUMAN_REVIEW_ENABLED, state.isHumanReviewEnabled());
+		values.put(SearchLiteGraphStateKeys.HUMAN_FEEDBACK_STATUS, state.getHumanFeedbackStatus());
+		values.put(SearchLiteGraphStateKeys.HUMAN_FEEDBACK_COMMENT, state.getHumanFeedbackComment());
+		values.put(SearchLiteGraphStateKeys.AWAITING_HUMAN_FEEDBACK, state.isAwaitingHumanFeedback());
+		values.put(SearchLiteGraphStateKeys.PLAN_STEPS, state.getPlanSteps());
+		values.put(SearchLiteGraphStateKeys.CURRENT_PLAN_STEP_INDEX, state.getCurrentPlanStepIndex());
+		values.put(SearchLiteGraphStateKeys.PLANNER_ENABLED, state.isPlannerEnabled());
+		values.put(SearchLiteGraphStateKeys.PLANNER_DECISION, state.getPlannerDecision());
+		values.put(SearchLiteGraphStateKeys.PLANNER_DECISION_REASON, state.getPlannerDecisionReason());
+		values.put(SearchLiteGraphStateKeys.PLAN_FINISHED, state.isPlanFinished());
+		values.put(SearchLiteGraphStateKeys.PLAN_FINISHED_REASON, state.getPlanFinishedReason());
+		values.put(SearchLiteGraphStateKeys.PLANNER_RAW_OUTPUT, state.getPlannerRawOutput());
+		values.put(SearchLiteGraphStateKeys.PLAN_VALIDATION_STATUS, state.isPlanValidationStatus());
+		values.put(SearchLiteGraphStateKeys.PLAN_VALIDATION_ERROR, state.getPlanValidationError());
+		values.put(SearchLiteGraphStateKeys.PLAN_REPAIR_COUNT, state.getPlanRepairCount());
 		values.put(SearchLiteGraphStateKeys.SQL, state.getSql());
 		values.put(SearchLiteGraphStateKeys.SQL_RETRY_COUNT, state.getSqlRetryCount());
 		values.put(SearchLiteGraphStateKeys.LAST_FAILED_SQL, state.getLastFailedSql());
@@ -61,11 +83,35 @@ public final class SearchLiteGraphStateMapper {
 		state.setDocumentText(get(graphState, SearchLiteGraphStateKeys.DOCUMENT_TEXT, String.class));
 		state.setSchemaTables(get(graphState, SearchLiteGraphStateKeys.SCHEMA_TABLES, java.util.List.class));
 		state.setSchemaText(get(graphState, SearchLiteGraphStateKeys.SCHEMA_TEXT, String.class));
-		state.setSchemaTableDetails(get(graphState, SearchLiteGraphStateKeys.SCHEMA_TABLE_DETAILS, java.util.List.class));
+		state.setSchemaTableDetails(getSchemaTableDetails(graphState));
 		state.setRecalledTables(get(graphState, SearchLiteGraphStateKeys.RECALLED_TABLES, java.util.List.class));
 		state.setRecalledSchemaText(get(graphState, SearchLiteGraphStateKeys.RECALLED_SCHEMA_TEXT, String.class));
 		state.setCanonicalQuery(get(graphState, SearchLiteGraphStateKeys.CANONICAL_QUERY, String.class));
 		state.setExpandedQueries(get(graphState, SearchLiteGraphStateKeys.EXPANDED_QUERIES, java.util.List.class));
+		state.setFeasibilityResult(get(graphState, SearchLiteGraphStateKeys.FEASIBILITY_RESULT, String.class));
+		state.setFeasibilityMessage(get(graphState, SearchLiteGraphStateKeys.FEASIBILITY_MESSAGE, String.class));
+		Boolean humanReviewEnabled = get(graphState, SearchLiteGraphStateKeys.HUMAN_REVIEW_ENABLED, Boolean.class);
+		state.setHumanReviewEnabled(Boolean.TRUE.equals(humanReviewEnabled));
+		state.setHumanFeedbackStatus(get(graphState, SearchLiteGraphStateKeys.HUMAN_FEEDBACK_STATUS, String.class));
+		state.setHumanFeedbackComment(get(graphState, SearchLiteGraphStateKeys.HUMAN_FEEDBACK_COMMENT, String.class));
+		Boolean awaitingHumanFeedback = get(graphState, SearchLiteGraphStateKeys.AWAITING_HUMAN_FEEDBACK, Boolean.class);
+		state.setAwaitingHumanFeedback(Boolean.TRUE.equals(awaitingHumanFeedback));
+		state.setPlanSteps(get(graphState, SearchLiteGraphStateKeys.PLAN_STEPS, java.util.List.class));
+		Integer stepIndex = get(graphState, SearchLiteGraphStateKeys.CURRENT_PLAN_STEP_INDEX, Integer.class);
+		state.setCurrentPlanStepIndex(stepIndex == null ? 0 : stepIndex);
+		Boolean plannerEnabled = get(graphState, SearchLiteGraphStateKeys.PLANNER_ENABLED, Boolean.class);
+		state.setPlannerEnabled(Boolean.TRUE.equals(plannerEnabled));
+		state.setPlannerDecision(get(graphState, SearchLiteGraphStateKeys.PLANNER_DECISION, String.class));
+		state.setPlannerDecisionReason(get(graphState, SearchLiteGraphStateKeys.PLANNER_DECISION_REASON, String.class));
+		Boolean planFinished = get(graphState, SearchLiteGraphStateKeys.PLAN_FINISHED, Boolean.class);
+		state.setPlanFinished(Boolean.TRUE.equals(planFinished));
+		state.setPlanFinishedReason(get(graphState, SearchLiteGraphStateKeys.PLAN_FINISHED_REASON, String.class));
+		state.setPlannerRawOutput(get(graphState, SearchLiteGraphStateKeys.PLANNER_RAW_OUTPUT, String.class));
+		Boolean planValidationStatus = get(graphState, SearchLiteGraphStateKeys.PLAN_VALIDATION_STATUS, Boolean.class);
+		state.setPlanValidationStatus(planValidationStatus == null || planValidationStatus);
+		state.setPlanValidationError(get(graphState, SearchLiteGraphStateKeys.PLAN_VALIDATION_ERROR, String.class));
+		Integer planRepairCount = get(graphState, SearchLiteGraphStateKeys.PLAN_REPAIR_COUNT, Integer.class);
+		state.setPlanRepairCount(planRepairCount == null ? 0 : planRepairCount);
 		state.setSql(get(graphState, SearchLiteGraphStateKeys.SQL, String.class));
 		Integer retryCount = get(graphState, SearchLiteGraphStateKeys.SQL_RETRY_COUNT, Integer.class);
 		state.setSqlRetryCount(retryCount == null ? 0 : retryCount);
@@ -81,6 +127,113 @@ public final class SearchLiteGraphStateMapper {
 	@SuppressWarnings("unchecked")
 	private static <T> T get(OverAllState graphState, String key, Class<?> type) {
 		return (T) graphState.value(key).filter(type::isInstance).orElse(null);
+	}
+
+	@SuppressWarnings("unchecked")
+	private static List<SchemaTable> getSchemaTableDetails(OverAllState graphState) {
+		Object raw = graphState.value(SearchLiteGraphStateKeys.SCHEMA_TABLE_DETAILS).orElse(null);
+		if (!(raw instanceof List<?> rawList)) {
+			return new ArrayList<>();
+		}
+		List<SchemaTable> tables = new ArrayList<>(rawList.size());
+		for (Object item : rawList) {
+			SchemaTable table = toSchemaTable(item);
+			if (table != null) {
+				tables.add(table);
+			}
+		}
+		return tables;
+	}
+
+	@SuppressWarnings("unchecked")
+	private static SchemaTable toSchemaTable(Object raw) {
+		if (raw instanceof SchemaTable schemaTable) {
+			List<SchemaColumn> normalizedColumns = new ArrayList<>();
+			if (schemaTable.columns() != null) {
+				for (Object column : schemaTable.columns()) {
+					SchemaColumn normalized = toSchemaColumn(column);
+					if (normalized != null) {
+						normalizedColumns.add(normalized);
+					}
+				}
+			}
+			List<SchemaForeignKey> normalizedForeignKeys = new ArrayList<>();
+			if (schemaTable.foreignKeys() != null) {
+				for (Object foreignKey : schemaTable.foreignKeys()) {
+					SchemaForeignKey normalized = toSchemaForeignKey(foreignKey);
+					if (normalized != null) {
+						normalizedForeignKeys.add(normalized);
+					}
+				}
+			}
+			return new SchemaTable(schemaTable.name(), schemaTable.comment(), normalizedColumns, normalizedForeignKeys);
+		}
+		if (!(raw instanceof Map<?, ?> map)) {
+			return null;
+		}
+		String name = toStringValue(map.get("name"));
+		String comment = toStringValue(map.get("comment"));
+		List<SchemaColumn> columns = new ArrayList<>();
+		Object rawColumns = map.get("columns");
+		if (rawColumns instanceof List<?> rawColumnList) {
+			for (Object column : rawColumnList) {
+				SchemaColumn schemaColumn = toSchemaColumn(column);
+				if (schemaColumn != null) {
+					columns.add(schemaColumn);
+				}
+			}
+		}
+		List<SchemaForeignKey> foreignKeys = new ArrayList<>();
+		Object rawForeignKeys = map.get("foreignKeys");
+		if (rawForeignKeys instanceof List<?> rawForeignKeyList) {
+			for (Object fk : rawForeignKeyList) {
+				SchemaForeignKey foreignKey = toSchemaForeignKey(fk);
+				if (foreignKey != null) {
+					foreignKeys.add(foreignKey);
+				}
+			}
+		}
+		return new SchemaTable(name, comment, columns, foreignKeys);
+	}
+
+	private static SchemaColumn toSchemaColumn(Object raw) {
+		if (raw instanceof SchemaColumn schemaColumn) {
+			return schemaColumn;
+		}
+		if (!(raw instanceof Map<?, ?> map)) {
+			return null;
+		}
+		return new SchemaColumn(
+				toStringValue(map.get("name")),
+				toStringValue(map.get("dataType")),
+				toStringValue(map.get("columnType")),
+				toBooleanValue(map.get("notNull")),
+				toBooleanValue(map.get("primaryKey")),
+				toStringValue(map.get("comment")));
+	}
+
+	private static SchemaForeignKey toSchemaForeignKey(Object raw) {
+		if (raw instanceof SchemaForeignKey schemaForeignKey) {
+			return schemaForeignKey;
+		}
+		if (!(raw instanceof Map<?, ?> map)) {
+			return null;
+		}
+		return new SchemaForeignKey(
+				toStringValue(map.get("columnName")),
+				toStringValue(map.get("refTableName")),
+				toStringValue(map.get("refColumnName")));
+	}
+
+	private static String toStringValue(Object value) {
+		return value == null ? null : String.valueOf(value);
+	}
+
+	private static boolean toBooleanValue(Object value) {
+		if (value instanceof Boolean bool) {
+			return bool;
+		}
+		return value != null && Boolean.parseBoolean(String.valueOf(value));
 	}
 
 }

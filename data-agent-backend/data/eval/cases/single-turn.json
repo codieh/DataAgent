@@ -2,7 +2,7 @@
   "datasetId": "single-turn-v1",
   "version": "eval-v1",
   "suite": "standard",
-  "description": "首版单轮评测集，覆盖基础查询、聚合、多表、时间语义与非数据分析识别。",
+  "description": "单轮评测集（24 题），覆盖基础查询、聚合、多表关联、多对多、时间语义、业务口径、排行分析、防幻觉与意图边界。",
   "cases": [
     {
       "caseId": "ST01",
@@ -17,7 +17,8 @@
         "expectedResultMode": "success",
         "expectedSqlGenerated": true,
         "expectedSqlExecuted": true,
-        "expectedSqlRetryCount": 0
+        "expectedSqlRetryCount": 0,
+        "expectedSqlContains": ["from products", "stock", "< 20"]
       }
     },
     {
@@ -32,7 +33,8 @@
         "expectedTables": ["orders"],
         "expectedResultMode": "success",
         "expectedSqlGenerated": true,
-        "expectedSqlExecuted": true
+        "expectedSqlExecuted": true,
+        "expectedSqlContains": ["from orders", "status", "group by"]
       }
     },
     {
@@ -47,7 +49,8 @@
         "expectedTables": ["users", "orders", "order_items", "products"],
         "expectedResultMode": "success",
         "expectedSqlGenerated": true,
-        "expectedSqlExecuted": true
+        "expectedSqlExecuted": true,
+        "expectedSqlContains": ["users", "orders", "order_items", "products", "smartphone"]
       }
     },
     {
@@ -62,7 +65,8 @@
         "expectedTables": ["categories", "product_categories", "products", "order_items"],
         "expectedResultMode": "success",
         "expectedSqlGenerated": true,
-        "expectedSqlExecuted": true
+        "expectedSqlExecuted": true,
+        "expectedSqlContains": ["product_categories", "order_items", "group by"]
       }
     },
     {
@@ -77,7 +81,8 @@
         "expectedTables": ["orders"],
         "expectedResultMode": "success",
         "expectedSqlGenerated": true,
-        "expectedSqlExecuted": true
+        "expectedSqlExecuted": true,
+        "expectedSqlContains": ["from orders", "order_date", "group by"]
       }
     },
     {
@@ -92,7 +97,8 @@
         "expectedTables": ["users", "orders"],
         "expectedResultMode": "success",
         "expectedSqlGenerated": true,
-        "expectedSqlExecuted": true
+        "expectedSqlExecuted": true,
+        "expectedSqlContains": ["users", "orders", "sum"]
       }
     },
     {
@@ -107,7 +113,8 @@
         "expectedTables": ["orders"],
         "expectedResultMode": "success",
         "expectedSqlGenerated": true,
-        "expectedSqlExecuted": true
+        "expectedSqlExecuted": true,
+        "expectedSqlContains": ["from orders", "order_date", "2030"]
       }
     },
     {
@@ -122,6 +129,269 @@
         "expectedSqlGenerated": false,
         "expectedSqlExecuted": false
       }
+    },
+    {
+      "caseId": "MM01",
+      "title": "分类商品数统计",
+      "category": "single_turn_analysis",
+      "scenarioType": "single_turn",
+      "query": "统计每个分类下有多少商品",
+      "tags": ["single-turn", "many-to-many", "aggregation"],
+      "expectations": {
+        "expectedIntent": "DATA_ANALYSIS",
+        "expectedTables": ["categories", "product_categories", "products"],
+        "expectedResultMode": "success",
+        "expectedSqlGenerated": true,
+        "expectedSqlExecuted": true,
+        "expectedSqlContains": ["product_categories", "group by"]
+      },
+      "notes": "多对多基础统计，验证 join 路径正确。"
+    },
+    {
+      "caseId": "MM02",
+      "title": "电子产品分类商品",
+      "category": "single_turn_analysis",
+      "scenarioType": "single_turn",
+      "query": "查询电子产品分类下的所有商品",
+      "tags": ["single-turn", "many-to-many", "filter"],
+      "expectations": {
+        "expectedIntent": "DATA_ANALYSIS",
+        "expectedTables": ["categories", "product_categories", "products"],
+        "expectedResultMode": "success",
+        "expectedSqlGenerated": true,
+        "expectedSqlExecuted": true,
+        "expectedSqlContains": ["product_categories", "categories"]
+      }
+    },
+    {
+      "caseId": "MM03",
+      "title": "分类销量统计",
+      "category": "single_turn_analysis",
+      "scenarioType": "single_turn",
+      "query": "统计每个分类的销量",
+      "tags": ["single-turn", "many-to-many", "aggregation"],
+      "expectations": {
+        "expectedIntent": "DATA_ANALYSIS",
+        "expectedTables": ["categories", "product_categories", "products", "order_items"],
+        "expectedResultMode": "success",
+        "expectedSqlGenerated": true,
+        "expectedSqlExecuted": true,
+        "expectedSqlContains": ["product_categories", "order_items", "group by"]
+      },
+      "notes": "多对多重复计数高风险题，验证不会因多对多 join 导致销量膨胀。"
+    },
+    {
+      "caseId": "MM04",
+      "title": "分类销售额统计",
+      "category": "single_turn_analysis",
+      "scenarioType": "single_turn",
+      "query": "统计每个分类的销售额",
+      "tags": ["single-turn", "many-to-many", "business-metric"],
+      "expectations": {
+        "expectedIntent": "DATA_ANALYSIS",
+        "expectedTables": ["categories", "product_categories", "products", "order_items"],
+        "expectedResultMode": "success",
+        "expectedSqlGenerated": true,
+        "expectedSqlExecuted": true,
+        "expectedSqlContains": ["product_categories", "order_items", "quantity", "unit_price"]
+      },
+      "notes": "多对多 + 金额计算，双重风险叠加。"
+    },
+    {
+      "caseId": "TS01",
+      "title": "最近 7 天订单",
+      "category": "single_turn_analysis",
+      "scenarioType": "single_turn",
+      "query": "查询最近 7 天的订单数",
+      "tags": ["single-turn", "time", "relative"],
+      "expectations": {
+        "expectedIntent": "DATA_ANALYSIS",
+        "expectedTables": ["orders"],
+        "expectedResultMode": "success",
+        "expectedSqlGenerated": true,
+        "expectedSqlExecuted": true,
+        "expectedSqlContains": ["from orders", "order_date"]
+      },
+      "notes": "相对时间语义，验证系统能处理最近 N 天。"
+    },
+    {
+      "caseId": "TS02",
+      "title": "五月与六月订单量对比",
+      "category": "single_turn_analysis",
+      "scenarioType": "single_turn",
+      "query": "比较 5 月和 6 月的订单量变化",
+      "tags": ["single-turn", "time", "comparison"],
+      "expectations": {
+        "expectedIntent": "DATA_ANALYSIS",
+        "expectedTables": ["orders"],
+        "expectedResultMode": "success",
+        "expectedSqlGenerated": true,
+        "expectedSqlExecuted": true,
+        "expectedSqlContains": ["from orders", "order_date", "group by"]
+      },
+      "notes": "跨月对比，验证时间分组和过滤。"
+    },
+    {
+      "caseId": "TS03",
+      "title": "每月销量最高商品",
+      "category": "single_turn_analysis",
+      "scenarioType": "single_turn",
+      "query": "查询每个月销量最高的商品",
+      "tags": ["single-turn", "time", "ranking", "window-function"],
+      "expectations": {
+        "expectedIntent": "DATA_ANALYSIS",
+        "expectedTables": ["orders", "order_items", "products"],
+        "expectedResultMode": "success",
+        "expectedSqlGenerated": true,
+        "expectedSqlExecuted": true,
+        "expectedSqlContains": ["order_date", "order_items", "group by"]
+      },
+      "notes": "分组排行，L4 难度，验证窗口函数或子查询能力。"
+    },
+    {
+      "caseId": "AD01",
+      "title": "已完成订单排序",
+      "category": "single_turn_analysis",
+      "scenarioType": "single_turn",
+      "query": "查询所有已完成订单，按下单时间倒序排列",
+      "tags": ["single-turn", "basic", "sort"],
+      "expectations": {
+        "expectedIntent": "DATA_ANALYSIS",
+        "expectedTables": ["orders"],
+        "expectedResultMode": "success",
+        "expectedSqlGenerated": true,
+        "expectedSqlExecuted": true,
+        "expectedSqlContains": ["from orders", "completed", "order by"]
+      }
+    },
+    {
+      "caseId": "AD02",
+      "title": "价格最高 5 个商品",
+      "category": "single_turn_analysis",
+      "scenarioType": "single_turn",
+      "query": "查询价格最高的 5 个商品",
+      "tags": ["single-turn", "basic", "topn"],
+      "expectations": {
+        "expectedIntent": "DATA_ANALYSIS",
+        "expectedTables": ["products"],
+        "expectedResultMode": "success",
+        "expectedSqlGenerated": true,
+        "expectedSqlExecuted": true,
+        "expectedSqlContains": ["from products", "price", "order by", "limit"]
+      }
+    },
+    {
+      "caseId": "AD03",
+      "title": "金额最高 5 笔订单",
+      "category": "single_turn_analysis",
+      "scenarioType": "single_turn",
+      "query": "查询金额最高的 5 笔订单",
+      "tags": ["single-turn", "basic", "topn"],
+      "expectations": {
+        "expectedIntent": "DATA_ANALYSIS",
+        "expectedTables": ["orders"],
+        "expectedResultMode": "success",
+        "expectedSqlGenerated": true,
+        "expectedSqlExecuted": true,
+        "expectedSqlContains": ["from orders", "total_amount", "order by", "limit"]
+      }
+    },
+    {
+      "caseId": "CT01",
+      "title": "从未下单用户",
+      "category": "single_turn_analysis",
+      "scenarioType": "single_turn",
+      "query": "查询从未下过单的用户",
+      "tags": ["single-turn", "join", "left-join"],
+      "expectations": {
+        "expectedIntent": "DATA_ANALYSIS",
+        "expectedTables": ["users", "orders"],
+        "expectedResultMode": "success",
+        "expectedSqlGenerated": true,
+        "expectedSqlExecuted": true,
+        "expectedSqlContains": ["users", "orders", "left join"]
+      },
+      "notes": "LEFT JOIN + NULL 判断，验证反连接能力。"
+    },
+    {
+      "caseId": "CT02",
+      "title": "销量 Top10 商品",
+      "category": "single_turn_analysis",
+      "scenarioType": "single_turn",
+      "query": "查询销量最高的 10 个商品",
+      "tags": ["single-turn", "ranking", "topn"],
+      "expectations": {
+        "expectedIntent": "DATA_ANALYSIS",
+        "expectedTables": ["products", "order_items"],
+        "expectedResultMode": "success",
+        "expectedSqlGenerated": true,
+        "expectedSqlExecuted": true,
+        "expectedSqlContains": ["products", "order_items", "sum", "order by", "limit"]
+      }
+    },
+    {
+      "caseId": "CT03",
+      "title": "消费金额 Top10 用户",
+      "category": "single_turn_analysis",
+      "scenarioType": "single_turn",
+      "query": "查询消费金额最高的 10 个用户",
+      "tags": ["single-turn", "ranking", "user-spend"],
+      "expectations": {
+        "expectedIntent": "DATA_ANALYSIS",
+        "expectedTables": ["users", "orders"],
+        "expectedResultMode": "success",
+        "expectedSqlGenerated": true,
+        "expectedSqlExecuted": true,
+        "expectedSqlContains": ["users", "orders", "sum", "order by", "limit"]
+      }
+    },
+    {
+      "caseId": "CT04",
+      "title": "平均价格统计",
+      "category": "single_turn_analysis",
+      "scenarioType": "single_turn",
+      "query": "统计商品平均价格、最高价格、最低价格",
+      "tags": ["single-turn", "aggregate", "multi-metric"],
+      "expectations": {
+        "expectedIntent": "DATA_ANALYSIS",
+        "expectedTables": ["products"],
+        "expectedResultMode": "success",
+        "expectedSqlGenerated": true,
+        "expectedSqlExecuted": true,
+        "expectedSqlContains": ["from products", "avg", "max", "min"]
+      }
+    },
+    {
+      "caseId": "CT05",
+      "title": "已完成订单平均金额",
+      "category": "single_turn_analysis",
+      "scenarioType": "single_turn",
+      "query": "查询已完成订单的平均金额",
+      "tags": ["single-turn", "business-metric", "filter"],
+      "expectations": {
+        "expectedIntent": "DATA_ANALYSIS",
+        "expectedTables": ["orders"],
+        "expectedResultMode": "success",
+        "expectedSqlGenerated": true,
+        "expectedSqlExecuted": true,
+        "expectedSqlContains": ["from orders", "completed", "avg"]
+      },
+      "notes": "验证状态过滤 + 聚合的组合能力。"
+    },
+    {
+      "caseId": "CT06",
+      "title": "用户手机号字段幻觉",
+      "category": "single_turn_analysis",
+      "scenarioType": "single_turn",
+      "query": "查询用户手机号",
+      "tags": ["single-turn", "hallucination", "missing-field"],
+      "expectations": {
+        "expectedIntent": "DATA_ANALYSIS",
+        "expectedResultMode": "no_schema",
+        "expectedSqlGenerated": false,
+        "expectedSqlExecuted": false
+      },
+      "notes": "当前 users 表无手机号字段，验证系统不会编造字段。"
     }
   ]
 }

@@ -27,8 +27,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 		"search.lite.sql.generate.provider=mock",
 		"search.lite.sql.execute.provider=mock",
 		"search.lite.result.provider=mock",
-		"search.lite.eval.cases-dir=D:/GitHub/DataAgent/data-agent-backend/data/eval/cases",
-		"search.lite.eval.reports-dir=D:/GitHub/DataAgent/data-agent-backend/target/test-eval-reports",
+		"search.lite.eval.cases-dir=data/eval/cases",
+		"search.lite.eval.reports-dir=target/test-eval-reports",
+		"search.lite.eval.suite=standard",
 		"APP_LOG_LEVEL=INFO"
 })
 class EvalRunnerTest {
@@ -44,22 +45,22 @@ class EvalRunnerTest {
 		EvalRunReport report = evalRunner.runDefaultSuite();
 
 		assertNotNull(report);
-		assertEquals("standard", report.suite());
-		assertEquals(17, report.totalCases());
-		assertEquals(3, report.datasetSummaries().size());
+		assertEquals("all", report.suite());
+		assertEquals(72, report.totalCases());
+		assertEquals(5, report.datasetSummaries().size());
 		assertNotNull(report.metrics());
 		assertEquals(report.passedCases(), report.metrics().expectationPassRate().passed());
 		assertEquals(report.totalCases(), report.metrics().expectationPassRate().total());
-		assertEquals(5, report.metrics().failureFallbackAccuracy().total());
-		assertEquals(0, report.metrics().unexpectedSqlExecutionBlockRate().passed());
-		assertEquals(0, report.metrics().sqlReferenceAccuracy().total());
+		assertEquals(12, report.metrics().failureFallbackAccuracy().total());
+		assertEquals(11, report.metrics().unexpectedSqlExecutionBlockRate().passed());
+		assertEquals(28, report.metrics().sqlReferenceAccuracy().total());
 		assertEquals(0, report.metrics().resultSignatureAccuracy().total());
 		assertFalse(report.statusCounts().isEmpty());
 		assertFalse(report.failureCheckCounts().isEmpty());
 		assertFalse(report.results().isEmpty());
 
-		Path latestJson = Path.of("D:/GitHub/DataAgent/data-agent-backend/target/test-eval-reports/latest-report.json");
-		Path latestMd = Path.of("D:/GitHub/DataAgent/data-agent-backend/target/test-eval-reports/latest-report.md");
+		Path latestJson = Path.of("target/test-eval-reports/latest-report.json");
+		Path latestMd = Path.of("target/test-eval-reports/latest-report.md");
 
 		assertTrue(Files.exists(latestJson));
 		assertTrue(Files.exists(latestMd));

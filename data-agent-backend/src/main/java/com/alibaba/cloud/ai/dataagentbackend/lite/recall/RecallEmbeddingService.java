@@ -33,7 +33,10 @@ public class RecallEmbeddingService {
 	}
 
 	public boolean vectorEnabled() {
-		return "vector".equals(provider) || "hybrid".equals(provider);
+		return switch (provider) {
+			case "hybrid", "pgvector", "hybrid-pgvector", "bm25-pgvector-rerank" -> true;
+			default -> false;
+		};
 	}
 
 	public List<RecallDocument> ensureEmbeddings(List<RecallDocument> documents) {

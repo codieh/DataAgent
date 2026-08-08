@@ -47,6 +47,43 @@ public class SearchLiteState {
 
 	private List<String> expandedQueries = new ArrayList<>();
 
+	// feasibility
+	private String feasibilityResult;
+
+	private String feasibilityMessage;
+
+	// human review
+	private boolean humanReviewEnabled;
+
+	private String humanFeedbackStatus;
+
+	private String humanFeedbackComment;
+
+	private boolean awaitingHumanFeedback;
+
+	// planner
+	private List<SearchLitePlanStep> planSteps = new ArrayList<>();
+
+	private int currentPlanStepIndex;
+
+	private boolean plannerEnabled;
+
+	private String plannerDecision = "proceed";
+
+	private String plannerDecisionReason;
+
+	private boolean planFinished;
+
+	private String planFinishedReason;
+
+	private String plannerRawOutput;
+
+	private boolean planValidationStatus = true;
+
+	private String planValidationError;
+
+	private int planRepairCount;
+
 	// sql
 	private String sql;
 
@@ -70,6 +107,11 @@ public class SearchLiteState {
 		state.agentId = request.agentId();
 		state.threadId = request.threadId();
 		state.query = request.query();
+		state.humanReviewEnabled = request.humanReviewEnabled();
+		if (request.humanFeedbackApproved() != null) {
+			state.humanFeedbackStatus = request.humanFeedbackApproved() ? "APPROVED" : "REJECTED";
+		}
+		state.humanFeedbackComment = request.humanFeedbackComment();
 		return state;
 	}
 
@@ -209,7 +251,59 @@ public class SearchLiteState {
 		this.expandedQueries = expandedQueries == null ? new ArrayList<>() : expandedQueries;
 	}
 
+	public String getFeasibilityResult() {
+		return feasibilityResult;
+	}
+
+	public void setFeasibilityResult(String feasibilityResult) {
+		this.feasibilityResult = feasibilityResult;
+	}
+
+	public String getFeasibilityMessage() {
+		return feasibilityMessage;
+	}
+
+	public void setFeasibilityMessage(String feasibilityMessage) {
+		this.feasibilityMessage = feasibilityMessage;
+	}
+
+	public boolean isHumanReviewEnabled() {
+		return humanReviewEnabled;
+	}
+
+	public void setHumanReviewEnabled(boolean humanReviewEnabled) {
+		this.humanReviewEnabled = humanReviewEnabled;
+	}
+
+	public String getHumanFeedbackStatus() {
+		return humanFeedbackStatus;
+	}
+
+	public void setHumanFeedbackStatus(String humanFeedbackStatus) {
+		this.humanFeedbackStatus = humanFeedbackStatus;
+	}
+
+	public String getHumanFeedbackComment() {
+		return humanFeedbackComment;
+	}
+
+	public void setHumanFeedbackComment(String humanFeedbackComment) {
+		this.humanFeedbackComment = humanFeedbackComment;
+	}
+
+	public boolean isAwaitingHumanFeedback() {
+		return awaitingHumanFeedback;
+	}
+
+	public void setAwaitingHumanFeedback(boolean awaitingHumanFeedback) {
+		this.awaitingHumanFeedback = awaitingHumanFeedback;
+	}
+
 	public String getEffectiveQuery() {
+		String planInstruction = getCurrentPlanInstruction();
+		if (planInstruction != null && !planInstruction.isBlank()) {
+			return planInstruction.trim();
+		}
 		if (canonicalQuery != null && !canonicalQuery.isBlank()) {
 			return canonicalQuery.trim();
 		}
@@ -217,6 +311,109 @@ public class SearchLiteState {
 			return contextualizedQuery.trim();
 		}
 		return query == null ? "" : query.trim();
+	}
+
+	public List<SearchLitePlanStep> getPlanSteps() {
+		return planSteps;
+	}
+
+	public void setPlanSteps(List<SearchLitePlanStep> planSteps) {
+		this.planSteps = planSteps == null ? new ArrayList<>() : planSteps;
+	}
+
+	public int getCurrentPlanStepIndex() {
+		return currentPlanStepIndex;
+	}
+
+	public void setCurrentPlanStepIndex(int currentPlanStepIndex) {
+		this.currentPlanStepIndex = Math.max(0, currentPlanStepIndex);
+	}
+
+	public boolean isPlannerEnabled() {
+		return plannerEnabled;
+	}
+
+	public void setPlannerEnabled(boolean plannerEnabled) {
+		this.plannerEnabled = plannerEnabled;
+	}
+
+	public String getPlannerDecision() {
+		return plannerDecision;
+	}
+
+	public void setPlannerDecision(String plannerDecision) {
+		this.plannerDecision = plannerDecision;
+	}
+
+	public String getPlannerDecisionReason() {
+		return plannerDecisionReason;
+	}
+
+	public void setPlannerDecisionReason(String plannerDecisionReason) {
+		this.plannerDecisionReason = plannerDecisionReason;
+	}
+
+	public boolean isPlanFinished() {
+		return planFinished;
+	}
+
+	public void setPlanFinished(boolean planFinished) {
+		this.planFinished = planFinished;
+	}
+
+	public String getPlanFinishedReason() {
+		return planFinishedReason;
+	}
+
+	public void setPlanFinishedReason(String planFinishedReason) {
+		this.planFinishedReason = planFinishedReason;
+	}
+
+	public String getPlannerRawOutput() {
+		return plannerRawOutput;
+	}
+
+	public void setPlannerRawOutput(String plannerRawOutput) {
+		this.plannerRawOutput = plannerRawOutput;
+	}
+
+	public boolean isPlanValidationStatus() {
+		return planValidationStatus;
+	}
+
+	public void setPlanValidationStatus(boolean planValidationStatus) {
+		this.planValidationStatus = planValidationStatus;
+	}
+
+	public String getPlanValidationError() {
+		return planValidationError;
+	}
+
+	public void setPlanValidationError(String planValidationError) {
+		this.planValidationError = planValidationError;
+	}
+
+	public int getPlanRepairCount() {
+		return planRepairCount;
+	}
+
+	public void setPlanRepairCount(int planRepairCount) {
+		this.planRepairCount = Math.max(0, planRepairCount);
+	}
+
+	public SearchLitePlanStep getCurrentPlanStep() {
+		if (planSteps == null || planSteps.isEmpty()) {
+			return null;
+		}
+		if (currentPlanStepIndex < 0 || currentPlanStepIndex >= planSteps.size()) {
+			return null;
+		}
+		return planSteps.get(currentPlanStepIndex);
+	}
+
+	public String getCurrentPlanInstruction() {
+		SearchLitePlanStep current = getCurrentPlanStep();
+		return current == null ? null : current.getInstruction();
 	}
 
 	public String getRecallQuery() {
@@ -263,7 +460,7 @@ public class SearchLiteState {
 	}
 
 	public void setRows(List<Map<String, Object>> rows) {
-		this.rows = rows == null ? new ArrayList<>() : rows;
+		this.rows = sanitizeRows(rows);
 	}
 
 	public String getResultSummary() {
@@ -288,6 +485,56 @@ public class SearchLiteState {
 
 	public void setError(String error) {
 		this.error = error;
+	}
+
+	private List<Map<String, Object>> sanitizeRows(List<Map<String, Object>> rows) {
+		if (rows == null) {
+			return new ArrayList<>();
+		}
+		List<Map<String, Object>> sanitized = new ArrayList<>(rows.size());
+		for (Map<String, Object> row : rows) {
+			sanitized.add(sanitizeMap(row));
+		}
+		return sanitized;
+	}
+
+	@SuppressWarnings("unchecked")
+	private Map<String, Object> sanitizeMap(Map<String, Object> raw) {
+		Map<String, Object> sanitized = new java.util.LinkedHashMap<>();
+		if (raw == null) {
+			return sanitized;
+		}
+		for (Map.Entry<String, Object> entry : raw.entrySet()) {
+			String key = entry.getKey();
+			if ("@class".equals(key)) {
+				continue;
+			}
+			sanitized.put(key, sanitizeValue(entry.getValue()));
+		}
+		return sanitized;
+	}
+
+	@SuppressWarnings("unchecked")
+	private Object sanitizeValue(Object value) {
+		if (value instanceof Map<?, ?> map) {
+			Map<String, Object> nested = new java.util.LinkedHashMap<>();
+			for (Map.Entry<?, ?> entry : map.entrySet()) {
+				String key = String.valueOf(entry.getKey());
+				if ("@class".equals(key)) {
+					continue;
+				}
+				nested.put(key, sanitizeValue(entry.getValue()));
+			}
+			return nested;
+		}
+		if (value instanceof List<?> list) {
+			List<Object> nested = new ArrayList<>(list.size());
+			for (Object item : list) {
+				nested.add(sanitizeValue(item));
+			}
+			return nested;
+		}
+		return value;
 	}
 
 }
