@@ -82,6 +82,8 @@ _METADATA_KEYS = (
     "resultRef",
     "nextCursor",
     "availableActions",
+    "nextCursor",
+    "availableActions",
     "stats",
     "datasetId",
     "rowCount",
@@ -111,7 +113,7 @@ def _trim_tool_content(content: str, token_limit: int) -> str:
         preview_budget,
     )
     compact["truncated"] = True
-    compact["notice"] = "工具结果过长，已截断；可根据 resultRef 读取完整结果"
+    compact["notice"] = "工具结果过长，已截断；可根据 resultRef 和 availableActions 继续读取"
     return json.dumps(compact, ensure_ascii=False, default=str)
 
 
@@ -137,7 +139,7 @@ def _compact_old_tool_content(content: str, token_limit: int) -> str:
     compact = _metadata(parsed)
     compact["truncated"] = bool(parsed.get("truncated")) or "preview" in parsed
     compact["compacted"] = True
-    compact["notice"] = "较早工具结果已降级为目录；按 resultRef 或读取工具获取详情"
+    compact["notice"] = "较早工具结果已降级为目录；按 resultRef 和 availableActions 获取详情"
     serialized = json.dumps(compact, ensure_ascii=False, default=str)
     if estimate_tokens(serialized) <= token_limit:
         return serialized

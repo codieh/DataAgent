@@ -661,6 +661,8 @@ def _micro_compact_rounds(messages: list[Any]) -> tuple[list[Any], int]:
                         "resultRef",
                         "nextCursor",
                         "availableActions",
+                        "nextCursor",
+                        "availableActions",
                         "datasetId",
                         "rowCount",
                     )
