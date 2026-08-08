@@ -1,0 +1,6 @@
+node_modules/
+dist/
+dist-electron/
+release/
+tsconfig.tsbuildinfo
+.env.local

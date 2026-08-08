@@ -72,3 +72,5 @@ data/traces/*.json
 
 /**/*.md
 !/AGENTS.md
+!/data-agent-claude-sdk/**/*.md
+!/data-agent-claude-sdk-frontend/**/*.md
