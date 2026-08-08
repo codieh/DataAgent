@@ -106,6 +106,10 @@ def test_tool_specifications_hide_runtime_injected_arguments() -> None:
         assert "state" not in parameters.get("properties", {})
         assert "tool_call_id" not in parameters.get("properties", {})
 
+    metadata = {item["name"]: item["execution"] for item in registry.specifications()}
+    assert metadata["search_history"]["concurrencySafe"] is True
+    assert metadata["execute_sql"]["requiresConfirmation"] is True
+
 
 def test_tool_specifications_expose_runtime_execution_metadata() -> None:
     """工具运行属性应来自统一元数据表，供调度和可观测层使用。"""
