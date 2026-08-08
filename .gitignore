@@ -71,3 +71,4 @@ data/traces/*.json
 /data-agent-backend/src/test/java/com/alibaba/cloud/ai/dataagentbackend/lite/eval/PlannerEvalDatasetTest.java
 
 /**/*.md
+!/AGENTS.md
