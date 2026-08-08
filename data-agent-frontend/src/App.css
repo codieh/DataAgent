@@ -193,6 +193,32 @@
 .sql-disclosure pre { max-height: 220px; margin: 0; overflow: auto; padding: 14px 16px; border-top: 1px solid var(--line-soft); font-family: var(--mono); font-size: 10px; line-height: 1.55; }
 .workspace-composer { padding: 12px 27px 16px; background: linear-gradient(to top, var(--bone) 82%, rgba(242, 239, 232, 0)); }
 
+/* 分析过程时间线：阶段节点 + 内联产物（SQL / 召回 / Input Guard） */
+.process-timeline { display: grid; gap: 0; margin: 16px 0 4px; }
+.timeline-stage { position: relative; padding: 0 0 4px 22px; border-left: 1px solid var(--line-soft); }
+.timeline-stage:last-child { border-left-color: transparent; padding-bottom: 0; }
+.timeline-stage-head { display: flex; align-items: center; gap: 8px; min-height: 30px; }
+.timeline-node { position: absolute; left: -5px; top: 9px; width: 9px; height: 9px; border: 1px solid #8d918b; border-radius: 50%; background: var(--bone-soft); }
+.stage-completed .timeline-node { border-color: var(--forest); background: var(--forest); }
+.stage-running .timeline-node { border-color: var(--copper); background: var(--copper); }
+.stage-failed .timeline-node { border-color: var(--copper); background: var(--copper); }
+.timeline-stage-head strong { font-size: 11px; font-weight: 600; }
+.timeline-duration { margin-left: auto; color: var(--muted); font-size: 9px; }
+.timeline-message { margin: 2px 0 6px; color: var(--copper); font-size: 10px; }
+.timeline-artifacts { display: grid; gap: 10px; margin: 6px 0 14px; }
+.stage-artifact-head { display: flex; align-items: center; gap: 6px; margin-bottom: 7px; color: var(--ink); font-size: 10px; font-weight: 600; }
+.stage-sql { border: 1px solid #cfcbc2; border-radius: 6px; font-size: 11px; }
+.stage-sql summary { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 0 14px; cursor: pointer; list-style: none; }
+.stage-sql pre { max-height: 220px; margin: 0; overflow: auto; padding: 12px 14px; border-top: 1px solid var(--line-soft); font-family: var(--mono); font-size: 10px; line-height: 1.55; }
+.recall-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.recall-list li { display: grid; gap: 2px; padding: 8px 11px; border: 1px solid var(--line-soft); border-radius: 5px; }
+.recall-list strong { font-size: 10px; font-weight: 600; }
+.recall-list span { overflow: hidden; color: var(--muted); font-size: 9px; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
+.stage-schema .table-artifact { min-height: auto; gap: 8px; padding: 10px 12px; flex-wrap: wrap; }
+.stage-guard { display: flex; align-items: center; gap: 8px; padding: 9px 12px; border: 1px solid var(--line-soft); border-radius: 5px; font-size: 10px; }
+.stage-guard.is-ok { border-color: var(--forest); color: var(--forest); }
+.stage-guard.is-running { border-color: var(--copper); color: var(--copper); }
+
 .execution-inspector { position: relative; min-width: 0; min-height: 0; padding: 28px 25px 20px; overflow: auto; background: rgba(247, 244, 238, .48); }
 .inspector-title-row { display: flex; align-items: center; justify-content: space-between; }
 .inspector-title-row h2 { margin: 0; font-size: 15px; }

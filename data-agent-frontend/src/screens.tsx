@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import type { AgentProfile, AgentStreamMessage, AnalysisRun, AppView, Conversation, ConversationDetail, PingStep, QueryResult, ResultSet, RunEvent, TableDensity } from './types'
 import { Sidebar, TitleBar } from './components/AppChrome'
 import { Composer } from './components/Composer'
@@ -127,6 +127,71 @@ function AgentNarrationList({ messages }: { messages: AgentStreamMessage[] }) {
   </section>
 }
 
+// 把「分析过程」从纯文字叙述升级为「按阶段穿插产物」的时间线。
+// 主轴是 run.stages（后端按执行顺序推送），每个阶段节点下内联该步的真实产物：
+//   - 召回业务知识 / 已选表 → run.retrieval
+//   - SQL 查询 → run.queries（只在第一个 SQL 阶段内联一次，避免每条阶段重复）
+//   - Input Guard → input_guard 阶段的检查结果
+// 这样 SQL / 召回 / Input Guard 都出现在它们真实发生的步骤，而不是堆在最后。
+function ProcessTimeline({ run }: { run: AnalysisRun }) {
+  const stages = run.stages || []
+  const retrieval = run.retrieval
+  const sqlStageNames = ['sql_generate', 'sql_validate', 'sql_execute', 'human_feedback']
+  let sqlRendered = false
+  return <div className="process-timeline" aria-label="分析阶段与产物">
+    {stages.map((stage) => {
+      const label = stageLabels[stage.name] || stage.name
+      const isSql = sqlStageNames.includes(stage.name)
+      const isKnowledgeRecall = stage.name === 'knowledge_recall'
+      const isSchemaRecall = stage.name === 'schema_recall'
+      const isInputGuard = stage.name === 'input_guard'
+
+      let sqlBlock: ReactNode = null
+      if (isSql && !sqlRendered && run.queries.length) {
+        sqlRendered = true
+        sqlBlock = <details className="stage-sql" open>
+          <summary><Icon name="code" size={15} /> SQL 查询（{run.queries.length} 条）</summary>
+          {run.queries.map((item) => <pre key={item.id}>{item.sql}</pre>)}
+        </details>
+      }
+
+      let recallBlock: ReactNode = null
+      if (isKnowledgeRecall && retrieval && (retrieval.documents.length || retrieval.evidences.length)) {
+        const items = [...retrieval.documents, ...retrieval.evidences]
+        recallBlock = <div className="stage-recall">
+          <div className="stage-artifact-head"><Icon name="search" size={15} /> 召回业务知识（{items.length}）</div>
+          <ul className="recall-list">{items.map((item) => <li key={item.id}><strong>{item.title}</strong><span>{item.content.length > 90 ? `${item.content.slice(0, 90)}…` : item.content}</span></li>)}</ul>
+        </div>
+      }
+
+      let schemaBlock: ReactNode = null
+      if (isSchemaRecall && retrieval && retrieval.tables.length) {
+        schemaBlock = <div className="stage-schema">
+          <div className="stage-artifact-head"><Icon name="table" size={15} /> 已选择的数据表（{retrieval.tables.length}）</div>
+          <div className="table-artifact">{retrieval.tables.map((table) => <span key={table.name}><Icon name="table" size={16} />{table.displayName || table.name}</span>)}</div>
+        </div>
+      }
+
+      let guardBlock: ReactNode = null
+      if (isInputGuard) {
+        const ok = stage.status === 'completed'
+        guardBlock = <div className={`stage-guard ${ok ? 'is-ok' : 'is-running'}`}><Icon name="shield" size={15} /> <span>{stage.message || (ok ? '请求安全检查通过' : '正在检查请求安全')}</span></div>
+      }
+
+      const hasArtifact = sqlBlock || recallBlock || schemaBlock || guardBlock
+      return <section className={`timeline-stage stage-${stage.status}`} key={`${stage.name}-${stage.attempt}`}>
+        <header className="timeline-stage-head">
+          <span className="timeline-node" />
+          <strong>{label}</strong>
+          <span className="timeline-duration">{formatDuration(stage.durationMs)}</span>
+        </header>
+        {stage.status === 'running' && stage.message ? <p className="timeline-message">{stage.message}</p> : null}
+        {hasArtifact ? <div className="timeline-artifacts">{recallBlock}{schemaBlock}{sqlBlock}{guardBlock}</div> : null}
+      </section>
+    })}
+  </div>
+}
+
 export function WorkspaceScreen(props: Navigation & {
   query: string; conversation: ConversationDetail | null; run: AnalysisRun | null; events: RunEvent[]
   streamingAnswer: string
@@ -148,7 +213,7 @@ export function WorkspaceScreen(props: Navigation & {
       {sidebar(props)}
       <main className="conversation-workspace"><div className="conversation-scroll">
         {visibleMessages.map((message) => <article className={`conversation-entry ${message.role === 'user' ? 'user-entry' : 'agent-entry'}`} key={message.id}><div className="entry-meta"><strong>{message.role === 'user' ? '用户' : 'DataAgent'}</strong><span>{parseServerTime(message.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</span></div><Markdown>{message.content}</Markdown></article>)}
-        {run ? <article className="conversation-entry agent-entry"><div className="entry-meta"><strong>DataAgent</strong><span>{run.status}</span></div><h1>{run.analysis?.title || (streamingAnswer ? '正在生成分析结论' : running ? '正在分析数据' : '本次分析')}</h1><p className="current-action">当前步骤：{stageLabels[run.currentStage || ''] || status}</p>{agentMessages.length ? <AgentNarrationList messages={agentMessages} /> : null}{displayedSummary ? <section className={`streaming-answer ${run.analysis ? 'is-complete' : ''}`} aria-live="polite"><Markdown>{displayedSummary}</Markdown>{!run.analysis ? <i aria-hidden="true" /> : null}</section> : null}{run.error ? <><p className="diagnostic-warning">{run.error.message}</p><button type="button" onClick={props.onRetry}>重新运行</button></> : null}{run.analysis ? <button className="view-result-button" type="button" onClick={props.onViewResults}>查看图表与数据 <Icon name="arrow-right" size={14} /></button> : null}{run.retrieval?.tables.length ? <section className="selected-tables"><div className="artifact-heading"><strong>已选择的数据表</strong></div><div className="table-artifact">{run.retrieval.tables.map((table) => <span key={table.name}><Icon name="table" size={16} />{table.displayName || table.name}</span>)}</div></section> : null}{run.queries.length ? <details className="sql-disclosure"><summary><span><Icon name="code" size={16} /> SQL 查询（{run.queries.length} 条）</span><Icon name="chevron-down" size={14} /></summary>{run.queries.map((item) => <pre key={item.id}>{item.sql}</pre>)}</details> : null}</article> : null}
+        {run ? <article className="conversation-entry agent-entry"><div className="entry-meta"><strong>DataAgent</strong><span>{run.status}</span></div><h1>{run.analysis?.title || (streamingAnswer ? '正在生成分析结论' : running ? '正在分析数据' : '本次分析')}</h1><p className="current-action">当前步骤：{stageLabels[run.currentStage || ''] || status}</p>{agentMessages.length ? <AgentNarrationList messages={agentMessages} /> : null}<ProcessTimeline run={run} />{displayedSummary ? <section className={`streaming-answer ${run.analysis ? 'is-complete' : ''}`} aria-live="polite"><Markdown>{displayedSummary}</Markdown>{!run.analysis ? <i aria-hidden="true" /> : null}</section> : null}{run.error ? <><p className="diagnostic-warning">{run.error.message}</p><button type="button" onClick={props.onRetry}>重新运行</button></> : null}{run.analysis ? <button className="view-result-button" type="button" onClick={props.onViewResults}>查看图表与数据 <Icon name="arrow-right" size={14} /></button> : null}</article> : null}
       </div><div className="workspace-composer"><Composer compact value={query} running={running} placeholder="继续提出分析问题…" onChange={onQueryChange} onSubmit={onSubmit} onStop={onStop} /></div></main>
       <ExecutionInspector run={run} events={events} />
     </div>
